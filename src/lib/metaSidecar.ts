@@ -58,16 +58,24 @@ import type {
  *
  * `contentType` is the content-type the representation's filename was built
  * from (`fileNameFor`), recorded by every write that leaves a live Resource or
- * chunk, from the filename it wrote and never from the request, so a read can
- * rebuild the exact filename from it instead of listing the directory. The
- * filename stays authoritative: the write sets both in the same critical
- * section. On a tombstone it is the deleted representation's last-known
- * content-type, which the change feed reports.
+ * chunk, from the filename it wrote and never from the request. It serves the
+ * `Content-Type` of a read. On a tombstone it is the deleted representation's
+ * last-known content-type, which the change feed reports.
+ *
+ * `fileName` is the basename of the live representation file the write
+ * created (`fileNameFor`'s result at write time), recorded beside
+ * `contentType` in the same critical section by every filesystem write that
+ * leaves a live Resource or chunk. A read opens exactly that name, with no
+ * directory listing and no re-derivation from `contentType`, so a change in
+ * how `fileNameFor` derives a name cannot strand a stored file. It is
+ * server-local to the filesystem backend: a tombstone has none, the Postgres
+ * backend never sets it, export strips it (`withoutSidecarMembers`), and
+ * import ignores an archived one and records the file it writes.
  *
  * `feedPosition` is the Resource's position in its Collection's changes feed:
  * each content write, metadata write, soft delete, and import of the Resource
  * takes the Collection's next position. It is one server's fact about its own
- * feed, so it never replicates. Export strips it (`withoutSidecarMember`),
+ * feed, so it never replicates. Export strips it (`withoutSidecarMembers`),
  * import ignores an archived one and assigns a fresh position, and the
  * Postgres backend keeps the same fact in a column instead.
  *
@@ -109,6 +117,7 @@ export interface MetaSidecar {
   writerId?: string
   deleted?: boolean
   contentType: string
+  fileName?: string
   feedPosition?: number
 }
 
@@ -131,27 +140,30 @@ export function parseSidecarBytes(bytes: Buffer): MetaSidecar | undefined {
 }
 
 /**
- * Removes one member from a Resource sidecar's bytes. Bytes that do not parse
- * as a JSON object, or that carry no such member, are returned unchanged.
- * Export uses it to strip the server-local `feedPosition`, and import to
- * strip a `createdBy` the archive did not earn.
+ * Removes members from a Resource sidecar's bytes. Bytes that do not parse as
+ * a JSON object, or that carry none of the members, are returned unchanged.
+ * Export uses it to strip the server-local `feedPosition` and `fileName`, and
+ * import to strip a `createdBy` the archive did not earn.
  * @param options {object}
  * @param options.bytes {Buffer}   the stored sidecar bytes
- * @param options.member {keyof MetaSidecar}
+ * @param options.members {Array<keyof MetaSidecar>}
  * @returns {Buffer}
  */
-export function withoutSidecarMember({
+export function withoutSidecarMembers({
   bytes,
-  member
+  members
 }: {
   bytes: Buffer
-  member: keyof MetaSidecar
+  members: ReadonlyArray<keyof MetaSidecar>
 }): Buffer {
   const sidecar = parseSidecarBytes(bytes)
-  if (sidecar === undefined || !(member in sidecar)) {
+  if (sidecar === undefined || !members.some(member => member in sidecar)) {
     return bytes
   }
-  const { [member]: _dropped, ...rest } = sidecar
+  const rest: Partial<MetaSidecar> = { ...sidecar }
+  for (const member of members) {
+    delete rest[member]
+  }
   return Buffer.from(JSON.stringify(rest))
 }
 
@@ -164,8 +176,9 @@ export function withoutSidecarMember({
  * `/meta` generation that is missing, or that this server could not have
  * minted (`isMintedGeneration`), is replaced with a fresh one, and a missing
  * `createdAt` takes the new stamp's time. An archived `meta` that is not a
- * whole stamp object is dropped. Any `feedPosition` is left for the caller
- * to replace.
+ * whole stamp object is dropped, and so is an archived `fileName`, which
+ * names a file on the exporting server only. Any `feedPosition` is left for
+ * the caller to replace.
  * @param options {object}
  * @param options.sidecar {MetaSidecar}   the archived sidecar
  * @param options.mint {() => Promise<WriteStamp>}   mints one stamp from the
@@ -179,7 +192,7 @@ export async function restampImportedSidecar({
   sidecar: MetaSidecar
   mint: () => Promise<WriteStamp>
 }): Promise<MetaSidecar> {
-  const { meta, ...rest } = withoutStampMembers(sidecar)
+  const { meta, fileName: _archived, ...rest } = withoutStampMembers(sidecar)
   const stamp = await mint()
   const restamped: MetaSidecar = {
     ...rest,

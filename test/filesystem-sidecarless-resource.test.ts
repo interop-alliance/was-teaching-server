@@ -1,23 +1,28 @@
 /**
- * A Resource whose representation file has no `.meta.` sidecar (Vitest). The
- * filesystem backend locates a representation from its sidecar alone (the
- * sidecar's `contentType` rebuilds the filename), so a file no sidecar names
- * is not a live Resource on any read path: the backend reports no metadata,
- * the read routes answer 404, and the changes feed leaves it out. Every
- * committed write leaves a sidecar, so such a file is a write that never
- * committed.
+ * How the filesystem backend finds a Resource's representation file (Vitest).
+ * Every write that leaves a live Resource or chunk records the basename of the
+ * file it wrote as the sidecar's `fileName`, and a read opens exactly that
+ * name. So a file no sidecar names is not a live Resource on any read path:
+ * the backend reports no metadata, the read routes answer 404, and the changes
+ * feed leaves it out. Every committed write leaves a sidecar, so such a file is
+ * a write that never committed. A live sidecar that names a missing file is
+ * damage, answered 500. The `fileName` is server-local: a tombstone has none,
+ * export strips it, and import records the file it writes.
  */
-import { it, describe, beforeAll, afterAll } from 'vitest'
+import { it, describe, beforeAll, afterAll, afterEach } from 'vitest'
 import assert from 'node:assert'
-import { writeFile } from 'node:fs/promises'
+import { readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
+import * as tar from 'tar-stream'
 
-import { fileNameFor } from '@interop/space-archive'
+import { fileNameFor, metaSidecarFileName } from '@interop/space-archive'
 import { isResourceChange } from '@interop/storage-core'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
+  importArchive,
   openTempBackend,
   responseOf,
   startTestServer,
@@ -110,6 +115,34 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
     assert.equal(response.status, 404)
   })
 
+  it('answers 500 when a live sidecar names a missing file', async () => {
+    const resourceId = 'renamed'
+    await alice.was.request({
+      url: resourceUrl(resourceId),
+      method: 'PUT',
+      json: { n: resourceId }
+    })
+    const sidecarPath = path.join(
+      backend.spacesDir,
+      alice.space1.id,
+      collectionId,
+      metaSidecarFileName(resourceId)
+    )
+    const sidecar = JSON.parse(await readFile(sidecarPath, 'utf8'))
+    // A name the backend could have written, for a file that is not there.
+    await writeFile(
+      sidecarPath,
+      JSON.stringify({
+        ...sidecar,
+        fileName: fileNameFor({ resourceId, contentType: 'text/plain' })
+      })
+    )
+    const response = await responseOf(
+      alice.was.request({ url: resourceUrl(resourceId), method: 'GET' })
+    )
+    assert.equal(response.status, 500)
+  })
+
   it('still serves a Resource written through the API', async () => {
     const response = await alice.was.request({
       url: resourceUrl('normal'),
@@ -120,3 +153,244 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
     assert.notEqual(response.headers.get('etag'), null)
   })
 })
+
+describe('FileSystemBackend: the sidecar names its representation file', () => {
+  const spaceId = 'file-name-space'
+  const collectionId = 'notes'
+  const controller = 'did:key:z6MkFileNameTestController'
+  const backends: TempFileSystemBackend[] = []
+
+  afterEach(async () => {
+    for (const opened of backends.splice(0)) {
+      await opened.close()
+    }
+  })
+
+  /**
+   * A backend holding the test Space and Collection.
+   * @returns {Promise<TempFileSystemBackend>}
+   */
+  async function provision(): Promise<TempFileSystemBackend> {
+    const opened = await openTempBackend()
+    backends.push(opened)
+    await opened.writeSpace({
+      spaceId,
+      spaceMetadata: { id: spaceId, type: ['Space'], controller }
+    })
+    await opened.writeCollection({
+      spaceId,
+      collectionId,
+      collectionMetadata: { id: collectionId, type: ['Collection'] }
+    })
+    return opened
+  }
+
+  /**
+   * @param opened {TempFileSystemBackend}
+   * @returns {string}
+   */
+  function collectionDirOf(opened: TempFileSystemBackend): string {
+    return path.join(opened.spacesDir, spaceId, collectionId)
+  }
+
+  /**
+   * The representation files on disk for one Resource.
+   * @param opened {TempFileSystemBackend}
+   * @param resourceId {string}
+   * @returns {Promise<string[]>}
+   */
+  async function representationFiles(
+    opened: TempFileSystemBackend,
+    resourceId: string
+  ): Promise<string[]> {
+    return (await readdir(collectionDirOf(opened))).filter(name =>
+      name.startsWith(`r.${resourceId}.`)
+    )
+  }
+
+  /**
+   * @param options {object}
+   * @param options.opened {TempFileSystemBackend}
+   * @param options.resourceId {string}
+   * @param options.contentType {string}
+   * @param options.body {string}
+   * @returns {Promise<void>}
+   */
+  async function writeText({
+    opened,
+    resourceId,
+    contentType,
+    body
+  }: {
+    opened: TempFileSystemBackend
+    resourceId: string
+    contentType: string
+    body: string
+  }): Promise<void> {
+    await opened.writeResource({
+      spaceId,
+      collectionId,
+      resourceId,
+      input: {
+        kind: 'binary',
+        contentType,
+        declaredBytes: Buffer.byteLength(body),
+        stream: Readable.from([Buffer.from(body)])
+      }
+    })
+  }
+
+  it('a content write records the file it wrote', async () => {
+    const opened = await provision()
+    await writeText({
+      opened,
+      resourceId: 'doc',
+      contentType: 'text/plain',
+      body: 'one'
+    })
+    const sidecar = await opened.readMetaSidecar({
+      collectionDir: collectionDirOf(opened),
+      resourceId: 'doc'
+    })
+    assert.deepEqual(await representationFiles(opened, 'doc'), [
+      sidecar?.fileName
+    ])
+  })
+
+  it('a content-type change records the new file and removes the old one', async () => {
+    const opened = await provision()
+    await writeText({
+      opened,
+      resourceId: 'doc',
+      contentType: 'text/plain',
+      body: 'one'
+    })
+    const before = await opened.readMetaSidecar({
+      collectionDir: collectionDirOf(opened),
+      resourceId: 'doc'
+    })
+    await writeText({
+      opened,
+      resourceId: 'doc',
+      contentType: 'text/markdown',
+      body: '# two'
+    })
+    const after = await opened.readMetaSidecar({
+      collectionDir: collectionDirOf(opened),
+      resourceId: 'doc'
+    })
+    assert.notEqual(after?.fileName, before?.fileName)
+    assert.equal(after?.contentType, 'text/markdown')
+    assert.deepEqual(await representationFiles(opened, 'doc'), [
+      after?.fileName
+    ])
+  })
+
+  it('a tombstone keeps its content-type and names no file', async () => {
+    const opened = await provision()
+    await writeText({
+      opened,
+      resourceId: 'doc',
+      contentType: 'text/plain',
+      body: 'one'
+    })
+    await opened.deleteResource({ spaceId, collectionId, resourceId: 'doc' })
+    const tombstone = await opened.readMetaSidecar({
+      collectionDir: collectionDirOf(opened),
+      resourceId: 'doc'
+    })
+    assert.equal(tombstone?.deleted, true)
+    assert.equal(tombstone?.contentType, 'text/plain')
+    assert.equal('fileName' in tombstone!, false)
+    assert.deepEqual(await representationFiles(opened, 'doc'), [])
+  })
+
+  it('export strips fileName and import records the file it writes', async () => {
+    const source = await provision()
+    await writeText({
+      opened: source,
+      resourceId: 'doc',
+      contentType: 'text/plain',
+      body: 'one'
+    })
+    await source.writeChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'doc',
+      chunkIndex: 0,
+      input: {
+        kind: 'binary',
+        contentType: 'application/octet-stream',
+        declaredBytes: 3,
+        stream: Readable.from([Buffer.from('abc')])
+      }
+    })
+    const archive = await archiveEntries(await source.exportSpace({ spaceId }))
+    const sidecarEntries = [...archive].filter(([name]) =>
+      path.basename(name).startsWith('.meta.')
+    )
+    // The Resource's sidecar and its chunk's.
+    assert.equal(sidecarEntries.length, 2)
+    for (const [name, bytes] of sidecarEntries) {
+      const archived = JSON.parse(bytes.toString('utf8'))
+      assert.equal('fileName' in archived, false, `${name} carries fileName`)
+      assert.equal('feedPosition' in archived, false)
+    }
+
+    const destination = await openTempBackend({ prefix: 'was-test-dst-' })
+    backends.push(destination)
+    await destination.writeSpace({
+      spaceId,
+      spaceMetadata: { id: spaceId, type: ['Space'], controller }
+    })
+    await importArchive({
+      backend: destination,
+      spaceId,
+      tarStream: await source.exportSpace({ spaceId })
+    })
+    const imported = await destination.readMetaSidecar({
+      collectionDir: collectionDirOf(destination),
+      resourceId: 'doc'
+    })
+    assert.deepEqual(await representationFiles(destination, 'doc'), [
+      imported?.fileName
+    ])
+    const chunk = await destination.getChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'doc',
+      chunkIndex: 0
+    })
+    chunk.resourceStream.resume()
+    assert.equal(chunk.storedResourceType, 'application/octet-stream')
+  })
+})
+
+/**
+ * Every file entry of an export archive, by name.
+ * @param pack {Readable}   the export stream
+ * @returns {Promise<Map<string, Buffer>>}
+ */
+async function archiveEntries(pack: Readable): Promise<Map<string, Buffer>> {
+  const entries = new Map<string, Buffer>()
+  const extract = tar.extract()
+  await new Promise<void>((resolve, reject) => {
+    extract.on('entry', (header, stream, next) => {
+      const chunks: Buffer[] = []
+      stream.on('data', (chunk: unknown) =>
+        chunks.push(Buffer.from(chunk as Buffer))
+      )
+      stream.on('end', () => {
+        if (header.type === 'file') {
+          entries.set(header.name, Buffer.concat(chunks))
+        }
+        next()
+      })
+      stream.on('error', reject)
+    })
+    extract.on('finish', resolve)
+    extract.on('error', reject)
+    pack.pipe(extract)
+  })
+  return entries
+}

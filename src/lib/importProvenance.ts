@@ -48,7 +48,7 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { ImportStats } from '../types.js'
 import type { ImportPlan, TarEntry } from './importTar.js'
 import { isPlainObject } from './isPlainObject.js'
-import { withoutSidecarMember } from './metaSidecar.js'
+import { withoutSidecarMembers } from './metaSidecar.js'
 import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
 import {
   CLAIM_MEMBERS,
@@ -270,7 +270,7 @@ export async function applyImportProvenance({
       if (!earned.has(resourceId)) {
         resourceMetadata.set(
           resourceId,
-          withoutSidecarMember({ bytes, member: 'createdBy' })
+          withoutSidecarMembers({ bytes, members: ['createdBy'] })
         )
       }
     }

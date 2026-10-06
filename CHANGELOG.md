@@ -1,5 +1,18 @@
 # History
 
+## 0.42.2 - TBD
+
+### Changed
+
+- The filesystem backend records the basename of a Resource's or chunk's
+  representation file in its `.meta.<id>.json` sidecar as `fileName`. Reads,
+  writes, Resource deletes and the replication apply path open that name instead
+  of listing the Collection directory or deriving the name from `contentType`.
+  Export strips `fileName`, and import records the file it writes.
+- A filesystem representation file no sidecar names is not a Resource or chunk.
+  It reads as absent, and a write over it is a create, even on a write-once
+  Collection. A live sidecar that names a missing file answers 500.
+
 ## 0.42.1 - 2026-10-05
 
 ### Changed
