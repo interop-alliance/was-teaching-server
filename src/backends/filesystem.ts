@@ -4040,56 +4040,94 @@ export class FileSystemBackend implements StorageBackend {
 
     // Enumerate the Collection dir directly rather than globbing: glob v13 does
     // not sort, so its order is nondeterministic -- pagination needs a stable
-    // keyset. Keep only the representations a live sidecar names
-    // (`#liveRepresentationEntries`), which drops the `.meta.` /
-    // `.collection.` / policy dot-files and any file a crash left behind.
-    // Every sidecar is read, so `totalItems` and each page count live
-    // Resources only.
+    // keyset. Keep only resource representations (`r.<id>.<type>.<ext>`), which
+    // drops the `.meta.` / `.collection.` / policy dot-files, and only the ids
+    // with a `.meta.` sidecar file beside them, which drops a write that crashed
+    // before its sidecar. Both are decided from the names alone, so the count
+    // reads no sidecar.
     // An absent directory lists nothing (a Collection whose metadata file exists
     // but which holds no Resource yet). Any other failure -- `EACCES`, `EIO`,
     // `EMFILE` -- is a real fault and must surface: swallowing it would serve a
     // 200 with an empty listing for a Collection that provably exists, which a
     // replicating client reads as "every Resource was removed".
     const entries = await this.#readDirEntries(collectionDir)
-    const resources = (
-      await this.#liveRepresentationEntries({ dir: collectionDir, entries })
-    )
-      // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
-      // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
-      // (localeCompare could disagree with the `>` operator and break paging).
-      .sort((left, right) =>
-        compareCodeUnits(left.resourceId, right.resourceId)
-      )
+    const sidecarIds = new Set<string>()
+    for (const entry of entries) {
+      const sidecarId = entry.isFile()
+        ? metaSidecarFileId(entry.name)
+        : undefined
+      if (sidecarId !== undefined) {
+        sidecarIds.add(sidecarId)
+      }
+    }
+    // Each id's representation files, so the page can check which one its
+    // sidecar names.
+    const fileNamesById = new Map<string, Set<string>>()
+    for (const { resourceId, fileName } of this.#representationEntries(
+      entries
+    )) {
+      if (!sidecarIds.has(resourceId)) {
+        continue
+      }
+      const fileNames = fileNamesById.get(resourceId) ?? new Set<string>()
+      fileNames.add(fileName)
+      fileNamesById.set(resourceId, fileNames)
+    }
+    // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
+    // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
+    // (localeCompare could disagree with the `>` operator and break paging).
+    const resourceIds = [...fileNamesById.keys()].sort(compareCodeUnits)
 
     // The full count is free here (we enumerated the whole dir), so keep
     // returning `totalItems` -- the count of the entire Collection, not the page.
-    const totalItems = resources.length
+    // It reads no sidecar, so an id whose delete a crash cut short (its
+    // tombstone beside its old file) still counts here, though no page lists
+    // it.
+    const totalItems = resourceIds.length
 
     // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent, then cut
     // the page out at the cursor's seek point (`resourceId` is the keyset).
     const pageSize = resolvePageSize(limit)
-    const { page: pageEntries, hasMore } = seekPage({
-      items: resources,
+    const { page: pageIds, hasMore } = seekPage({
+      items: resourceIds,
       cursor,
       pageSize,
-      keyOf: ({ resourceId }) => resourceId
+      keyOf: resourceId => resourceId
     })
 
-    // The shared item builder projects each page entry, with the sidecar it
-    // was judged live by, onto the wire shape.
+    // Read `.meta` sidecars ONLY for the ids on this page, and list an id only
+    // when its sidecar is live and names one of its files (so a file a crash
+    // left behind is not listed); the shared item builder projects each one
+    // onto the wire shape.
     const encrypted = suppressesItemNames({ collectionMetadata })
-    const items = pageEntries.map(({ resourceId, contentType, sidecar }) =>
-      collectionListingItem({
-        spaceId,
-        collectionId,
-        resourceId,
-        contentType,
-        custom: sidecar.custom as ResourceMetadataCustom | undefined,
-        epoch: sidecar.epoch,
-        writerId: sidecar.writerId,
-        encrypted
-      })
-    )
+    const items = (
+      await Promise.all(
+        pageIds.map(async resourceId => {
+          const sidecar = await this.#readListedSidecar({
+            dir: collectionDir,
+            resourceId
+          })
+          if (
+            sidecar === undefined ||
+            sidecar.deleted === true ||
+            typeof sidecar.fileName !== 'string' ||
+            fileNamesById.get(resourceId)?.has(sidecar.fileName) !== true
+          ) {
+            return undefined
+          }
+          return collectionListingItem({
+            spaceId,
+            collectionId,
+            resourceId,
+            contentType: parseResourceFileName(sidecar.fileName).contentType,
+            custom: sidecar.custom as ResourceMetadataCustom | undefined,
+            epoch: sidecar.epoch,
+            writerId: sidecar.writerId,
+            encrypted
+          })
+        })
+      )
+    ).filter(item => item !== undefined)
 
     return collectionResourcesList({
       spaceId,
