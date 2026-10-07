@@ -1402,15 +1402,15 @@ export class QuotaExceededError extends ProblemError {
 
 /**
  * 507 — a create was rejected because a default-on count quota is exhausted:
- * too many Spaces for one controller, too many Collections in a Space, or too
- * many live Resources in a Space. Distinct from `QuotaExceededError` (also 507),
- * which caps cumulative bytes rather than item counts; both reuse the spec's
- * `quota-exceeded` problem type (there is no count-specific slug). Only the
- * create path trips this -- overwriting an existing item never does.
+ * too many Spaces for one controller, or too many Collections in a Space.
+ * Distinct from `QuotaExceededError` (also 507), which caps cumulative bytes
+ * rather than item counts; both reuse the spec's `quota-exceeded` problem type
+ * (there is no count-specific slug). Only the create path trips this --
+ * overwriting an existing item never does.
  * @param options {object}
  * @param options.scope {string}   short phrase naming the exhausted count (e.g.
- *   `'Spaces per controller'`, `'Collections per Space'`,
- *   `'Resources per Space'`), used in the detail message
+ *   `'Spaces per controller'`, `'Collections per Space'`), used in the detail
+ *   message
  * @param options.limit {number}   the configured maximum count
  */
 export class CountQuotaExceededError extends ProblemError {

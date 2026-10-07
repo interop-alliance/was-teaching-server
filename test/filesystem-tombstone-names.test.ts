@@ -2,17 +2,14 @@
  * The filesystem backend keeps a Resource tombstone under its own name,
  * `.tombstone.<id>.json`, beside the live sidecar's `.meta.<id>.json` (Vitest,
  * backend level, no server). Liveness is then in the directory listing: the
- * Collection listing's `totalItems` and the Resource count quota count the
- * ids with a live sidecar name and a representation file, opening no sidecar
- * outside the page. A crash between the two steps of a delete or a re-create
- * leaves both names, which every path resolves to the body with the higher
- * `feedPosition`, and the next write or delete of the id clears. The count
- * quota shares one measurement between creates that find its cache entry
- * expired at the same time.
+ * Collection listing's `totalItems` counts the ids with a live sidecar name
+ * and a representation file, opening no sidecar outside the page. A crash
+ * between the two steps of a delete or a re-create leaves both names, which
+ * every path resolves to the body with the higher `feedPosition`, and the
+ * next write or delete of the id clears.
  */
 import { it, describe, beforeEach, afterEach, vi } from 'vitest'
 import assert from 'node:assert'
-import fs from 'node:fs'
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -20,7 +17,6 @@ import path from 'node:path'
 import { fileNameFor, metaSidecarFileName } from '@interop/space-archive'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { QUOTA_USAGE_CACHE_TTL } from '../src/config.default.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { tombstoneSidecarFileName } from '../src/lib/metaSidecar.js'
 import { ResourceNotFoundError } from '../src/errors.js'
@@ -41,10 +37,7 @@ describe('FileSystemBackend: Resource tombstones under their own name', () => {
    */
   async function reopen(): Promise<void> {
     await backend.close()
-    backend = await FileSystemBackend.open({
-      dataDir,
-      maxResourcesPerSpace: 1000
-    })
+    backend = await FileSystemBackend.open({ dataDir })
   }
 
   /**
@@ -172,10 +165,7 @@ describe('FileSystemBackend: Resource tombstones under their own name', () => {
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-tombstone-names-'))
     collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
-    backend = await FileSystemBackend.open({
-      dataDir,
-      maxResourcesPerSpace: 1000
-    })
+    backend = await FileSystemBackend.open({ dataDir })
     await backend.writeSpace({
       spaceId,
       spaceMetadata: { id: spaceId, type: ['Space'], controller }
@@ -262,48 +252,6 @@ describe('FileSystemBackend: Resource tombstones under their own name', () => {
     // The page and the one extra entry that tells a next page follows, plus
     // the one id outside the page that holds both names.
     assert.deepEqual(reads.sort(), [...ids.slice(0, 11), 'doc-15'].sort())
-  })
-
-  it('the count quota on a create reads no sidecar', async () => {
-    for (const resourceId of ['a', 'b', 'c']) {
-      await writeJson(resourceId)
-    }
-    await backend.deleteResource({ spaceId, collectionId, resourceId: 'b' })
-    // A fresh backend holds no cached count, so the create measures.
-    await reopen()
-    const reads = await sidecarReadsDuring(() => writeJson('fresh'))
-    // Only the create's own read of the id it writes.
-    assert.ok(reads.length > 0)
-    assert.ok(reads.every(resourceId => resourceId === 'fresh'))
-  })
-
-  it('two creates racing an expired count cache entry run one measurement', async () => {
-    await writeJson('seed')
-    const spaceDir = path.join(dataDir, 'spaces', spaceId)
-    // Expire the entry the seed's create cached.
-    const now = Date.now()
-    vi.spyOn(Date, 'now').mockReturnValue(now + QUOTA_USAGE_CACHE_TTL + 1)
-    // The measurement enumerates the Space dir; hold its first listing long
-    // enough for the second create to arrive while it runs.
-    const listDir = fs.promises.readdir.bind(fs.promises)
-    let measurements = 0
-    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (
-      dir: fs.PathLike,
-      options?: unknown
-    ) => {
-      if (dir === spaceDir) {
-        measurements++
-        if (measurements === 1) {
-          await new Promise(resolve => setTimeout(resolve, 50))
-        }
-      }
-      return listDir(dir, options as any)
-    }) as typeof fs.promises.readdir)
-    await Promise.all([writeJson('first'), writeJson('second')])
-    vi.restoreAllMocks()
-    assert.equal(measurements, 1)
-    const listing = await backend.listCollectionItems({ spaceId, collectionId })
-    assert.equal(listing.totalItems, 3)
   })
 
   it('a delete cut short resolves to its tombstone, and the next write clears the stale sidecar', async () => {
@@ -467,11 +415,5 @@ describe('FileSystemBackend: Resource tombstones under their own name', () => {
       ['live']
     )
     assert.equal(listing.totalItems, 1)
-    // The count quota agrees: with room for exactly two, one more fits and a
-    // second does not.
-    await backend.close()
-    backend = await FileSystemBackend.open({ dataDir, maxResourcesPerSpace: 2 })
-    await writeJson('another')
-    await assert.rejects(writeJson('one-too-many'))
   })
 })

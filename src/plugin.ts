@@ -141,14 +141,6 @@ export interface FastifyWasOptions {
    */
   maxCollectionsPerSpace?: number
   /**
-   * Max live Resources a single Space may hold across all its Collections (spec
-   * "Quotas", a default-on count quota); applied only to the default backend
-   * (an injected `backend` carries its own). `undefined` applies the backend's
-   * default ({@link DEFAULT_MAX_RESOURCES_PER_SPACE}); `Infinity` (an explicit
-   * `unlimited`) disables the cap.
-   */
-  maxResourcesPerSpace?: number
-  /**
    * The provider-adapter registry the resolver uses to build a Collection's
    * selected external backend; defaults to an empty map (no external backend
    * is operable).
@@ -278,7 +270,6 @@ async function wasPlugin(
     maxUploadBytes,
     maxSpacesPerController,
     maxCollectionsPerSpace,
-    maxResourcesPerSpace,
     providers,
     enabledBackendProviders,
     kmsRecordKek,
@@ -344,7 +335,6 @@ async function wasPlugin(
         maxUploadBytes,
         maxSpacesPerController,
         maxCollectionsPerSpace,
-        maxResourcesPerSpace,
         originId,
         ...(replicationClockBoundMs !== undefined && {
           clockBoundMs: replicationClockBoundMs

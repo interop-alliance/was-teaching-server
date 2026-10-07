@@ -93,8 +93,8 @@ export interface ContractOptions {
   name: string
   /**
    * Builds a fresh, empty backend. `capacityBytes` / `maxUploadBytes` configure
-   * the byte quotas; `maxSpacesPerController` / `maxCollectionsPerSpace` /
-   * `maxResourcesPerSpace` configure the count quotas for the count-quota block.
+   * the byte quotas; `maxSpacesPerController` / `maxCollectionsPerSpace`
+   * configure the count quotas for the count-quota block.
    * `physicalClock` freezes or steps the clock the backend's write stamps
    * read.
    */
@@ -104,7 +104,6 @@ export interface ContractOptions {
     maxUploadBytes?: number
     maxSpacesPerController?: number
     maxCollectionsPerSpace?: number
-    maxResourcesPerSpace?: number
   }): Promise<BackendHarness>
   /**
    * True when the backend enforces the per-Space quota as a HARD limit under
@@ -6235,66 +6234,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         }
       })
 
-      it('rejects a Resource create beyond maxResourcesPerSpace; overwrite succeeds and a delete frees a slot', async () => {
-        const harness = await makeBackend({ maxResourcesPerSpace: 2 })
-        const writeResource = (resourceId: string) =>
-          harness.backend.writeResource({
-            spaceId: 'cq-res',
-            collectionId: 'col',
-            resourceId,
-            input: jsonInput({ id: resourceId })
-          })
-        try {
-          await provisionSpace(harness.backend, 'cq-res')
-          await writeResource('r1')
-          await writeResource('r2')
-          let error: unknown
-          try {
-            await writeResource('r3')
-          } catch (err) {
-            error = err
-          }
-          assertCountQuota(error)
-          // Overwriting an existing live Resource at the limit still succeeds.
-          await writeResource('r1')
-          // Deleting one frees a slot for a new create.
-          await harness.backend.deleteResource({
-            spaceId: 'cq-res',
-            collectionId: 'col',
-            resourceId: 'r1'
-          })
-          await writeResource('r3')
-          // Back at the limit: a further create is refused again (a cached
-          // count must have advanced with the create above).
-          error = undefined
-          try {
-            await writeResource('r4')
-          } catch (err) {
-            error = err
-          }
-          assertCountQuota(error)
-          // Deleting the whole Collection frees every slot at once: a
-          // re-created Collection admits a full complement again, then refuses
-          // the next create.
-          await harness.backend.deleteCollection({
-            spaceId: 'cq-res',
-            collectionId: 'col'
-          })
-          await provisionSpace(harness.backend, 'cq-res')
-          await writeResource('r5')
-          await writeResource('r6')
-          error = undefined
-          try {
-            await writeResource('r7')
-          } catch (err) {
-            error = err
-          }
-          assertCountQuota(error)
-        } finally {
-          await harness.cleanup()
-        }
-      })
-
       it('rejects an import that would create more Collections than maxCollectionsPerSpace allows', async () => {
         const source = await makeBackend()
         const target = await makeBackend({ maxCollectionsPerSpace: 2 })
@@ -6339,77 +6278,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         }
       })
 
-      it('gives a failed create its count-quota reservation back', async () => {
-        const harness = await makeBackend({ maxResourcesPerSpace: 2 })
-        const write = (resourceId: string, input: ResourceInput) =>
-          harness.backend.writeResource({
-            spaceId: 'cq-rollback',
-            collectionId: 'col',
-            resourceId,
-            input
-          })
-        try {
-          await provisionSpace(harness.backend, 'cq-rollback')
-          await write('r1', jsonInput({ id: 'r1' }))
-          // Passes the count pre-flight (1 of 2) and reserves the second
-          // slot, then the body fails mid-stream.
-          await assert.rejects(
-            write('aborted', abortedBinaryInput(64)),
-            /client went away/
-          )
-          // Nothing landed, so the slot is still free; a reservation that
-          // outlived the failure would refuse this create.
-          await write('r2', jsonInput({ id: 'r2' }))
-          // And now the Space really is full.
-          let error: unknown
-          try {
-            await write('r3', jsonInput({ id: 'r3' }))
-          } catch (err) {
-            error = err
-          }
-          assertCountQuota(error)
-        } finally {
-          await harness.cleanup()
-        }
-      })
-
-      it('rejects an import that would create more Resources than maxResourcesPerSpace allows', async () => {
-        const source = await makeBackend()
-        const target = await makeBackend({ maxResourcesPerSpace: 2 })
-        try {
-          const spaceId = 'cq-imp-res'
-          await provisionSpace(source.backend, spaceId)
-          for (const resourceId of ['r1', 'r2', 'r3']) {
-            await source.backend.writeResource({
-              spaceId,
-              collectionId: 'col',
-              resourceId,
-              input: jsonInput({ id: resourceId })
-            })
-          }
-          const tarStream = await source.backend.exportSpace({ spaceId })
-          // Target starts with zero Resources; the third created Resource
-          // exceeds the cap of 2.
-          await provisionSpace(target.backend, spaceId)
-          let error: unknown
-          try {
-            await importArchive({ backend: target.backend, spaceId, tarStream })
-          } catch (err) {
-            error = err
-          }
-          assertCountQuota(error)
-        } finally {
-          await source.cleanup()
-          await target.cleanup()
-        }
-      })
-
       it('allows an import that only re-imports existing (skipped) items at the limit', async () => {
         const source = await makeBackend()
-        const target = await makeBackend({
-          maxCollectionsPerSpace: 1,
-          maxResourcesPerSpace: 2
-        })
+        const target = await makeBackend({ maxCollectionsPerSpace: 1 })
         try {
           const spaceId = 'cq-imp-skip'
           await provisionSpace(source.backend, spaceId)
@@ -6422,9 +6293,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             })
           }
           const tarStream = await source.backend.exportSpace({ spaceId })
-          // Target already holds the identical Space exactly at both caps (1
-          // Collection, 2 live Resources); re-importing the same archive skips
-          // every item, so no create is attempted and nothing is rejected.
+          // Target already holds the identical Space exactly at its Collection
+          // cap (1 Collection); re-importing the same archive skips every item,
+          // so no create is attempted and nothing is rejected.
           await provisionSpace(target.backend, spaceId)
           for (const resourceId of ['r1', 'r2']) {
             await target.backend.writeResource({
@@ -6449,7 +6320,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         }
       })
 
-      it('the default-on limits (100/100/10000) do not trip normal writes', async () => {
+      it('the default-on limits (100/100) do not trip normal writes', async () => {
         // A backend built with no count options still has the defaults active;
         // provisioning and a handful of writes must not be rejected.
         const harness = await makeBackend()

@@ -33,7 +33,6 @@ import {
   DEFAULT_MAX_UPLOAD_BYTES,
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
-  DEFAULT_MAX_RESOURCES_PER_SPACE,
   QUOTA_USAGE_CACHE_TTL,
   normalizeCountLimit,
   normalizeCapacityBytes
@@ -268,8 +267,8 @@ const { Store: MetadataJsonStore } = jsonfs
 type SidecarNameRead = { sidecar?: MetaSidecar; damage?: SyntaxError }
 
 /**
- * One entry of a per-Space quota cache (`#usageCache`, `#liveCountCache`):
- * the measured figure and when it expires.
+ * One entry of the per-Space quota cache (`#usageCache`): the measured
+ * figure and when it expires.
  */
 type QuotaSnapshot = { used: number; expiresAt: number }
 
@@ -438,7 +437,6 @@ export interface FileSystemBackendOptions {
   maxUploadBytes?: number
   maxSpacesPerController?: number
   maxCollectionsPerSpace?: number
-  maxResourcesPerSpace?: number
 }
 
 /**
@@ -497,8 +495,8 @@ export class FileSystemBackend implements StorageBackend {
    * Root of the Space zcap revocation tree (`data/space-revocations/<spaceId>/`),
    * a sibling of `spacesDir` rather than a subdirectory of each Space. Space
    * revocations deliberately live OUTSIDE the Space's own directory because
-   * `listCollections` and `#countLiveResources` treat every subdirectory of a
-   * Space dir as a Collection -- a `revocations/` dir nested inside a Space would
+   * `listCollections` treats every subdirectory of a Space dir as a
+   * Collection -- a `revocations/` dir nested inside a Space would
    * surface as a phantom Collection (and could collide with a real one), so it
    * gets its own root.
    */
@@ -544,14 +542,6 @@ export class FileSystemBackend implements StorageBackend {
    * trips it. Normalized like {@link maxSpacesPerController}.
    */
   maxCollectionsPerSpace?: number
-  /**
-   * Max live Resources a single Space may hold across all its Collections (spec
-   * "Quotas", a default-on count quota). `undefined` means no cap. Enforced on
-   * the Resource create path (`writeResource`); a tombstone does not count, and
-   * a write over an existing live Resource never trips it. Normalized like
-   * {@link maxSpacesPerController}.
-   */
-  maxResourcesPerSpace?: number
 
   /**
    * Per-Resource write serialization (the `conditional-writes` feature). A
@@ -702,28 +692,11 @@ export class FileSystemBackend implements StorageBackend {
   #usageCache = new Map<string, QuotaSnapshot>()
 
   /**
-   * Per-Space live Resource counts for the create-path count quota, so
-   * `#assertResourceHeadroom` does not enumerate every Collection dir of the
-   * Space (`#countLiveResources`) on every Resource create. Same lifecycle as
-   * `#usageCache`: entries live `QUOTA_USAGE_CACHE_TTL` ms, each accepted
-   * create adds one to the cached count, and deletes (and an import, which
-   * writes Resources directly) invalidate the Space's entry. Single-instance
-   * only.
-   */
-  #liveCountCache = new Map<string, QuotaSnapshot>()
-
-  /**
    * The measurement running for each Space's `#usageCache` entry, so callers
    * that find the entry absent or expired at the same time share one tree
    * walk (see `#reserveHeadroom`).
    */
   #usageMeasurements = new Map<string, Promise<QuotaSnapshot>>()
-
-  /**
-   * The measurement running for each Space's `#liveCountCache` entry, the
-   * count counterpart of `#usageMeasurements`.
-   */
-  #liveCountMeasurements = new Map<string, Promise<QuotaSnapshot>>()
 
   /**
    * The sidecars `readMetaSidecar` resolved from both names, a live sidecar
@@ -735,20 +708,17 @@ export class FileSystemBackend implements StorageBackend {
   #bothNamesRead = new WeakSet<MetaSidecar>()
 
   /**
-   * Drops a Space's cached quota figures (`#usageCache`, `#liveCountCache`)
-   * after bytes and slots were freed, so the next write re-measures. A
-   * measurement already running is forgotten too: it may have read the tree
-   * before the change, so it no longer fills the cache, and the next write
-   * starts a fresh one.
+   * Drops a Space's cached usage total (`#usageCache`) after bytes were
+   * freed, so the next write re-measures. A measurement already running is
+   * forgotten too: it may have read the tree before the change, so it no
+   * longer fills the cache, and the next write starts a fresh one.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {void}
    */
   #dropQuotaCaches({ spaceId }: { spaceId: string }): void {
     this.#usageCache.delete(spaceId)
-    this.#liveCountCache.delete(spaceId)
     this.#usageMeasurements.delete(spaceId)
-    this.#liveCountMeasurements.delete(spaceId)
   }
 
   /**
@@ -807,7 +777,6 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.maxUploadBytes] {number}
    * @param [options.maxSpacesPerController] {number}
    * @param [options.maxCollectionsPerSpace] {number}
-   * @param [options.maxResourcesPerSpace] {number}
    * @returns {Promise<FileSystemBackend>}   an instance of the class `open()`
    *   was called on, so a subclass gets its own type back
    */
@@ -832,8 +801,7 @@ export class FileSystemBackend implements StorageBackend {
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
-    maxCollectionsPerSpace,
-    maxResourcesPerSpace
+    maxCollectionsPerSpace
   }: FileSystemBackendOptions) {
     this.dataDir = dataDir
     this.spacesDir = path.join(dataDir, 'spaces')
@@ -864,10 +832,6 @@ export class FileSystemBackend implements StorageBackend {
     this.maxCollectionsPerSpace = normalizeCountLimit(
       maxCollectionsPerSpace,
       DEFAULT_MAX_COLLECTIONS_PER_SPACE
-    )
-    this.maxResourcesPerSpace = normalizeCountLimit(
-      maxResourcesPerSpace,
-      DEFAULT_MAX_RESOURCES_PER_SPACE
     )
   }
 
@@ -1215,58 +1179,18 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Pre-flight Resource count quota for one create (`maxResourcesPerSpace`,
-   * `CountQuotaExceededError`): the count counterpart of
-   * `#assertSpaceHeadroom`. The `#countLiveResources` enumeration is cached
-   * per Space for `QUOTA_USAGE_CACHE_TTL` ms (see `#liveCountCache`); between
-   * re-measurements each accepted create adds one to the cached count, so a
-   * burst of creates costs one enumeration, not one per create. Soft under
-   * concurrency, like the byte quota.
-   *
-   * A create that fails to commit calls the returned `release` to give its
-   * reservation back; otherwise the phantom Resource would keep refusing
-   * valid creates until the snapshot expires.
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.maxResourcesPerSpace {number}   the configured per-Space cap
-   * @returns {Promise<() => void>}   undoes this create's reservation
-   */
-  async #assertResourceHeadroom({
-    spaceId,
-    maxResourcesPerSpace
-  }: {
-    spaceId: string
-    maxResourcesPerSpace: number
-  }): Promise<() => void> {
-    const { release } = await this.#reserveHeadroom({
-      cache: this.#liveCountCache,
-      measurements: this.#liveCountMeasurements,
-      spaceId,
-      measure: () => this.#countLiveResources({ spaceId }),
-      limit: maxResourcesPerSpace,
-      incoming: 1,
-      makeError: () =>
-        new CountQuotaExceededError({
-          scope: 'Resources per Space',
-          limit: maxResourcesPerSpace
-        })
-    })
-    return release
-  }
-
-  /**
-   * The shared TTL-cached reservation behind `#assertSpaceHeadroom` (bytes) and
-   * `#assertResourceHeadroom` (Resource count). Re-measures the Space through
-   * `measure` when its cache entry is absent or expired, refuses when the
-   * measured usage already meets `limit` or the `incoming` amount would exceed
-   * it, and otherwise adds `incoming` to the cached total so reservations within
-   * the TTL accumulate rather than each re-admitting against the same snapshot.
+   * The TTL-cached reservation behind `#assertSpaceHeadroom`. Re-measures the
+   * Space through `measure` when its cache entry is absent or expired, refuses
+   * when the measured usage already meets `limit` or the `incoming` amount
+   * would exceed it, and otherwise adds `incoming` to the cached total so
+   * reservations within the TTL accumulate rather than each re-admitting
+   * against the same snapshot.
    *
    * One measurement runs per Space at a time: a caller that finds the entry
    * absent or expired while another caller's measurement is running awaits
    * that one (`measurements`) rather than starting its own, so a burst of
-   * writes after the entry expires costs one tree walk or one enumeration.
-   * Every caller then reserves against the same entry.
+   * writes after the entry expires costs one tree walk. Every caller then
+   * reserves against the same entry.
    * @param options {object}
    * @param options.cache {Map}   the per-Space snapshot cache to read and update
    * @param options.measurements {Map}   the measurement running for each
@@ -2383,56 +2307,12 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Counts the live Resources across every Collection of a Space, for the
-   * Resource count quota (`maxResourcesPerSpace`). Enumerates each Collection
-   * dir and counts the ids that have both a live sidecar name and a
-   * representation file in the listing (`#countLiveListed`), with no sidecar
-   * read unless an id holds both a live sidecar and a tombstone. A
-   * tombstone, a file with no sidecar, and a file beside a tombstone do not
-   * count. An absent Space dir counts zero
-   * (not yet provisioned). Soft under concurrency, like the byte quota. The
-   * create path reads it through `#liveCountCache` (see
-   * `#assertResourceHeadroom`); import measures directly.
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @returns {Promise<number>}   the number of live Resources
-   */
-  async #countLiveResources({ spaceId }: { spaceId: string }): Promise<number> {
-    // A tombstoned Collection holds no live Resource, even while an
-    // interrupted delete has left its members on disk.
-    let collectionIds: string[]
-    try {
-      collectionIds = await this.#liveCollectionIds({ spaceId })
-    } catch (err) {
-      // `#liveCollectionIds` counts a Collection whose Metadata file does not
-      // parse as live, so only a filesystem fault reaches here.
-      throw new StorageError({ cause: err as Error })
-    }
-    let count = 0
-    for (const collectionId of collectionIds) {
-      const collectionDir = this.#collectionDir({ spaceId, collectionId })
-      // A Collection deleted between the Space listing and this read counts
-      // nothing, rather than failing an unrelated write in another Collection
-      // with a raw `ENOENT` (which `handleError` would render as a 500).
-      // Ids are counted, so a second representation (mid content-type swap,
-      // or left by a crash) is not counted twice.
-      const entries = await this.#readDirEntries(collectionDir)
-      count += await this.#countLiveListed({
-        dir: collectionDir,
-        entries,
-        representations: this.#representationEntries(entries)
-      })
-    }
-    return count
-  }
-
-  /**
    * Every Collection dir in the Space, in code-unit ascending order of id --
    * the keyset order the paginated `listCollections` seeks within -- each
    * with its tombstone when the Collection is one. The unpaginated
    * full-enumeration path: `listCollections` builds one page from it, while
-   * the internal full-Space callers (import count-quota seeding, create
-   * count-quota, the Resource count) read it through `#liveCollectionIds`.
+   * the internal full-Space callers (import count-quota seeding, the create
+   * count-quota) read it through `#liveCollectionIds`.
    * A live Collection carries its Metadata object, so the listing page need
    * not read it again. A dir without a Metadata file counts as live, as it
    * always has, and carries neither. A Metadata file that does not parse
@@ -2913,12 +2793,7 @@ export class FileSystemBackend implements StorageBackend {
     // returns the summed incoming bytes for the third invariant, the cumulative
     // quota (507), which stays here because the headroom check is this
     // backend's own (a `du` snapshot).
-    const {
-      capacityBytes,
-      maxUploadBytes,
-      maxCollectionsPerSpace,
-      maxResourcesPerSpace
-    } = this
+    const { capacityBytes, maxUploadBytes, maxCollectionsPerSpace } = this
     const incomingBytes = await assertImportBodiesFit({
       collections,
       existingCollection: collectionId =>
@@ -3015,24 +2890,15 @@ export class FileSystemBackend implements StorageBackend {
             }
           }
 
-          // Count quotas: measure the Space's existing live Collections/Resources
-          // ONCE here, then track running totals as the apply loop creates items, so
-          // an import cannot push the Space past `maxCollectionsPerSpace` /
-          // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
-          // existing id is skipped and does not -- mirroring the per-create
-          // write-path guards without re-enumerating the Space per item.
-          // The import writes Resource files directly (not via `writeResource`), so
-          // it bypasses `#liveCountCache`: measure fresh here and drop the Space's
-          // entry, now and again once the apply loop has run, so the next create
-          // re-measures rather than trusting a count the import moved.
-          this.#liveCountCache.delete(spaceId)
+          // Count quota: measure the Space's existing live Collections ONCE
+          // here, then track a running total as the apply loop creates
+          // Collections, so an import cannot push the Space past
+          // `maxCollectionsPerSpace`. Only a brand-new Collection counts -- a
+          // re-imported existing id does not -- mirroring the per-create
+          // write-path guard without re-enumerating the Space per item.
           const collectionIds = new Set(
             await this.#liveCollectionIds({ spaceId })
           )
-          let liveResourceCount =
-            maxResourcesPerSpace !== undefined
-              ? await this.#countLiveResources({ spaceId })
-              : 0
 
           for (const {
             collectionId,
@@ -3179,17 +3045,6 @@ export class FileSystemBackend implements StorageBackend {
                       stats.policiesSkipped++
                     }
                     return false
-                  }
-
-                  // A new live Resource counts against the per-Space cap.
-                  if (maxResourcesPerSpace !== undefined) {
-                    if (liveResourceCount >= maxResourcesPerSpace) {
-                      throw new CountQuotaExceededError({
-                        scope: 'Resources per Space',
-                        limit: maxResourcesPerSpace
-                      })
-                    }
-                    liveResourceCount++
                   }
 
                   await atomicWriteFile({
@@ -3467,8 +3322,6 @@ export class FileSystemBackend implements StorageBackend {
           // `insertRevocation` once this write has landed, since a chain may
           // carry a link signed by a `did:webvh` whose log the archive
           // restores (`lib/importRevocations.ts`).
-
-          this.#liveCountCache.delete(spaceId)
           return stats
         } finally {
           // Book exactly what landed: the apply loop skips bodies the destination
@@ -4734,31 +4587,8 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
-    // Count quota (create path only): a new live Resource must not push its
-    // Space past `maxResourcesPerSpace`. A write over an existing live
-    // representation is an update (never trips it); a write over a tombstone
-    // is a create and does count. Soft under concurrency.
-    let releaseCountReservation: (() => void) | undefined
-    if (this.maxResourcesPerSpace !== undefined && !isLive) {
-      releaseCountReservation = await this.#assertResourceHeadroom({
-        spaceId,
-        maxResourcesPerSpace: this.maxResourcesPerSpace
-      })
-    }
-
     if (!writeOnce) {
-      try {
-        await this.#writeRepresentationBytes({ spaceId, filePath, input })
-      } catch (err) {
-        // Nothing landed under the Resource's name, so the create did not
-        // happen: give its count reservation back rather than letting a phantom
-        // Resource refuse valid creates until the cached count expires. The
-        // steps below (sidecar, prune) run after the representation is durably
-        // in place, so a failure there leaves a live Resource the count should
-        // keep.
-        releaseCountReservation?.()
-        throw err
-      }
+      await this.#writeRepresentationBytes({ spaceId, filePath, input })
     }
 
     // The sidecar is the write's commit point: it is written after the new
@@ -9042,20 +8872,7 @@ export class FileSystemBackend implements StorageBackend {
           fileNameFor({ resourceId, contentType: input.contentType })
         )
         this.#assertContained(filePath)
-        // The Resource count quota binds a create, as on a content write.
-        let releaseCountReservation: (() => void) | undefined
-        if (this.maxResourcesPerSpace !== undefined && !livePath) {
-          releaseCountReservation = await this.#assertResourceHeadroom({
-            spaceId,
-            maxResourcesPerSpace: this.maxResourcesPerSpace
-          })
-        }
-        try {
-          await this.#writeRepresentationBytes({ spaceId, filePath, input })
-        } catch (err) {
-          releaseCountReservation?.()
-          throw err
-        }
+        await this.#writeRepresentationBytes({ spaceId, filePath, input })
         // The sidecar is written before any prior representation is pruned,
         // as on a content write. The `/meta` record and `custom` are kept as
         // held. A tombstone has neither.

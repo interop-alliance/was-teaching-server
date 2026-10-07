@@ -410,9 +410,7 @@ export class ChunkRequest {
    * the highest index plus one only when no index is missing. Requires the
    * parent Resource to exist (404 otherwise). Authorization is
    * capability-or-policy against the `chunks/` container path, resolved at
-   * the Resource's policy level. Chunks count toward the Space's byte quota
-   * but not toward the Resource-count quota (`maxResourcesPerSpace`), which
-   * counts live Resources only.
+   * the Resource's policy level. Chunks count toward the Space's byte quota.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}

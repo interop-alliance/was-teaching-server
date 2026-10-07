@@ -160,16 +160,16 @@ tombstone.
 
 ### Counting live Resources
 
-The Collection listing's `totalItems` and the Resource count quota count the ids
-that have both a live sidecar name and a representation file in the directory
-listing. They open no sidecar, except the page the listing serves. An id with
-both names is resolved by reading those two sidecars, and only those. A
-tombstone, a file beside a tombstone, and a file with no sidecar do not count.
+The Collection listing's `totalItems` counts the ids that have both a live
+sidecar name and a representation file in the directory listing. It opens no
+sidecar, except the page the listing serves. An id with both names is resolved
+by reading those two sidecars, and only those. A tombstone, a file beside a
+tombstone, and a file with no sidecar do not count.
 
-The count quota caches its figure per Space for a short time and re-measures
-when the entry expires. A create that finds the entry expired while another
-create's measurement is running awaits that measurement rather than starting its
-own. The byte quota shares its `du` walk the same way.
+The byte quota caches its `du` figure per Space for a short time and re-measures
+when the entry expires. A write that finds the entry expired while another
+write's measurement is running awaits that measurement rather than starting its
+own.
 
 ### Reads
 
@@ -231,9 +231,8 @@ A sidecar that does not parse leaves its Resource out of every path that lists a
 directory and reads the sidecars it lists, with a `warn` line. That covers the
 listing page, the chunk listing, export, the changes feed, the equality and
 blinded-index queries, the unique-claim scans a write runs, and the check a new
-unique index declaration runs. The name-based counts open no sidecar, so a
-damaged sidecar outside the listing page still counts in `totalItems` and in the
-Resource count quota.
+unique index declaration runs. The name-based count opens no sidecar, so a
+damaged sidecar outside the listing page still counts in `totalItems`.
 
 Sidecar writes are atomic (`atomicWriteFile`), so such a sidecar is disk damage
 or a hand edit, not a torn write. The damaged Resource's own reads and writes

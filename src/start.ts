@@ -117,7 +117,6 @@ export async function startServer(): Promise<void> {
       maxUploadBytes: config.maxUploadBytes,
       maxSpacesPerController: config.maxSpacesPerController,
       maxCollectionsPerSpace: config.maxCollectionsPerSpace,
-      maxResourcesPerSpace: config.maxResourcesPerSpace,
       originId: config.originId
     }
     fastify = createApp({

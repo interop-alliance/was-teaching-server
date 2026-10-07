@@ -36,7 +36,6 @@ async function makePostgresHarness(
     maxUploadBytes?: number
     maxSpacesPerController?: number
     maxCollectionsPerSpace?: number
-    maxResourcesPerSpace?: number
   } = {}
 ): Promise<BackendHarness & { schema: string }> {
   const schema = `was_test_${crypto.randomBytes(8).toString('hex')}`

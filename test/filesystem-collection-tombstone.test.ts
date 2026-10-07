@@ -40,12 +40,11 @@ describe('FileSystemBackend Collection tombstones', () => {
 
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-tombstone-'))
-    // One Collection and one Resource fill the count quotas, so a torn
-    // cascade still counted would refuse the next create.
+    // One Collection fills the Collection count quota, so a torn cascade
+    // still counted would refuse the next create.
     backend = await FileSystemBackend.open({
       dataDir,
-      maxCollectionsPerSpace: 1,
-      maxResourcesPerSpace: 1
+      maxCollectionsPerSpace: 1
     })
     collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
     await backend.writeSpace({
@@ -138,8 +137,8 @@ describe('FileSystemBackend Collection tombstones', () => {
       includeCollections: true
     })
     assert.deepEqual(usage.usageByCollection, [])
-    // Not counted by either count quota: a new Collection and a Resource in
-    // it fit under limits of one.
+    // Not counted by the Collection count quota: a new Collection fits under
+    // a limit of one, and a Resource write in it goes through.
     await backend.writeCollection({
       spaceId,
       collectionId: 'other',
@@ -468,16 +467,15 @@ describe('FileSystemBackend Collection tombstones', () => {
     await backend.close()
     backend = await FileSystemBackend.open({
       dataDir,
-      maxCollectionsPerSpace: 3,
-      maxResourcesPerSpace: 5
+      maxCollectionsPerSpace: 3
     })
     await writeFile(
       path.join(collectionDir, `.collection.${collectionId}.json`),
       '{ not json'
     )
 
-    // The count quotas still count it as a live Collection, so a create and
-    // a Resource write elsewhere in the Space go through.
+    // The Collection count quota still counts it as a live Collection, so a
+    // create and a Resource write elsewhere in the Space go through.
     await backend.writeCollection({
       spaceId,
       collectionId: 'other',

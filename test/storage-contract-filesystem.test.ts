@@ -12,8 +12,7 @@ describeStorageBackendContract({
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
-    maxCollectionsPerSpace,
-    maxResourcesPerSpace
+    maxCollectionsPerSpace
   } = {}) {
     const backend = await openTempBackend({
       prefix: 'was-contract-fs-',
@@ -21,8 +20,7 @@ describeStorageBackendContract({
       capacityBytes,
       maxUploadBytes,
       maxSpacesPerController,
-      maxCollectionsPerSpace,
-      maxResourcesPerSpace
+      maxCollectionsPerSpace
     })
     return {
       backend,

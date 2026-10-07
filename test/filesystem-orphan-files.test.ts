@@ -4,8 +4,8 @@
  * write torn before its sidecar, a delete torn after its tombstone, or a
  * content-type change torn before it removed the prior file. Reads already
  * ignore such a file, and so must every path that lists a directory: the
- * Collection listing, the Resource count quota, the changes feed, export,
- * the equality query, and the chunk listing. Delete Chunk finds a chunk the
+ * Collection listing, the changes feed, export, the equality query, and the
+ * chunk listing. Delete Chunk finds a chunk the
  * same way. A Resource whose sidecar does not parse is left out of every
  * one of these paths, the unique-claim scan included.
  */
@@ -101,13 +101,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
 
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-orphan-'))
-    // The Resource count is exact, so it counts two ids after the setup: the
-    // two live Resources, and not the tombstone beside its orphan. Room for
-    // those, plus one more.
-    backend = await FileSystemBackend.open({
-      dataDir,
-      maxResourcesPerSpace: 3
-    })
+    backend = await FileSystemBackend.open({ dataDir })
     collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
     await backend.writeSpace({
       spaceId,
@@ -137,12 +131,9 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     // A write torn before its sidecar.
     await plantOrphan({ dir: collectionDir, resourceId: 'torn' })
 
-    // Reopen, so no cached quota figure predates the orphans.
+    // Reopen, so nothing the backend cached predates the orphans.
     await backend.close()
-    backend = await FileSystemBackend.open({
-      dataDir,
-      maxResourcesPerSpace: 3
-    })
+    backend = await FileSystemBackend.open({ dataDir })
   })
 
   afterEach(async () => {
@@ -194,13 +185,6 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     )
     assert.equal(second.next, undefined)
     assert.equal(second.totalItems, 2)
-  })
-
-  it('the Resource count quota counts live Resources only', async () => {
-    // Two live Resources against a quota of three: one more fits. Counting
-    // the tombstone beside its orphan, or the torn write's file, would refuse
-    // it.
-    await writeJson({ resourceId: 'new', data: { tag: 'y' } })
   })
 
   it('Delete Resource removes the file its sidecar named and the file a crash left beside it', async () => {

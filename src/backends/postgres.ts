@@ -166,7 +166,6 @@ import {
   DEFAULT_MAX_UPLOAD_BYTES,
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
-  DEFAULT_MAX_RESOURCES_PER_SPACE,
   normalizeCountLimit,
   normalizeCapacityBytes
 } from '../config.default.js'
@@ -728,7 +727,6 @@ export interface PostgresBackendOptions {
   maxUploadBytes?: number
   maxSpacesPerController?: number
   maxCollectionsPerSpace?: number
-  maxResourcesPerSpace?: number
   originId?: string
   physicalClock?: () => number
   clockBoundMs?: number
@@ -767,13 +765,6 @@ export class PostgresBackend implements StorageBackend {
    * {@link maxSpacesPerController}.
    */
   maxCollectionsPerSpace?: number
-  /**
-   * Max live Resources a single Space may hold across all its Collections (spec
-   * "Quotas", a default-on count quota). `undefined` means no cap. Enforced on
-   * the Resource create path (a tombstone does not count). Normalized like
-   * {@link maxSpacesPerController}.
-   */
-  maxResourcesPerSpace?: number
 
   #pool: pg.Pool
   /**
@@ -837,8 +828,6 @@ export class PostgresBackend implements StorageBackend {
    *   `Infinity` means no cap
    * @param [options.maxCollectionsPerSpace] {number}   max Collections per
    *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
-   * @param [options.maxResourcesPerSpace] {number}   max live Resources per
-   *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
    * @param [options.originId] {string}   the configured origin id
    *   (`WAS_ORIGIN_ID`); refused when it differs from the stored id, and
    *   written when the store carries none
@@ -880,8 +869,7 @@ export class PostgresBackend implements StorageBackend {
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
-    maxCollectionsPerSpace,
-    maxResourcesPerSpace
+    maxCollectionsPerSpace
   }: PostgresBackendOptions) {
     if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`Invalid Postgres schema name: "${schema}".`)
@@ -910,10 +898,6 @@ export class PostgresBackend implements StorageBackend {
     this.maxCollectionsPerSpace = normalizeCountLimit(
       maxCollectionsPerSpace,
       DEFAULT_MAX_COLLECTIONS_PER_SPACE
-    )
-    this.maxResourcesPerSpace = normalizeCountLimit(
-      maxResourcesPerSpace,
-      DEFAULT_MAX_RESOURCES_PER_SPACE
     )
     const poolOptions = {
       connectionString,
@@ -2810,24 +2794,6 @@ export class PostgresBackend implements StorageBackend {
           ifMatch,
           ifNoneMatch
         })
-      }
-
-      // Count quota (create path only): a new live Resource -- including one
-      // written over a tombstone (`exists` is false) -- must not push the Space
-      // past `maxResourcesPerSpace` (spec "Quotas"). An overwrite of a live
-      // Resource never trips it. Counted inside the write transaction.
-      if (this.maxResourcesPerSpace !== undefined && !exists) {
-        const { rows: countRows } = await client.query<{ count: number }>(
-          `SELECT COUNT(*)::int AS count FROM resources
-            WHERE space_id = $1 AND NOT deleted`,
-          [spaceId]
-        )
-        if (countRows[0]!.count >= this.maxResourcesPerSpace) {
-          throw new CountQuotaExceededError({
-            scope: 'Resources per Space',
-            limit: this.maxResourcesPerSpace
-          })
-        }
       }
 
       // The row keeps its generation for its whole life -- a soft delete keeps
@@ -5501,26 +5467,6 @@ export class PostgresBackend implements StorageBackend {
         return stopped
       }
 
-      // Count quota, as on a request-layer create: a live Resource where
-      // none was, a tombstone included.
-      if (
-        content !== null &&
-        !live &&
-        this.maxResourcesPerSpace !== undefined
-      ) {
-        const { rows: countRows } = await client.query<{ count: number }>(
-          `SELECT COUNT(*)::int AS count FROM resources
-            WHERE space_id = $1 AND NOT deleted`,
-          [spaceId]
-        )
-        if (countRows[0]!.count >= this.maxResourcesPerSpace) {
-          throw new CountQuotaExceededError({
-            scope: 'Resources per Space',
-            limit: this.maxResourcesPerSpace
-          })
-        }
-      }
-
       // A tombstone takes the chunks with it, as Delete Resource does. A
       // soft delete is an UPDATE, so the foreign key's cascade does not fire.
       let freedChunkBytes = 0
@@ -6683,12 +6629,7 @@ export class PostgresBackend implements StorageBackend {
     // fields; the `chunks` table stores a chunk as one row, so merge the two
     // files of each chunk into a single row here.
     const chunkEntries = this.#mergeChunkEntries(collections)
-    const {
-      capacityBytes,
-      maxUploadBytes,
-      maxCollectionsPerSpace,
-      maxResourcesPerSpace
-    } = this
+    const { capacityBytes, maxUploadBytes, maxCollectionsPerSpace } = this
 
     return this.#withTransaction(async client => {
       // The Space Metadata advisory lock first, ahead of the row lock as the
@@ -6742,24 +6683,14 @@ export class PostgresBackend implements StorageBackend {
         }
       }
 
-      // Count quotas: measure the Space's existing Collection rows / live
-      // Resources ONCE here, then track running totals as the apply loop
-      // creates items, so an import cannot push the Space past
-      // `maxCollectionsPerSpace` / `maxResourcesPerSpace`. Only brand-new items
-      // count -- a re-imported existing id is skipped and does not -- mirroring
-      // the per-create write-path guards without a COUNT query per row. The
-      // transaction rolls the whole import back if a cap is exceeded mid-apply.
-      // A tombstoned row does not count.
+      // Count quota: take the Space's existing Collection rows ONCE here, then
+      // track a running total as the apply loop creates Collections, so an
+      // import cannot push the Space past `maxCollectionsPerSpace`. Only a
+      // brand-new Collection counts -- a re-imported existing id does not --
+      // mirroring the per-create write-path guard without a COUNT query per
+      // row. The transaction rolls the whole import back if the cap is
+      // exceeded mid-apply. A tombstoned row does not count.
       let collectionRowCount = metadataById.size
-      let liveResourceCount = 0
-      if (maxResourcesPerSpace !== undefined) {
-        const { rows: liveRows } = await client.query<{ count: number }>(
-          `SELECT COUNT(*)::int AS count FROM resources
-            WHERE space_id = $1 AND NOT deleted`,
-          [spaceId]
-        )
-        liveResourceCount = liveRows[0]!.count
-      }
 
       // Shared pre-flight over every staged body (`assertImportBodiesFit`):
       // the per-body 413 cap and the fail-closed encryption check, before
@@ -6967,16 +6898,6 @@ export class PostgresBackend implements StorageBackend {
               stats.policiesSkipped++
             }
             continue
-          }
-          // A new live Resource counts against the per-Space cap.
-          if (maxResourcesPerSpace !== undefined) {
-            if (liveResourceCount >= maxResourcesPerSpace) {
-              throw new CountQuotaExceededError({
-                scope: 'Resources per Space',
-                limit: maxResourcesPerSpace
-              })
-            }
-            liveResourceCount++
           }
           const { contentType } = parseResourceFileName(fileName)
           const metadataBytes = resourceMetadata.get(resourceId)
