@@ -30,6 +30,7 @@ import {
   COLLECTION_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
   SPACE_POLICY_FILE_NAME,
+  parseMetaSidecarFileName,
   parseResourcePolicyFileName
 } from '@interop/space-archive'
 import {
@@ -37,7 +38,9 @@ import {
   atomicCreateFile,
   atomicWriteFile
 } from '../lib/atomicFile.js'
+import { mapInBatches } from '../lib/mapInBatches.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
+import { parseSidecarBytes } from '../lib/metaSidecar.js'
 import { isValidOriginId, settleOriginId } from '../lib/originId.js'
 import {
   StoreLockTimeoutError,
@@ -85,7 +88,16 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // store holding either is refused, every boot, until it is wiped or
   // restored from an archive (an import assigns fresh positions). A store
   // with neither passes and is stamped at this version.
-  refuseFeedCountersWithPolicyPositions
+  refuseFeedCountersWithPolicyPositions,
+  // v5: a Resource tombstone is stored under its own name,
+  // `.tombstone.<resourceId>.json`, so a directory listing tells it from a
+  // live sidecar (`.meta.<resourceId>.json`) by name, and the live Resource
+  // count opens no sidecar. A tombstone written at an earlier layout sits
+  // under the live sidecar's name, and there is no conversion step: a store
+  // holding one is refused, every boot, until it is wiped or restored from
+  // an archive (an import writes each tombstone under its own name). A store
+  // with none passes and is stamped at this version.
+  refuseTombstonesUnderLiveName
 ]
 
 /**
@@ -220,7 +232,6 @@ async function refuseUnstampedPolicies({
  * (`.feed.<collectionId>.json`) or a Collection- or Resource-level policy
  * file (`.collection.policy.json`, `.r.<resourceId>.policy.json`) in any
  * Collection dir. A Space policy takes no feed position, so it passes.
- * Staging temp files left by a killed process are not Spaces.
  * @param options {object}
  * @param options.dataDir {string}
  * @returns {Promise<void>}
@@ -233,27 +244,16 @@ async function refuseFeedCountersWithPolicyPositions({
   const spacesDir = path.join(dataDir, 'spaces')
   let counters = 0
   let policies = 0
-  for (const space of await readDirEntries(spacesDir)) {
-    if (!space.isDirectory() || space.name.startsWith(TEMP_FILE_PREFIX)) {
-      continue
-    }
-    const spaceDir = path.join(spacesDir, space.name)
-    for (const collection of await readDirEntries(spaceDir)) {
-      if (!collection.isDirectory()) {
+  for await (const { collectionId, children } of collectionDirs(spacesDir)) {
+    const counterFileName = feedCounterFileName(collectionId)
+    for (const child of children) {
+      if (!child.isFile()) {
         continue
       }
-      const counterFileName = feedCounterFileName(collection.name)
-      for (const child of await readDirEntries(
-        path.join(spaceDir, collection.name)
-      )) {
-        if (!child.isFile()) {
-          continue
-        }
-        if (child.name === counterFileName) {
-          counters++
-        } else if (isPolicyFileName(child.name)) {
-          policies++
-        }
+      if (child.name === counterFileName) {
+        counters++
+      } else if (isPolicyFileName(child.name)) {
+        policies++
       }
     }
   }
@@ -266,6 +266,107 @@ async function refuseFeedCountersWithPolicyPositions({
         'conversion migration. Wipe the data directory, or restore each ' +
         'Space from an export archive into an empty store.'
     })
+  }
+}
+
+/**
+ * The layout step that refuses a store holding a Resource tombstone under the
+ * live sidecar's name: a `.meta.<resourceId>.json` file in any Collection dir
+ * whose body carries `deleted: true`. A sidecar that does not parse is not a
+ * tombstone, and a chunk dir holds no tombstone, so neither is read as one.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @returns {Promise<void>}
+ */
+async function refuseTombstonesUnderLiveName({
+  dataDir
+}: {
+  dataDir: string
+}): Promise<void> {
+  const spacesDir = path.join(dataDir, 'spaces')
+  const sidecarPaths: string[] = []
+  for await (const { collectionDir, children } of collectionDirs(spacesDir)) {
+    for (const child of children) {
+      if (
+        child.isFile() &&
+        parseMetaSidecarFileName(child.name) !== undefined
+      ) {
+        sidecarPaths.push(path.join(collectionDir, child.name))
+      }
+    }
+  }
+  // A bounded number of sidecars open at once, across every Collection, so
+  // a large store boots without opening every sidecar together or reading
+  // them one by one.
+  const verdicts = await mapInBatches({
+    items: sidecarPaths,
+    map: holdsTombstone
+  })
+  const tombstones = verdicts.filter(Boolean).length
+  if (tombstones > 0) {
+    throw new StoreVersionError({
+      detail:
+        `${spacesDir} holds ${tombstones} Resource tombstone(s) written ` +
+        'under the live sidecar name before tombstones had their own file ' +
+        'name, and there is no conversion migration. Wipe the data ' +
+        'directory, or restore each Space from an export archive into an ' +
+        'empty store.'
+    })
+  }
+}
+
+/**
+ * Whether a sidecar file's body is a JSON object carrying `deleted: true`. A
+ * file gone since the listing, or one that does not parse, is not one.
+ * @param filePath {string}
+ * @returns {Promise<boolean>}
+ */
+async function holdsTombstone(filePath: string): Promise<boolean> {
+  let bytes: Buffer
+  try {
+    bytes = await readFile(filePath)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false
+    }
+    throw err
+  }
+  return parseSidecarBytes(bytes)?.deleted === true
+}
+
+/**
+ * Walks every Collection dir under a store's `spaces` dir, for the layout
+ * steps that inspect each one: its id, its path, and its listing. Staging
+ * temp files left by a killed process (`TEMP_FILE_PREFIX`) are not Spaces or
+ * Collections, and neither is any other non-directory entry.
+ * @param spacesDir {string}
+ * @returns {AsyncGenerator<{ collectionId: string, collectionDir: string,
+ *   children: Dirent[] }>}
+ */
+async function* collectionDirs(spacesDir: string): AsyncGenerator<{
+  collectionId: string
+  collectionDir: string
+  children: Dirent[]
+}> {
+  for (const space of await readDirEntries(spacesDir)) {
+    if (!space.isDirectory() || space.name.startsWith(TEMP_FILE_PREFIX)) {
+      continue
+    }
+    const spaceDir = path.join(spacesDir, space.name)
+    for (const collection of await readDirEntries(spaceDir)) {
+      if (
+        !collection.isDirectory() ||
+        collection.name.startsWith(TEMP_FILE_PREFIX)
+      ) {
+        continue
+      }
+      const collectionDir = path.join(spaceDir, collection.name)
+      yield {
+        collectionId: collection.name,
+        collectionDir,
+        children: await readDirEntries(collectionDir)
+      }
+    }
   }
 }
 

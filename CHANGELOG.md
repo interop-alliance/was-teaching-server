@@ -2,6 +2,13 @@
 
 ## 0.42.2 - TBD
 
+### Added
+
+- The service description's core entry advertises the `created-by` feature
+  token. The server records `createdBy` on every Resource, Collection, and Space
+  created under a capability invocation, and the token says so to a client that
+  builds on attribution.
+
 ### Changed
 
 - ARCHITECTURE.md is now the layer map and glossary alone. The per-module
@@ -21,9 +28,9 @@
   the policy outlived the Resource and could be written for an id not yet used.
 - The filesystem backend records the basename of a Resource's or chunk's
   representation file in its `.meta.<id>.json` sidecar as `fileName`. Reads,
-  writes, Resource deletes and the replication apply path open that name instead
-  of listing the Collection directory or deriving the name from `contentType`.
-  Export strips `fileName`, and import records the file it writes.
+  writes and the replication apply path open that name instead of listing the
+  Collection directory or deriving the name from `contentType`. Export strips
+  `fileName`, and import records the file it writes.
 - A filesystem representation file no sidecar names is not a Resource or chunk.
   It reads as absent, and a write over it is a create, even on a write-once
   Collection. A live sidecar that names a missing file answers 500, unless its
@@ -44,12 +51,31 @@
 - Filesystem Delete Chunk finds the chunk from its sidecar. A chunk file with no
   sidecar answers 404 and is left in place. A retry of a delete cut short after
   removing the sidecar answers 404 too.
-- The filesystem Collection listing reads only the sidecars that fill its page
-  before it counts `totalItems`. The count and the Resource count quota stay
-  exact, so a tombstone beside a file a crash left behind does not count. Export
-  reads each sidecar once, and the changes feed reads a tombstone's once.
-- Filesystem Delete Resource and Delete Chunk remove every representation file
-  of the id, so a file a crash left beside the live one is reclaimed.
+- The filesystem Collection listing reads only the sidecars that fill its page.
+  Export reads each sidecar once, and the changes feed reads a tombstone's once.
+- The filesystem backend stores a Resource tombstone as `.tombstone.<id>.json`
+  instead of under the live sidecar's `.meta.<id>.json` name. Delete Resource
+  writes the tombstone, then removes the live sidecar and every file of the id.
+  A create over a tombstone writes the live sidecar, then removes the tombstone.
+  When a crash leaves both names, the body with the higher `feedPosition` is the
+  Resource's state on every path, and the next write or delete of the id removes
+  the other. A read opens only the names that can stand: one in a chunk dir, and
+  the ones a directory scan listed. A name that does not parse beside one that
+  does is read as absent, with a `warn` line, and the next write or delete of
+  the id removes it. Archives still carry a tombstone as `.meta.<id>.json`.
+- The filesystem Collection listing's `totalItems` and the Resource count quota
+  count the ids with a live sidecar name and a representation file in the
+  directory listing, and open no sidecar outside the listing page. A tombstone,
+  a file beside it, and a file with no sidecar do not count.
+- A file a crash left beside a filesystem Resource is reclaimed by the next
+  Delete Resource of the id or the next create over its tombstone. Filesystem
+  Delete Chunk removes every representation file of the index.
+- The byte and Resource count quotas share one measurement per Space: a write
+  that finds the cached figure expired while a measurement is running awaits it.
+- The filesystem storage layout advances to version 5. A data dir holding a
+  Resource tombstone under the live sidecar name is refused at startup with
+  `StoreVersionError`, until it is wiped or restored from an export archive.
+  There is no conversion step.
 - Import Space checks an archived Collection Metadata file's `id` the way the
   Collection write handlers check a body's: an absent `id` is set from the
   Collection directory the file is stored under, and one naming another

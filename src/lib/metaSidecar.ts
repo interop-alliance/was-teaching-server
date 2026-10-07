@@ -4,8 +4,11 @@
  * verbatim, and the Postgres backend synthesizes the same document from its
  * rows on export (and reads it back on import), so archives stay
  * interchangeable between the two backends. A Collection has no sidecar: its
- * annotation members live in its one Collection Metadata file.
+ * annotation members live in its one Collection Metadata file. The module
+ * also names the filesystem backend's Resource tombstone file
+ * (`.tombstone.<resourceId>.json`), which is local to that backend.
  */
+import { JSON_FILE_SUFFIX } from '@interop/space-archive'
 import { isMetaStamp } from '@interop/storage-core'
 import { importedGeneration } from './etag.js'
 import { withoutStampMembers } from './hlc.js'
@@ -51,10 +54,16 @@ import type {
  * contrast, continues through the tombstone.
  *
  * `deleted` marks a **tombstone**: a soft delete that drops the content
- * representation but keeps the sidecar so the change feed (replication) still
- * surfaces it. A
- * tombstone has no `r.<id>...` content file, so it is invisible to every normal
- * read path; only the change feed reads it.
+ * representation but keeps the record so the change feed (replication) still
+ * surfaces it. The filesystem backend stores a tombstone under its own name,
+ * `.tombstone.<resourceId>.json` (`tombstoneSidecarFileName`), beside the
+ * Resource's representation files, and a live sidecar under
+ * `.meta.<resourceId>.json`, so a directory listing tells the two apart by
+ * name. When a crash leaves both names for one id, the body with the higher
+ * `feedPosition` is the Resource's state. An archive carries a tombstone under
+ * the live sidecar's name, as it always has. A tombstone names no
+ * representation file, so it is invisible to every normal read path; only the
+ * change feed reads it.
  *
  * `contentType` is the content-type the representation's filename was built
  * from (`fileNameFor`), recorded by every write that leaves a live Resource or
@@ -119,6 +128,87 @@ export interface MetaSidecar {
   contentType: string
   fileName?: string
   feedPosition?: number
+}
+
+/**
+ * Prefix of the filesystem backend's Resource tombstone file
+ * (`.tombstone.<resourceId>.json`). Disjoint from every archive dot-file
+ * prefix (`.meta.`, `.r.`, `.collection.`, `.collectionlog.`, `.space.`), so
+ * no other file in a Collection directory parses as one.
+ */
+const TOMBSTONE_FILE_PREFIX = '.tombstone.'
+
+/**
+ * Builds the file name of a Resource tombstone in the filesystem backend:
+ * `.tombstone.<resourceId>.json`, kept in the Collection dir where the live
+ * sidecar (`.meta.<resourceId>.json`) would be. The id is not escaped: the
+ * prefix and suffix are both fixed, as in the live sidecar's name, so
+ * `tombstoneSidecarFileId` recovers a dotted id by slicing. Server-local: an
+ * archive carries a tombstone under the live sidecar's name.
+ * @param resourceId {string}
+ * @returns {string}
+ */
+export function tombstoneSidecarFileName(resourceId: string): string {
+  return `${TOMBSTONE_FILE_PREFIX}${resourceId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Parses a Resource tombstone file name (`.tombstone.<resourceId>.json`) back
+ * into its `resourceId`, reversing `tombstoneSidecarFileName`. Returns
+ * `undefined` when the name does not carry both affixes or the id is empty.
+ * @param fileName {string}   the basename of the file
+ * @returns {string | undefined}
+ */
+export function tombstoneSidecarFileId(fileName: string): string | undefined {
+  if (
+    !fileName.startsWith(TOMBSTONE_FILE_PREFIX) ||
+    !fileName.endsWith(JSON_FILE_SUFFIX)
+  ) {
+    return undefined
+  }
+  const id = fileName.slice(
+    TOMBSTONE_FILE_PREFIX.length,
+    -JSON_FILE_SUFFIX.length
+  )
+  return id.length > 0 ? id : undefined
+}
+
+/**
+ * The Resource's state when the filesystem backend holds both a live sidecar
+ * and a tombstone for one id, which only a crash between the two steps of a
+ * delete or a re-create leaves: the body with the higher `feedPosition`, since
+ * each of those steps writes its new body at a position above the old one's.
+ * A tie, or two bodies with no position, resolves to the tombstone, so a
+ * damaged pair does not bring deleted content back.
+ * @param options {object}
+ * @param [options.live] {MetaSidecar}   the body under `.meta.<id>.json`
+ * @param [options.tombstone] {MetaSidecar}   the body under
+ *   `.tombstone.<id>.json`
+ * @returns {MetaSidecar | undefined}
+ */
+export function newerSidecar({
+  live,
+  tombstone
+}: {
+  live?: MetaSidecar
+  tombstone?: MetaSidecar
+}): MetaSidecar | undefined {
+  if (live === undefined || tombstone === undefined) {
+    return live ?? tombstone
+  }
+  return positionOf(live) > positionOf(tombstone) ? live : tombstone
+}
+
+/**
+ * A sidecar's feed position for `newerSidecar`, with a missing or malformed
+ * one sorting below every real position.
+ * @param sidecar {MetaSidecar}
+ * @returns {number}
+ */
+function positionOf(sidecar: MetaSidecar): number {
+  return Number.isSafeInteger(sidecar.feedPosition)
+    ? (sidecar.feedPosition as number)
+    : -1
 }
 
 /**

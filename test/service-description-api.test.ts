@@ -83,7 +83,8 @@ describe('Service description API', () => {
                 'backends',
                 'query',
                 'quotas',
-                'changes-query'
+                'changes-query',
+                'created-by'
               ],
               // A replication peer may gate on it, so it sits on the core
               // entry rather than on `instance`.

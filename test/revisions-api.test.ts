@@ -15,6 +15,7 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { chunkDirName, metaSidecarFileName } from '@interop/space-archive'
+import { tombstoneSidecarFileName } from '../src/lib/metaSidecar.js'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 
@@ -674,13 +675,18 @@ describe('revisions descriptor API', () => {
           collectionId
         )
         const sidecarPath = path.join(collectionDir, metaSidecarFileName('doc'))
+        const tombstonePath = path.join(
+          collectionDir,
+          tombstoneSidecarFileName('doc')
+        )
         const docPath = `/space/${spaceId}/${collectionId}/doc`
         await putRaw(docPath, '{"v":1}')
         await alice.was.request({ path: docPath, method: 'DELETE' })
-        const tombstone = await readFile(sidecarPath)
+        const tombstone = await readFile(tombstonePath)
         await putRaw(docPath, '{"v":2}')
         // The re-create's bytes landed and its sidecar did not.
-        await writeFile(sidecarPath, tombstone)
+        await rm(sidecarPath)
+        await writeFile(tombstonePath, tombstone)
 
         const healed = await putRaw(docPath, '{"v":2}')
         assert.equal(healed.status, 201)

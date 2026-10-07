@@ -311,10 +311,10 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, four, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 4)
+  it('stamps an empty store at the current version, five, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 5)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 4)
+    assert.equal(await storedVersion(dataDir), 5)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
   })
 
@@ -397,7 +397,7 @@ describe('Filesystem store version', () => {
     }
   )
 
-  it('stamps a layout-3 store holding Collections and a Space policy at layout 4', async () => {
+  it('stamps a layout-3 store holding Collections and a Space policy at the current layout', async () => {
     await stamp(dataDir, 3)
     const spaceDir = path.join(dataDir, 'spaces', 'some-space')
     await mkdir(path.join(spaceDir, 'col'), { recursive: true })
@@ -407,14 +407,70 @@ describe('Filesystem store version', () => {
       '{"type":"PublicCanRead","_generation":"z1"}'
     )
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 4)
+    assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty layout-3 store at layout 4', async () => {
+  it('stamps an empty layout-3 store at the current layout', async () => {
     await stamp(dataDir, 3)
     await mkdir(path.join(dataDir, 'spaces'))
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 4)
+    assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
+  })
+
+  it('refuses a layout-4 store that holds a tombstone under the live sidecar name, on every boot', async () => {
+    await stamp(dataDir, 4)
+    const collectionDir = path.join(dataDir, 'spaces', 'some-space', 'col')
+    await mkdir(collectionDir, { recursive: true })
+    await writeFile(
+      path.join(collectionDir, '.meta.gone.json'),
+      JSON.stringify({
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        updatedAtCounter: 0,
+        originId: 'o',
+        generation: 'z1',
+        contentType: 'application/json',
+        feedPosition: 2,
+        deleted: true
+      })
+    )
+    for (let boot = 0; boot < 2; boot++) {
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        (err: Error) =>
+          err instanceof StoreVersionError &&
+          err.message.includes('1 Resource tombstone(s)') &&
+          err.message.includes('Wipe the data directory')
+      )
+      assert.equal(await storedVersion(dataDir), 4)
+    }
+  })
+
+  it('stamps a layout-4 store holding live sidecars and a damaged one at layout 5', async () => {
+    await stamp(dataDir, 4)
+    const collectionDir = path.join(dataDir, 'spaces', 'some-space', 'col')
+    await mkdir(collectionDir, { recursive: true })
+    await writeFile(
+      path.join(collectionDir, '.meta.doc.json'),
+      '{"contentType":"application/json","feedPosition":1}'
+    )
+    // A sidecar that does not parse is not a tombstone.
+    await writeFile(path.join(collectionDir, '.meta.bad.json'), '{not json')
+    // A tombstone under its own name is the current layout.
+    await writeFile(
+      path.join(collectionDir, '.tombstone.gone.json'),
+      '{"deleted":true,"feedPosition":2}'
+    )
+    // A staging dir a killed process left at the Collection level is not a
+    // Collection, so a tombstone under the live name inside it is not read.
+    const tempDir = path.join(dataDir, 'spaces', 'some-space', '.tmp-left')
+    await mkdir(tempDir, { recursive: true })
+    await writeFile(
+      path.join(tempDir, '.meta.gone.json'),
+      '{"deleted":true,"feedPosition":2}'
+    )
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 5)
   })
 
   it('refuses a store.json with no integer version', async () => {
