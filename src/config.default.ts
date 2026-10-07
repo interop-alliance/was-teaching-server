@@ -572,14 +572,6 @@ export const DEFAULT_MAX_SPACES_PER_CONTROLLER = 100
 export const DEFAULT_MAX_COLLECTIONS_PER_SPACE = 100
 
 /**
- * Default cap on the number of live Resources a single Space may hold across
- * all its Collections, applied by BOTH backends when `MAX_RESOURCES_PER_SPACE`
- * is unset (a default-on count quota). A tombstone (soft-deleted Resource) does
- * not count against it. Opt out with `MAX_RESOURCES_PER_SPACE=unlimited`.
- */
-export const DEFAULT_MAX_RESOURCES_PER_SPACE = 10_000
-
-/**
  * The validated env-derived server configuration returned by
  * {@link loadConfigFromEnv} and consumed by `start.ts`.
  */
@@ -623,13 +615,6 @@ export interface EnvConfig {
    * `unlimited` was set explicitly (no cap).
    */
   maxCollectionsPerSpace?: number
-  /**
-   * Max live Resources a single Space may hold across all its Collections
-   * (`MAX_RESOURCES_PER_SPACE`). `undefined` means unset -- the backends apply
-   * the {@link DEFAULT_MAX_RESOURCES_PER_SPACE} default; `Infinity` means
-   * `unlimited` was set explicitly (no cap).
-   */
-  maxResourcesPerSpace?: number
   /** Backend registration allowlist (`WAS_ENABLED_BACKENDS`); unset = permissive. */
   enabledBackendProviders?: string[]
   /**
@@ -700,10 +685,6 @@ export function loadConfigFromEnv(
     maxCollectionsPerSpace: parseCountLimit(
       env.MAX_COLLECTIONS_PER_SPACE,
       'MAX_COLLECTIONS_PER_SPACE'
-    ),
-    maxResourcesPerSpace: parseCountLimit(
-      env.MAX_RESOURCES_PER_SPACE,
-      'MAX_RESOURCES_PER_SPACE'
     ),
     enabledBackendProviders: parseEnabledBackends(env.WAS_ENABLED_BACKENDS),
     kmsRecordKek: parseKmsRecordKekRegistry({
@@ -1126,7 +1107,7 @@ export function parseMaxUploadBytes(
 
 /**
  * Parses one of the count-quota env values (`MAX_SPACES_PER_CONTROLLER`,
- * `MAX_COLLECTIONS_PER_SPACE`, `MAX_RESOURCES_PER_SPACE`) into a maximum count.
+ * `MAX_COLLECTIONS_PER_SPACE`) into a maximum count.
  * Accepts a plain non-negative integer, or the literal `unlimited`
  * (case-insensitive, trimmed) which returns `Infinity` -- explicitly no cap. An
  * unset or empty value returns `undefined`, meaning not configured: the backends

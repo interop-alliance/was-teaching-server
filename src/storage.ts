@@ -49,9 +49,6 @@ import type { StorageBackend } from './types.js'
  * @param [options.maxCollectionsPerSpace] {number}   max Collections per Space
  *   (spec "Quotas"); `undefined` applies the backend's default-on limit,
  *   `Infinity` means no cap.
- * @param [options.maxResourcesPerSpace] {number}   max live Resources per Space
- *   (spec "Quotas"); `undefined` applies the backend's default-on limit,
- *   `Infinity` means no cap.
  * @returns {Promise<StorageBackend>}
  */
 export async function defaultBackend({

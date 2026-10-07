@@ -1,11 +1,10 @@
 /**
- * Regression tests for the two `FileSystemBackend` enumerations that read a
- * path a previous step already named, and so must tolerate it having been
- * removed in between: the per-Collection read inside the Resource count quota,
- * and the per-chunk `stat` inside `listChunks`. Both windows are too narrow to
- * race deterministically, so the removal is injected at the syscall instead: a
- * `stat` / `readdir` of the vanished path raises `ENOENT` exactly as the kernel
- * would. Anything other than `ENOENT` must still surface.
+ * Regression tests for the `FileSystemBackend` enumeration that reads a path a
+ * previous step already named, and so must tolerate it having been removed in
+ * between: the per-chunk `stat` inside `listChunks`. The window is too narrow
+ * to race deterministically, so the removal is injected at the syscall
+ * instead: a `stat` / `readdir` of the vanished path raises `ENOENT` exactly
+ * as the kernel would. Anything other than `ENOENT` must still surface.
  */
 import { it, describe, beforeEach, afterEach, vi } from 'vitest'
 import assert from 'node:assert'
@@ -120,31 +119,6 @@ describe('FileSystemBackend I/O faults', () => {
     })
     return backend
   }
-
-  it('a create survives a Collection removed mid count-quota enumeration', async () => {
-    // Regression: the per-Collection `readdir` in `#countLiveResources` was
-    // unguarded, so a Collection deleted between the Space listing and this
-    // read failed an unrelated create with a raw `ENOENT` -- a 500 for a valid
-    // write.
-    const backend = await backendWith({ dataDir, maxResourcesPerSpace: 500 })
-    await backend.writeCollection({
-      spaceId,
-      collectionId: 'doomed',
-      collectionMetadata: {
-        id: 'doomed',
-        type: ['Collection'],
-        name: 'Doomed'
-      }
-    })
-    // The Space listing still reports `doomed`; reading it raises ENOENT.
-    vanished.paths = [path.join(spaceId, 'doomed')]
-    await backend.writeResource({
-      spaceId,
-      collectionId,
-      resourceId: 'fresh',
-      input: { kind: 'json', contentType: 'application/json', data: { a: 1 } }
-    })
-  })
 
   it('listChunks omits a chunk removed while it runs', async () => {
     // Regression: the per-chunk `stat` had no `ENOENT` handling, so a chunk
