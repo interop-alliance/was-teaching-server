@@ -5740,10 +5740,10 @@ listing's `totalItems` and the Resource count quota are exact.
 - labels: data-model, import, validation
 - acceptance:
   - [x] An imported Collection Description whose `id` is absent, or names a
-    collection other than the one its tar path places it in, is either
-    rejected or normalized to the path-derived id
+        collection other than the one its tar path places it in, is either
+        rejected or normalized to the path-derived id
   - [x] Whichever is chosen, it matches what the three write handlers already do
-    (they set `id` from the URL segment unconditionally)
+        (they set `id` from the URL segment unconditionally)
   - [x] A test imports a hand-crafted tar carrying both shapes
 
 Every other write path to a Collection Description sets `id` from the URL
@@ -5860,3 +5860,108 @@ whatever next occupies that id (client-chosen ids such as `keyring` or `index`
 collide routinely). No listing shows a Resource-level policy. Delete Collection
 and Delete Space do clean policies up; the Resource level is the lone gap. The
 container-rule half of policy control is WAS-61 / WAS-108.
+
+### WAS-214: [M] Count live Resources from the directory listing, with tombstones under their own name
+
+- status: done
+- done: 2026-10-06
+- priority: medium
+- labels: performance, filesystem-backend, quotas, storage-layout
+- discovered-from: review of the sidecar-read change (2026-10-06)
+- touches:
+  - `src/backends/filesystem.ts` (`deleteResource`, `#writeResourceLocked`,
+    `#removeRepresentationFilesOf`, `#countLiveListed`, `#countLiveResources`,
+    `listCollectionItems`, `#judgeRepresentations`, `#locateRepresentation`, the
+    changes feed, export, the equality and unique-claim scans, the apply path),
+    `src/lib/metaSidecar.ts`, `src/backends/filesystemStore.ts`,
+    `docs/filesystem-layout.md` -- shipped: every by-id read goes through
+    `readMetaSidecar`, which reads both names; `#writeFeedSidecar` removes the
+    other name; export maps `.tombstone.<id>.json` back to `.meta.<id>.json`;
+    layout version 5; orphans are reclaimed by the next create over a tombstone
+  - unaffected: `@interop/space-archive` (a Resource tombstone does travel in an
+    archive, as `.meta.<id>.json` with `deleted: true`, exactly as before:
+    export renames the on-disk tombstone back and import writes it under the new
+    name; the packer's `deleted: true` refusal covers Collection Metadata files
+    only)
+  - unaffected: the Postgres backend (liveness is the `deleted` column)
+- acceptance:
+  - [x] A Resource tombstone is stored as `.tombstone.<id>.json`, with the body
+        it has today (the delete's stamp, the generation, `feedPosition`,
+        `deleted: true`). A live sidecar stays `.meta.<id>.json`. The name has
+        the same fixed-prefix, fixed-suffix shape as the live sidecar's and
+        parses the same way, so a Resource id holding a dot (ids are not encoded
+        in a sidecar name) stays unambiguous. Chunk sidecars are unchanged,
+        since Delete Chunk leaves no tombstone
+  - [x] Delete Resource writes the tombstone, then removes the live sidecar,
+        then removes the one file the live sidecar named, and the chunk
+        directory. It lists nothing
+  - [x] A create over a tombstone writes the live sidecar, then removes the
+        tombstone. A content write of a live Resource is unchanged
+  - [x] When both names exist for one id (a crash between the two steps of a
+        delete or a re-create), the one with the higher `feedPosition` is the
+        Resource's state, on every path that reads a sidecar by id. The next
+        write or delete of that id removes the other
+  - [x] The listing's `totalItems` and the Resource count quota count the ids
+        whose live sidecar name and representation file are both present in the
+        directory listing, and open no sidecar outside the page. An id with both
+        names present is resolved by reading those two sidecars, and only those
+  - [x] `#reserveHeadroom` shares one in-flight measurement per Space: a caller
+        that finds the cache entry expired while a measurement is running awaits
+        it rather than starting another. Covers both the byte and the count
+        quota
+  - [x] The changes feed, export, replication apply, the equality and
+        unique-claim scans, and the page judgement read a tombstone from its new
+        name; `?include=deleted` and the feed's `deleted` documents are
+        unchanged on the wire
+  - [x] A representation file whose id has a tombstone or no sidecar is detected
+        from names alone. Delete Resource no longer reclaims it; the item
+        decides where orphans are reclaimed (the next write of the id, which
+        already holds the id's lock, is the default) and
+        `docs/filesystem-layout.md` says which
+  - [x] The layout version advances. Its step refuses a data dir holding any
+        sidecar with `deleted: true` under the live name, with the same
+        wipe-or-restore message the feed-position step uses. No conversion
+        migration
+  - [x] Tests in `test/`: a Collection larger than one page lists with
+        `totalItems` exact and no sidecar read outside the page (observable
+        through a counter on the sidecar read); the count quota on a create
+        reads no sidecar; two creates racing an expired cache entry run one
+        measurement; a planted both-names id resolves to the higher
+        `feedPosition` and the stale file is removed by the next write; a
+        planted orphan beside a tombstone is not listed or counted; the existing
+        ghost-file suite still passes; a data dir with an old-name tombstone is
+        refused at boot
+
+Context: the sidecar-read change made every path that lists a directory decide
+liveness from the sidecar, so a tombstone sitting beside a file a crash left
+behind is not counted. That made three paths read one sidecar per Resource
+again: the listing's `totalItems` reads the sidecar of every id outside the page
+(a 2,000-item listing measured 18x slower under that pattern before the
+page-only read landed), the count quota's `#countLiveResources` reads every
+sidecar in the Space on each re-measurement (default-on at 10,000, 5 s cache,
+dropped on every delete, with no in-flight dedup so concurrent misses each
+enumerate), and Delete Resource lists the whole Collection folder to find the
+id's stray files. Reads of one Resource are unaffected.
+
+The root is that liveness lives inside the sidecar's JSON, while a directory
+listing yields names only, and a live sidecar and a tombstone share a name.
+Giving the tombstone its own name puts liveness in the listing: the live count
+is the number of ids with a live sidecar name and a matching file, with no
+sidecar opened. One `readdir` yields both kinds, told apart by prefix. An infix
+form (`.meta.<id>.deleted.json`) was set aside: a Resource id may contain a dot
+and the sidecar name does not encode it, so the tombstone of `foo` would collide
+with the live sidecar of `foo.deleted`. Encoding the id in the sidecar name
+would settle that, but the name is an archive entry name owned by the archive
+codec, so that is a separate change. Per operation the cost is one extra
+directory entry change on a delete and on a re-create, one extra failed open on
+a create that looks for a tombstone, and nothing on a `GET`. The crash window
+between the two steps is resolved by `feedPosition`, which both bodies carry and
+which later writes always exceed.
+
+A live count kept in the feed counter file was considered and set aside: it is
+O(1) per count but a second source of truth, can drift by one across a crash,
+and needs a sweep under the feed lock to repair. Should the readdir itself show
+up in a profile on a large Collection, it remains the next step, as a cache over
+this layout rather than the truth. Readdir cost still grows with tombstones,
+which are never reaped (WAS-13). The same change settles the delete ordering
+case of WAS-135 for Delete Resource (tombstone before file removal).

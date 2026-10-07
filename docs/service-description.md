@@ -18,7 +18,9 @@ absent.
 The core entry sits under the `https://w3id.org/pws` identifier. It names the
 spec version this server speaks (`0.5`), the Spaces Repository URL, and the
 `features` tokens naming the optional sections of the core spec this server
-serves, `changes-query` among them.
+serves, `changes-query` among them. The `created-by` token says the server
+records `createdBy` on every Resource, Collection, and Space created under a
+capability invocation.
 
 It also carries `originId`, the active backend's origin id, which a replication
 peer reads when it registers (see [replication.md](replication.md)). It sits on

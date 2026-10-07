@@ -2,9 +2,9 @@
 
 This document covers how the filesystem backend lays out its data root, versions
 that layout, settles the store's origin id and clock mark, and handles sidecars,
-crash leftovers and Collection tombstones, with the Postgres counterpart of
-each. [ARCHITECTURE.md](../ARCHITECTURE.md) holds the layer map and the
-glossary. Archive export and import of this layout are in
+Resource tombstones, crash leftovers and Collection tombstones, with the
+Postgres counterpart of each. [ARCHITECTURE.md](../ARCHITECTURE.md) holds the
+layer map and the glossary. Archive export and import of this layout are in
 [export-import.md](export-import.md).
 
 ## store.json and layout versions
@@ -62,6 +62,16 @@ every boot and with no conversion step. A Space policy alone passes. An empty
 data dir is stamped at version 4. Postgres is unchanged. The feed counter file
 is described in [changes-feed.md](changes-feed.md).
 
+### Version 5: Resource tombstones under their own name
+
+A Resource tombstone is stored as `.tombstone.<id>.json` (see
+[Resource tombstones](#resource-tombstones)). Its step walks every Collection
+dir and refuses a data dir holding any `.meta.<id>.json` whose body carries
+`deleted: true`, with `StoreVersionError`, on every boot and with no conversion
+step. A sidecar that does not parse is not a tombstone. An empty data dir, or
+one with no such sidecar, is stamped at version 5. Postgres is unchanged: its
+liveness is the `deleted` column.
+
 ## The origin id and the clock mark
 
 `store.json` also carries the store's origin id as its `originId` member (see
@@ -112,6 +122,55 @@ directory listing and no re-derivation from `contentType`, so a change in how
 no sidecar names is not a Resource. `fileName` is server-local: a tombstone has
 none, export strips it, and import records the file it writes.
 
+### Resource tombstones
+
+Delete Resource leaves a tombstone: the delete's stamp, the generation, the
+`feedPosition`, the last-known `contentType` and `deleted: true`. It is stored
+as `.tombstone.<id>.json`, beside where the live sidecar was. The name has the
+same fixed prefix and fixed suffix as the live sidecar's, so a Resource id that
+holds a dot stays unambiguous. Chunk sidecars have no tombstone name, since
+Delete Chunk leaves no tombstone.
+
+Liveness is therefore in the directory listing: one `readdir` yields both kinds,
+told apart by prefix. The name is local to this backend. An archive carries a
+tombstone under the live sidecar's name, as it always has, and import writes it
+under the tombstone name.
+
+Delete Resource writes the tombstone first, then removes the live sidecar, then
+the one file the live sidecar named, then the chunk directory. It lists nothing.
+A create over a tombstone writes the live sidecar, then removes the tombstone. A
+content write of a live Resource rewrites the live sidecar, as before, and
+removes nothing.
+
+A crash between those two steps leaves both names for one id. Every path that
+reads a sidecar by id reads both names and takes the one with the higher
+`feedPosition` as the Resource's state. Each step writes its new body at a
+position above the old one's, so the higher position is the newer body. The next
+write or delete of the id removes the other name.
+
+A read opens only the names that can stand. A read by id with no listing in hand
+opens both. The directory scans hand the read the names their listing holds, so
+an id with one name costs one open, and an id with no live sidecar name is left
+out with no open at all. A chunk dir holds no tombstone, so a chunk read opens
+the live name alone.
+
+A read takes no lock, so one that lands between the two steps can find neither
+name. It then reads the id as absent, which every reader treats as it treats a
+tombstone.
+
+### Counting live Resources
+
+The Collection listing's `totalItems` and the Resource count quota count the ids
+that have both a live sidecar name and a representation file in the directory
+listing. They open no sidecar, except the page the listing serves. An id with
+both names is resolved by reading those two sidecars, and only those. A
+tombstone, a file beside a tombstone, and a file with no sidecar do not count.
+
+The count quota caches its figure per Space for a short time and re-measures
+when the entry expires. A create that finds the entry expired while another
+create's measurement is running awaits that measurement rather than starting its
+own. The byte quota shares its `du` walk the same way.
+
 ### Reads
 
 Reads take no lock. A read that finds its file gone reads the sidecar again and
@@ -134,13 +193,22 @@ answers 404 too.
 
 A crash can leave a file no live sidecar names. The cases are bytes written
 before their sidecar, the prior file of a write cut short before its prune, and
-the file of a delete cut short after its tombstone.
+the file of a delete cut short after its tombstone. Such a file is detected from
+names alone: its id has a tombstone or no sidecar, or a live sidecar that names
+another file.
 
-A write removes only the file the prior sidecar named, so such a file stays
-until the id is deleted. Delete Resource and Delete Chunk remove every
-representation file of the id, under the per-Resource lock, so a delete is the
-one path that reclaims one. Delete Chunk of an index with no sidecar answers 404
-and leaves its file in place.
+A write removes only the file the prior sidecar named, so such a file stays in
+place beside a live sidecar. It is reclaimed by the next Delete Resource of the
+id, or by the next write that creates the Resource over a tombstone, a content
+write or a replicated one. Either already holds the per-Resource lock, and once
+its sidecar is committed it lists the directory and removes every file of the id
+but the one it names, which for the delete is none, so no byte of a deleted id
+stays in the byte quota's walk. A content write of a live Resource, and a create
+of an id with no sidecar, list nothing. A file beside a live sidecar therefore
+stays until the id is deleted, and a file with no sidecar and no tombstone stays
+until a write of the id lands on the same name or its Collection is deleted.
+Delete Chunk removes every representation file of the index the same way. Delete
+Chunk of an index with no sidecar answers 404 and leaves its file in place.
 
 The changes feed, export, the equality and unique-claim scans, and the chunk
 listing keep a file only when its id's sidecar is live and names it
@@ -150,24 +218,30 @@ archives a live Resource's sidecar from the object it was judged by, so it reads
 each sidecar once.
 
 The Collection listing judges files the same way, but reads only the sidecars it
-needs to fill the page. Its `totalItems`, and the Resource count quota, then
-read the sidecar of every other id that has both a sidecar and a representation
-file, since the names alone cannot tell a tombstone beside a stray file from a
-live Resource. Both figures are exact: a file with no sidecar and a tombstone
-beside a stray file are not counted.
+needs to fill the page. Its `totalItems` counts the rest from the names in the
+listing (see [Counting live Resources](#counting-live-resources)), so a file
+with no sidecar and a file beside a tombstone are not counted. The count does
+not check that the file is the one the sidecar names. A live sidecar naming a
+file that is gone, with another file of the id beside it, is damage no committed
+write leaves, and it counts the way a damaged sidecar does (see below).
 
 ## Damaged sidecars
 
 A sidecar that does not parse leaves its Resource out of every path that lists a
-directory, with a `warn` line. That covers the listings, the chunk listing,
-export, the changes feed, the equality and blinded-index queries, the
-unique-claim scans a write runs, and the check a new unique index declaration
-runs.
+directory and reads the sidecars it lists, with a `warn` line. That covers the
+listing page, the chunk listing, export, the changes feed, the equality and
+blinded-index queries, the unique-claim scans a write runs, and the check a new
+unique index declaration runs. The name-based counts open no sidecar, so a
+damaged sidecar outside the listing page still counts in `totalItems` and in the
+Resource count quota.
 
 Sidecar writes are atomic (`atomicWriteFile`), so such a sidecar is disk damage
 or a hand edit, not a torn write. The damaged Resource's own reads and writes
-still fail on it. One damaged file must not take down every unique write and the
-whole feed of its Collection.
+still fail on it, unless the id's other name stands and parses. Then the damaged
+name is read as absent, with a `warn` line, the other name alone is the
+Resource's state, and the next write or delete of the id removes the damaged
+file as it would a stale pair. One damaged file must not take down every unique
+write and the whole feed of its Collection, or the Resource it sits beside.
 
 The cost is that a unique value the damaged Resource holds is not defended while
 its sidecar stands damaged. A write of another Resource may take the value, and

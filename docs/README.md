@@ -35,7 +35,7 @@ and names which of these applies to each module:
   -- the five admitted ladder-delegation shapes, the invocation-time bounds, the
   container rule
 - [Storage Layout](filesystem-layout.md) -- `store.json` and layout versions,
-  sidecars, crash cases, Collection tombstones on disk
+  sidecars and Resource tombstones, crash cases, Collection tombstones on disk
 - [did:webvh Controllers and Invokers](webvh-controllers.md) -- resolution,
   verification, the current-key-set rule, the append-only log, foreign invokers
 - [The Service Description](service-description.md) -- the five `specs` entries,

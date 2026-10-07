@@ -200,8 +200,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   (`implements StorageBackend` from `src/types.ts`), obtained only from a static
   async `open()`, which runs the layout migrations and settles the store's
   origin id. The filesystem backend keeps `store.json` at the data root, finds a
-  live Resource or chunk through its `.meta.<id>.json` sidecar, and takes no
-  lock on reads. Delete Collection leaves a tombstone in both backends. See
+  live Resource or chunk through its `.meta.<id>.json` sidecar, keeps a Resource
+  tombstone as `.tombstone.<id>.json`, and takes no lock on reads. It counts
+  live Resources from the names in a directory listing. Delete Collection leaves
+  a tombstone in both backends. See
   [docs/filesystem-layout.md](docs/filesystem-layout.md).
 - **`src/errors.ts`** -- custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.

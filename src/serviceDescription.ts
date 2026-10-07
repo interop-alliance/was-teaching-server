@@ -64,6 +64,11 @@ import {
  * backend provides -- conditional writes, key epochs -- are baseline
  * requirements rather than tokens, and the affordances of the Encrypted
  * Collections profile belong to {@link ENCRYPTED_COLLECTIONS_FEATURES}.
+ *
+ * - `created-by`: the server records `createdBy` on every Resource,
+ *   Collection, and Space created under a capability invocation
+ *   (`invokerDid`). A create the provisioning policy granted verifies no
+ *   signature and records none.
  */
 export const SERVICE_FEATURES = [
   'listing',
@@ -76,7 +81,8 @@ export const SERVICE_FEATURES = [
   'backends',
   'query',
   'quotas',
-  'changes-query'
+  'changes-query',
+  'created-by'
 ]
 
 /**

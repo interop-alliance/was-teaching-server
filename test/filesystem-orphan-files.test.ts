@@ -203,13 +203,37 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     await writeJson({ resourceId: 'new', data: { tag: 'y' } })
   })
 
-  it('Delete Resource reclaims every file of the id', async () => {
+  it('Delete Resource removes the file its sidecar named and the file a crash left beside it', async () => {
     // `doc` is live as text, with its prior JSON file beside it.
     await backend.deleteResource({ spaceId, collectionId, resourceId: 'doc' })
-    const names = (await readdir(collectionDir)).filter(name =>
-      name.startsWith('r.doc.')
+    const representationsOf = async (resourceId: string): Promise<string[]> =>
+      (await readdir(collectionDir)).filter(name =>
+        name.startsWith(`r.${resourceId}.`)
+      )
+    // Nothing of the id outlives the delete, so its bytes leave the byte
+    // quota's walk with it.
+    assert.deepEqual(await representationsOf('doc'), [])
+    assert.ok((await readdir(collectionDir)).includes('.tombstone.doc.json'))
+    assert.equal(
+      (await backend.listCollectionItems({ spaceId, collectionId })).totalItems,
+      1
     )
-    assert.deepEqual(names, [])
+  })
+
+  it('a re-create over the torn delete reclaims the file left beside its tombstone', async () => {
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'gone',
+      input: textInput('back')
+    })
+    assert.deepEqual(
+      (await readdir(collectionDir))
+        .filter(name => name.startsWith('r.gone.'))
+        .sort(),
+      [fileNameFor({ resourceId: 'gone', contentType: 'text/plain' })]
+    )
+    assert.ok(!(await readdir(collectionDir)).includes('.tombstone.gone.json'))
   })
 
   it('the changes feed reports the torn delete as a tombstone, and the torn type change by its new type', async () => {

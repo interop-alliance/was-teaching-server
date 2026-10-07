@@ -710,7 +710,7 @@ describe('Storage API', () => {
       return { backend, tempDir, spaceId, collectionId, collectionDir }
     }
 
-    it('drops the content file but keeps the sidecar as a tombstone', async () => {
+    it('drops the content file and leaves a tombstone in place of the sidecar', async () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
@@ -724,7 +724,8 @@ describe('Storage API', () => {
           resourceId: 'note'
         })
 
-        // No content representation remains, but the sidecar lingers.
+        // No content representation remains, and the live sidecar gave way
+        // to the tombstone, under its own name.
         const entries = await readdir(collectionDir)
         assert.deepEqual(
           entries.filter(name => name.startsWith('r.')),
@@ -732,8 +733,12 @@ describe('Storage API', () => {
           'content file should be gone'
         )
         assert.ok(
-          entries.includes('.meta.note.json'),
-          'sidecar should remain as the tombstone'
+          entries.includes('.tombstone.note.json'),
+          'the tombstone should stand under its own name'
+        )
+        assert.ok(
+          !entries.includes('.meta.note.json'),
+          'the live sidecar should be gone'
         )
 
         // The tombstone records `deleted`, a later write stamp under the kept
