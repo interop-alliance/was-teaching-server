@@ -5965,3 +5965,34 @@ up in a profile on a large Collection, it remains the next step, as a cache over
 this layout rather than the truth. Readdir cost still grows with tombstones,
 which are never reaped (WAS-13). The same change settles the delete ordering
 case of WAS-135 for Delete Resource (tombstone before file removal).
+
+### WAS-192: [M] The Resource `/meta` `ETag` does not move when a content write changes the served object
+
+- status: done
+- done: 2026-10-06
+- priority: medium
+- labels: etag, caching, resource-api, wire-contract
+- discovered-from: WAS-172 review (2026-10-03)
+- touches:
+  - wallet-attached-storage-spec: WASS-56 (filed under WAS-133)
+  - was-teaching-server: shipped under WAS-133 (`resourceMetaEtag` in
+    `src/lib/etag.ts`, docs/validators-and-stamps.md)
+  - conformance-suite: PWSCS-25 (filed under WAS-133)
+- acceptance:
+  - [x] Decide which it is: the `/meta` `ETag` covers both records (the content
+        stamp and the `/meta` stamp), or the served `/meta` object stops
+        carrying content-record members
+  - [x] A `GET .../meta` with `If-None-Match` after a content write that changed
+        `size`, `contentType`, or the content stamp is answered 200
+  - [x] Tests in both backends
+
+Context (discovered-from: WAS-172 review). The served `/meta` object carries the
+content record's `size`, `contentType`, `writerId`, `epoch`, and stamp
+(`updatedAt`, `updatedAtCounter`, `originId`), while its `ETag` is built from
+the nested `meta` stamp alone. A client holding that `ETag` is answered 304
+after a content write and keeps the old members. The gap predates the stamp; the
+two new top-level stamp members widen it. The choice is a wire decision.
+
+Superseded by WAS-133 (the Resource `/meta` validator covers every member it
+serves), done 2026-10-05, which chose the first option: the `/meta` `ETag` is
+the content-first composite of both records' validators. Nothing further to do.

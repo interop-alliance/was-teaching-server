@@ -25,10 +25,8 @@ Ready:
   read
 - WAS-145 [M] Media-type edge cases in `resolveResourceInput`
 - WAS-191 [M] The sidecar is the commit point of a filesystem Resource write
-- WAS-192 [M] The Resource `/meta` `ETag` does not move when a content write
-  changes the served object
-- WAS-181 [L] Import of a sidecar that parses but lacks timestamps differs by
-  backend
+- WAS-181 [L] Pin that a sidecar imported without timestamps is served with both
+  on each backend
 - WAS-83 [L] Anonymous Get Policy with a malformed id now returns 401
 - WAS-193 [L] `epoch` moves on a `/meta` write without a content stamp
 
@@ -117,7 +115,7 @@ Ready:
 
 - WAS-12 [L] Live `pull.stream$` SSE endpoint for the changes feed
 - WAS-13 [L] Tombstone GC / retention policy
-- WAS-14 [L] Attachment / blob replication for sync
+- WAS-14 [M] Attachment / blob replication for sync
 - WAS-15 [L] Client-produced snapshot/checkpoint entries in the changes feed
 - WAS-16 [L] Opaque/blinded Resource ids + padded sizes (opt-in)
 - WAS-18 [L] Publish the StorageBackend port for npm-installable backends
@@ -476,61 +474,32 @@ path's own ordering.
 
 ---
 
-### WAS-192: [M] The Resource `/meta` `ETag` does not move when a content write changes the served object
-
-- status: todo
-- priority: medium
-- labels: etag, caching, resource-api, wire-contract
-- discovered-from: WAS-172 review (2026-10-03)
-- touches:
-  - wallet-attached-storage-spec: the Resource Metadata data model and the
-    Caching section (which members the `/meta` validator covers)
-  - was-teaching-server: `src/requests/ResourceRequest.ts` (`getMeta`), both
-    backends' `getResourceMetadata`, ARCHITECTURE.md
-  - conformance-suite: a conditional `GET .../meta` after a content write
-- acceptance:
-  - [ ] Decide which it is: the `/meta` `ETag` covers both records (the content
-        stamp and the `/meta` stamp), or the served `/meta` object stops
-        carrying content-record members
-  - [ ] A `GET .../meta` with `If-None-Match` after a content write that changed
-        `size`, `contentType`, or the content stamp is answered 200
-  - [ ] Tests in both backends
-
-Context (discovered-from: WAS-172 review). The served `/meta` object carries the
-content record's `size`, `contentType`, `writerId`, `epoch`, and stamp
-(`updatedAt`, `updatedAtCounter`, `originId`), while its `ETag` is built from
-the nested `meta` stamp alone. A client holding that `ETag` is answered 304
-after a content write and keeps the old members. The gap predates the stamp; the
-two new top-level stamp members widen it. The choice is a wire decision.
-
----
-
-### WAS-181: [L] Import of a sidecar that parses but lacks timestamps differs by backend
+### WAS-181: [L] Pin that a sidecar imported without timestamps is served with both on each backend
 
 - status: todo
 - priority: low
-- labels: import-export, filesystem-backend, postgres-backend
+- labels: import-export, filesystem-backend, postgres-backend, test-coverage
 - discovered-from: code review of src/backends and src/lib (2026-09-11)
 - touches:
-  - was-teaching-server: `src/backends/filesystem.ts` (`importSpace`),
-    `src/backends/postgres.ts` (`#insertImportedResource`),
-    `test/storage-backend-contract.ts`
+  - was-teaching-server: `test/storage-backend-contract.ts`
 - acceptance:
-  - [ ] An archived sidecar that parses as a JSON object but carries no
-        `createdAt` or `updatedAt` is imported the same way on both backends:
-        the missing stamps are filled with the import time, and the members the
-        sidecar does carry (`createdBy`, `custom`, `epoch`, `writerId`, the
-        validators) are kept
-  - [ ] The storage-backend contract test imports such an archive and asserts
-        the served `/meta` object carries both timestamps on both backends
+  - [ ] The storage-backend contract test imports an archive whose
+        `.meta.<id>.json` parses as a JSON object but carries no `createdAt`,
+        `updatedAt`, `updatedAtCounter` or `originId`, and asserts on both
+        backends that the served `/meta` object carries both timestamps, that
+        `createdAt` equals the import stamp's `updatedAt`, and that the members
+        the sidecar did carry (`createdBy`, `custom`, `epoch`, `writerId`) are
+        kept
 
-Context: discovered-from WAS-95. The Postgres import fills a missing `createdAt`
-/ `updatedAt` with `now`, since its columns are not nullable. The filesystem
-import writes the parsed sidecar as it is, so the Resource is served with no
-timestamps while its feed position and validator are fine. A sidecar with no
+Context: discovered-from WAS-95. Both backends already import every Resource
+and chunk sidecar through `restampImportedSidecar` (`src/lib/metaSidecar.ts`),
+which mints a fresh write stamp and fills a missing `createdAt` with that
+stamp's `updatedAt`, so the two agree. No contract case pins it: the existing
+import cases all pack sidecars that carry a full stamp. A sidecar with no
 timestamps only comes from a hand-built or foreign archive, so the gap is low
-priority, but the two backends should agree on it, and filling with the import
-time is the cheaper rule to state.
+priority. The Collection Metadata rule is different on purpose and stays as is:
+a Collection imported without `createdAt` keeps it absent, so a later write
+cannot date the container after the contents it holds.
 
 ### WAS-83: [L] Anonymous Get Policy with a malformed id now returns 401
 
@@ -1905,10 +1874,10 @@ pull-only transport gives the serving server no view of what a peer has pulled,
 so v1 of replication never reaps (Collection tombstones included, WAS-174);
 retention needs peers to report their position back, which this item designs.
 
-### WAS-14: [L] Attachment / blob replication for sync
+### WAS-14: [M] Attachment / blob replication for sync
 
 - status: todo
-- priority: low
+- priority: medium
 - labels: someday, sync
 - acceptance:
   - [ ] A size/streaming design produced, tied to the chunked-streams and
