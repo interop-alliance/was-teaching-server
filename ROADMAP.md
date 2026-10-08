@@ -1346,9 +1346,9 @@ Request cost on a path that already answers correctly.
         tombstones per Space, counting them toward `maxCollectionsPerSpace`, or
         a rate limit on Delete Collection
   - [ ] On the filesystem backend, List Collections, the
-        `maxCollectionsPerSpace` check on a create, the usage report with the
-        per-Collection breakdown, and the live Resource count no longer read one
-        Metadata file per tombstone on each call
+        `maxCollectionsPerSpace` check on a create, and the usage report with
+        the per-Collection breakdown no longer read one Metadata file per
+        tombstone on each call
   - [ ] The Postgres backend's equivalents are checked for the same growth and
         either shown unaffected or fixed
   - [ ] Tests in `test/`: a Space holding many tombstones lists, creates, and
