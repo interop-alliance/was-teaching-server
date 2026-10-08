@@ -491,15 +491,15 @@ path's own ordering.
         the sidecar did carry (`createdBy`, `custom`, `epoch`, `writerId`) are
         kept
 
-Context: discovered-from WAS-95. Both backends already import every Resource
-and chunk sidecar through `restampImportedSidecar` (`src/lib/metaSidecar.ts`),
-which mints a fresh write stamp and fills a missing `createdAt` with that
-stamp's `updatedAt`, so the two agree. No contract case pins it: the existing
-import cases all pack sidecars that carry a full stamp. A sidecar with no
-timestamps only comes from a hand-built or foreign archive, so the gap is low
-priority. The Collection Metadata rule is different on purpose and stays as is:
-a Collection imported without `createdAt` keeps it absent, so a later write
-cannot date the container after the contents it holds.
+Context: discovered-from WAS-95. Both backends already import every Resource and
+chunk sidecar through `restampImportedSidecar` (`src/lib/metaSidecar.ts`), which
+mints a fresh write stamp and fills a missing `createdAt` with that stamp's
+`updatedAt`, so the two agree. No contract case pins it: the existing import
+cases all pack sidecars that carry a full stamp. A sidecar with no timestamps
+only comes from a hand-built or foreign archive, so the gap is low priority. The
+Collection Metadata rule is different on purpose and stays as is: a Collection
+imported without `createdAt` keeps it absent, so a later write cannot date the
+container after the contents it holds.
 
 ### WAS-83: [L] Anonymous Get Policy with a malformed id now returns 401
 
@@ -1365,10 +1365,9 @@ directories in the Space. In the filesystem backend, `#collectionEntries` reads
 every Collection Metadata file in the Space, tombstones included, to tell a live
 Collection from a tombstone. It runs on every List Collections page, on every
 Collection create when `maxCollectionsPerSpace` is set, in `reportUsage` with
-the breakdown, and in import. `#countLiveResources` does the same read per
-directory. Each of those then costs one file read per tombstone the Space has
-ever made. Before tombstones, the Collection quota bounded the directory count
-and a listing was one `readdir`.
+the breakdown, and in import. Each of those then costs one file read per
+tombstone the Space has ever made. Before tombstones, the Collection quota
+bounded the directory count and a listing was one `readdir`.
 
 Reaping is not the fix here. Replication keeps every tombstone until peers
 report their position (WAS-13), so the tombstones stay and the request cost has

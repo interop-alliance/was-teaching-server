@@ -694,7 +694,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * The measurement running for each Space's `#usageCache` entry, so callers
    * that find the entry absent or expired at the same time share one tree
-   * walk (see `#reserveHeadroom`).
+   * walk (see `#assertSpaceHeadroom`).
    */
   #usageMeasurements = new Map<string, Promise<QuotaSnapshot>>()
 
@@ -1144,6 +1144,12 @@ export class FileSystemBackend implements StorageBackend {
    * and calls `reconcile` with the bytes it actually wrote, so the snapshot
    * reflects it -- without that, every streamed write inside one TTL would be
    * admitted against the same total and the Space would sail past capacity.
+   *
+   * One measurement runs per Space at a time: a caller that finds the entry
+   * absent or expired while another caller's measurement is running awaits
+   * that one (`#usageMeasurements`) rather than starting its own, so a burst
+   * of writes after the entry expires costs one tree walk. Every caller then
+   * reserves against the same entry.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.capacityBytes {number}   the configured per-Space limit
@@ -1166,115 +1172,57 @@ export class FileSystemBackend implements StorageBackend {
     release: () => void
     reconcile: (actualBytes: number) => void
   }> {
-    return this.#reserveHeadroom({
-      cache: this.#usageCache,
-      measurements: this.#usageMeasurements,
-      spaceId,
-      measure: async () =>
-        (await this.#diskUsage(this.#spaceDir(spaceId))).total,
-      limit: capacityBytes,
-      incoming: incomingBytes,
-      makeError: () => new QuotaExceededError({ spaceId, capacityBytes })
-    })
-  }
-
-  /**
-   * The TTL-cached reservation behind `#assertSpaceHeadroom`. Re-measures the
-   * Space through `measure` when its cache entry is absent or expired, refuses
-   * when the measured usage already meets `limit` or the `incoming` amount
-   * would exceed it, and otherwise adds `incoming` to the cached total so
-   * reservations within the TTL accumulate rather than each re-admitting
-   * against the same snapshot.
-   *
-   * One measurement runs per Space at a time: a caller that finds the entry
-   * absent or expired while another caller's measurement is running awaits
-   * that one (`measurements`) rather than starting its own, so a burst of
-   * writes after the entry expires costs one tree walk. Every caller then
-   * reserves against the same entry.
-   * @param options {object}
-   * @param options.cache {Map}   the per-Space snapshot cache to read and update
-   * @param options.measurements {Map}   the measurement running for each
-   *   Space's entry in `cache`
-   * @param options.spaceId {string}
-   * @param options.measure {() => Promise<number>}   fresh usage measurement
-   * @param options.limit {number}   the configured per-Space cap
-   * @param options.incoming {number}   the amount this write reserves
-   * @param options.makeError {() => Error}   the quota error to throw
-   * @returns {Promise<{ headroom: number, release: () => void,
-   *   reconcile: (actual: number) => void }>}   remaining headroom before this
-   *   reservation, the callback that undoes it, and the callback that corrects
-   *   it to the amount actually consumed
-   */
-  async #reserveHeadroom({
-    cache,
-    measurements,
-    spaceId,
-    measure,
-    limit,
-    incoming,
-    makeError
-  }: {
-    cache: Map<string, QuotaSnapshot>
-    measurements: Map<string, Promise<QuotaSnapshot>>
-    spaceId: string
-    measure: () => Promise<number>
-    limit: number
-    incoming: number
-    makeError: () => Error
-  }): Promise<{
-    headroom: number
-    release: () => void
-    reconcile: (actual: number) => void
-  }> {
-    let cached = cache.get(spaceId)
+    let cached = this.#usageCache.get(spaceId)
     if (!cached || cached.expiresAt <= Date.now()) {
-      let measurement = measurements.get(spaceId)
+      let measurement = this.#usageMeasurements.get(spaceId)
       if (measurement === undefined) {
-        const started: Promise<QuotaSnapshot> = measure()
-          .then(used => {
+        const started: Promise<QuotaSnapshot> = this.#diskUsage(
+          this.#spaceDir(spaceId)
+        )
+          .then(({ total }) => {
             const entry = {
-              used,
+              used: total,
               expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
             }
             // A quota drop while this ran forgot it (`#dropQuotaCaches`):
             // its figure may predate the change, so it fills no cache.
-            if (measurements.get(spaceId) === started) {
-              cache.set(spaceId, entry)
+            if (this.#usageMeasurements.get(spaceId) === started) {
+              this.#usageCache.set(spaceId, entry)
             }
             return entry
           })
           .finally(() => {
-            if (measurements.get(spaceId) === started) {
-              measurements.delete(spaceId)
+            if (this.#usageMeasurements.get(spaceId) === started) {
+              this.#usageMeasurements.delete(spaceId)
             }
           })
-        measurements.set(spaceId, started)
+        this.#usageMeasurements.set(spaceId, started)
         measurement = started
       }
       cached = await measurement
     }
-    const headroom = limit - cached.used
-    if (headroom <= 0 || incoming > headroom) {
-      throw makeError()
+    const headroom = capacityBytes - cached.used
+    if (headroom <= 0 || incomingBytes > headroom) {
+      throw new QuotaExceededError({ spaceId, capacityBytes })
     }
-    cached.used += incoming
+    cached.used += incomingBytes
     const reserved = cached
     // What this reservation currently holds in the snapshot. `reconcile` moves
     // it to the amount actually consumed, so `release` always gives back what
     // is really held rather than the original estimate.
-    let held = incoming
+    let held = incomingBytes
     // Only adjust while this snapshot is still the live one: a later
     // re-measurement already reflects the write's real outcome.
-    const adjust = (amount: number): void => {
-      if (cache.get(spaceId) === reserved) {
-        reserved.used += amount - held
+    const adjust = (actualBytes: number): void => {
+      if (this.#usageCache.get(spaceId) === reserved) {
+        reserved.used += actualBytes - held
       }
-      held = amount
+      held = actualBytes
     }
     return {
       headroom,
       release: () => adjust(0),
-      reconcile: (actual: number) => adjust(actual)
+      reconcile: (actualBytes: number) => adjust(actualBytes)
     }
   }
 
@@ -2317,7 +2265,7 @@ export class FileSystemBackend implements StorageBackend {
    * not read it again. A dir without a Metadata file counts as live, as it
    * always has, and carries neither. A Metadata file that does not parse
    * counts as live too and carries the parse error as `unreadable`. The
-   * Space-wide callers (the count quotas, the usage report, import) then keep
+   * Space-wide callers (the count quota, the usage report, import) then keep
    * working, and only a listing page that holds the Collection fails. A
    * filesystem fault still rejects. An absent Space dir holds none.
    * @param options {object}
