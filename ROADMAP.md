@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 215
+nextAvailableId: 216
 
 <!-- roadmap-order:index:start -->
 
@@ -108,6 +108,8 @@ Ready:
   move)
 - WAS-202 [L] Pull-loop tests beyond the two-server filesystem case
 - WAS-210 [L] One function decides where a `did:webvh` resolves from
+- WAS-215 [L] Replace the hand-rolled usage cache in the filesystem backend with
+  `LruCache`
 
 **Someday / Maybe**
 
@@ -1832,6 +1834,82 @@ for an ambiguous mapping, has to be made in both. If only the resolver changes,
 the pre-pass spends a chain verification on grants that are never used, or
 withholds one the resolver would honor. It was left out of the cleanup pass
 because it restructures the authorization path.
+
+---
+
+### WAS-215: [L] Replace the hand-rolled usage cache in the filesystem backend with `LruCache`
+
+- status: todo
+- priority: low
+- labels: filesystem, quotas, cleanup
+- discovered-from: simplify pass over the `MAX_RESOURCES_PER_SPACE` removal
+  branch (2026-10-08); do after that branch lands
+- acceptance:
+  - [ ] `FileSystemBackend` holds one `LruCache` from `@interop/lru-memoize` for
+        the per-Space usage snapshot, and the two maps `#usageCache` and
+        `#usageMeasurements` are gone
+  - [ ] `#dropUsageCache` is one `delete` on that cache, and every site that
+        frees bytes (Delete Resource, Delete Collection, Delete Space, Delete
+        Chunk, the import rollback) calls it; no site touches the cache directly
+  - [ ] A measurement forgotten by a drop while it runs never fills the cache,
+        and a rejected measurement is not cached, with no identity guard written
+        by hand
+  - [ ] The reservation accounting (`headroom`, `release`, `reconcile`) and the
+        "adjust only while this snapshot is live" rule behave as before
+  - [ ] The storage-contract quota block, `test/filesystem-usage-cache` (the
+        shared measurement and the forgotten one), and the other filesystem
+        suites pass unmodified; a new case there pins that a chunk delete during
+        a running measurement does not leave a pre-delete total in the cache
+  - [ ] The `#usageCache` field doc, the `#assertSpaceHeadroom` doc, and
+        docs/filesystem-layout.md ("Counting live Resources", the byte-quota
+        paragraph) describe the cache in terms of the library
+
+Context: `#assertSpaceHeadroom` in `src/backends/filesystem.ts` keeps two maps
+per Space. One holds the measured usage snapshot with an `expiresAt`. The other
+holds the in-flight `du` measurement promise, so concurrent writes after expiry
+share one tree walk. Two `=== started` identity guards make a drop during a
+measurement forget it, and a `finally` clears the in-flight entry.
+`LruCache.memoize` does all of that: the cached value is the promise itself,
+`ttl` expires it, a rejected promise is evicted, and `delete(key)` during flight
+means the finished figure never lands. The repo already uses the class for the
+Space Metadata cache, the policy cache, and the CORS proxy.
+
+The drift this design allows has already happened once. Five sites drop the
+cache through `#dropUsageCache`, which clears both maps. `deleteChunk` clears
+only the snapshot map, so a measurement that started before the chunk was
+removed still fills the cache with the pre-delete total, and the Space refuses
+writes it has room for until the TTL expires. A single structure cannot drift
+this way.
+
+What stays bespoke is the reservation accounting. Each admitted write adds its
+bytes to the snapshot in place, and `release` / `reconcile` adjust it later only
+while that snapshot is still the live entry.
+
+Steps:
+
+1. Replace the two fields with one
+   `#usageCache = new LruCache({ max: <bound>, ttl: QUOTA_USAGE_CACHE_TTL })`,
+   sized like `POLICY_CACHE_MAX` is for the policy cache. The entry type stays
+   `{ used: number }`; `expiresAt` goes, since the library owns expiry.
+2. In `#assertSpaceHeadroom`, obtain the snapshot with
+   `this.#usageCache.memoize<UsageSnapshot>({ key: spaceId, fn })`, where `fn`
+   runs `#diskUsage` on the Space dir and returns `{ used: total }`. Drop the
+   measurement map, the `.then` / `.finally` chain, and both identity guards.
+3. Keep the "only adjust while live" check. `memoize` is an `async` method and
+   hands back a wrapper promise, not the stored one, while `adjust` is
+   synchronous. Capture the stored handle instead: on a miss `fn` is called
+   synchronously inside `memoize`, so have it record the promise it returns; on
+   a hit read `this.#usageCache.cache.peek(spaceId)` before calling `memoize`.
+   `adjust` then compares `cache.peek(spaceId)` to that handle. `peek` does not
+   refresh the entry's age.
+4. Reduce `#dropUsageCache` to `this.#usageCache.delete(spaceId)` and make
+   `deleteChunk` call it in place of its direct `#usageCache.delete`.
+5. Two semantic differences to accept and note in the field doc: the library
+   starts the TTL at `set` time, which is measurement start, so on a large Space
+   the entry lives slightly shorter than it did; and it reads `performance.now`,
+   so a test that wants to expire the entry must advance that clock (or use a
+   `ttl` of its own), not spy on `Date.now`.
+6. `reportUsage` always re-measures and does not read the cache; leave it.
 
 ---
 
