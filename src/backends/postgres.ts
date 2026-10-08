@@ -5375,8 +5375,6 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<ApplyResult>}
    * @throws {PayloadTooLargeError}   the body exceeds the upload cap
    * @throws {QuotaExceededError}   the write would exceed the Space quota
-   * @throws {CountQuotaExceededError}   a create would exceed the Resource
-   *   count quota
    */
   async applyResource({
     spaceId,

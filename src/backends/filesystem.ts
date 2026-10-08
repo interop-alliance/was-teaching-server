@@ -716,7 +716,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @returns {void}
    */
-  #dropQuotaCaches({ spaceId }: { spaceId: string }): void {
+  #dropUsageCache({ spaceId }: { spaceId: string }): void {
     this.#usageCache.delete(spaceId)
     this.#usageMeasurements.delete(spaceId)
   }
@@ -1184,7 +1184,7 @@ export class FileSystemBackend implements StorageBackend {
               used: total,
               expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
             }
-            // A quota drop while this ran forgot it (`#dropQuotaCaches`):
+            // A cache drop while this ran forgot it (`#dropUsageCache`):
             // its figure may predate the change, so it fills no cache.
             if (this.#usageMeasurements.get(spaceId) === started) {
               this.#usageCache.set(spaceId, entry)
@@ -1222,7 +1222,7 @@ export class FileSystemBackend implements StorageBackend {
     return {
       headroom,
       release: () => adjust(0),
-      reconcile: (actualBytes: number) => adjust(actualBytes)
+      reconcile: adjust
     }
   }
 
@@ -1673,19 +1673,19 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.entries {fs.Dirent[]}   that dir's listing
    * @param options.representations {Array<{ fileName: string, resourceId: string, contentType: string }>}
    *   the listing's representation files, parsed (`#representationEntries`)
-   * @param [options.except] {Set<string>}   ids to leave out of the count
+   * @param options.except {Set<string>}   ids to leave out of the count
    * @returns {Promise<number>}
    */
   async #countLiveListed({
     dir,
     entries,
     representations,
-    except = new Set<string>()
+    except
   }: {
     dir: string
     entries: fs.Dirent[]
     representations: RepresentationEntry[]
-    except?: Set<string>
+    except: Set<string>
   }): Promise<number> {
     const names = this.#sidecarNames(entries)
     const counted = representations.filter(
@@ -2203,9 +2203,9 @@ export class FileSystemBackend implements StorageBackend {
       spaceId,
       remove: () =>
         this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () => {
-          // Freed bytes and slots: drop the cached quota figures so the next write
+          // Freed bytes: drop the cached usage total so the next write
           // re-measures.
-          this.#dropQuotaCaches({ spaceId })
+          this.#dropUsageCache({ spaceId })
           // Remove this Space's revocations, which sit outside the Space dir.
           await rm(this.#spaceRevocationDir(spaceId), {
             recursive: true,
@@ -3761,12 +3761,12 @@ export class FileSystemBackend implements StorageBackend {
         )
       )
     } finally {
-      // Freed bytes and slots: drop the cached quota figures so the next
-      // write re-measures. After the removal, as `deleteResource` does. This
+      // Freed bytes: drop the cached usage total so the next write
+      // re-measures. After the removal, as `deleteResource` does. This
       // can run on the shared side of the Space gate, where dropping first
       // would let a concurrent write cache the pre-removal total for a full
       // TTL. A removal that failed part way has still freed bytes.
-      this.#dropQuotaCaches({ spaceId })
+      this.#dropUsageCache({ spaceId })
     }
   }
 
@@ -3849,7 +3849,7 @@ export class FileSystemBackend implements StorageBackend {
               // A directory with no Metadata file (a create cut short between
               // its `mkdir` and its file write) is no Collection. It goes
               // whole, and no tombstone is left.
-              this.#dropQuotaCaches({ spaceId })
+              this.#dropUsageCache({ spaceId })
               await rm(this.#collectionDir({ spaceId, collectionId }), {
                 recursive: true,
                 force: true
@@ -6096,12 +6096,12 @@ export class FileSystemBackend implements StorageBackend {
         dir: collectionDir,
         resourceId
       })
-      // Freed bytes and slots: drop the cached quota figures so the next write
+      // Freed bytes: drop the cached usage total so the next write
       // re-measures. AFTER the removal and inside the lock, as `deleteChunk`
       // does -- invalidating first would let a concurrent write re-measure the
       // pre-delete tree and cache that total for a full TTL, refusing the
       // client's follow-up write (507) over space this delete just freed.
-      this.#dropQuotaCaches({ spaceId })
+      this.#dropUsageCache({ spaceId })
       // Cascade-delete the Resource's chunks (the `chunked-streams` feature): a
       // chunk must never outlive its parent Resource, so its whole chunk
       // directory goes with the content. Runs under the same per-Resource lock a
@@ -6139,7 +6139,7 @@ export class FileSystemBackend implements StorageBackend {
    * Builds the on-disk path for a Resource's chunk directory
    * (`.chunks.<encodedResourceId>/`) inside its Collection dir. A hidden
    * subdirectory (leading `.`, so it is invisible to the `r.`-prefixed Collection
-   * listing and the live-Resource count) that holds the Resource's chunk
+   * listing) that holds the Resource's chunk
    * representations; inside it a chunk is stored exactly like a Resource keyed by
    * its index (`r.<index>.<encodedContentType>.<ext>` plus a `.meta.<index>.json`
    * stamp sidecar), so the Resource file / sidecar helpers are reused verbatim
@@ -8795,7 +8795,7 @@ export class FileSystemBackend implements StorageBackend {
           if (livePath !== undefined) {
             await rm(livePath, { force: true })
           }
-          this.#dropQuotaCaches({ spaceId })
+          this.#dropUsageCache({ spaceId })
           await rm(this.#chunkDir({ collectionDir, resourceId }), {
             recursive: true,
             force: true
