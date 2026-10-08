@@ -352,13 +352,13 @@ Entries added by the review (2026-10-01):
     partitioned creates of one id with different digests both land and LWW keeps
     one. Recorded as a limitation in section 5.1 and in the spec text.
 
-24. Quotas (`maxCollectionsPerSpace`, `maxResourcesPerSpace`, `capacityBytes`)
-    and `maxUploadBytes` are enforced on every create and write
-    (`filesystem.ts:257-275`, `:2247`; `postgres.ts:1254-1264`). Upheld on the
-    apply path: a replica smaller than its source refuses the apply, and the
-    refusal is a durable per-Collection stall naming the quota (section 5.11),
-    not a skip and not a bypass. Tombstoned Collections do not count toward the
-    Collection quota (invariant 4).
+24. Quotas (`maxCollectionsPerSpace`, `capacityBytes`) and `maxUploadBytes` are
+    enforced on every create and write (`filesystem.ts:257-275`, `:2247`;
+    `postgres.ts:1254-1264`). Upheld on the apply path: a replica smaller than
+    its source refuses the apply, and the refusal is a durable per-Collection
+    stall naming the quota (section 5.11), not a skip and not a bypass.
+    Tombstoned Collections do not count toward the Collection quota (invariant
+    4).
 
 25. The store layout file holds only `version` and is private to the backend
     (ARCHITECTURE `filesystemStore.ts`). Changed: it also holds the origin id
