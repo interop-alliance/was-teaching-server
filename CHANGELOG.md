@@ -39,10 +39,10 @@
   answers 404. A read racing Delete Space can still answer 500.
 - A filesystem representation file no live sidecar names, which a crash can
   leave behind, no longer shows up in the Collection listing and its
-  `totalItems`, the Resource count quota, the changes feed, export, the equality
-  query and unique checks, or the chunk listing. A delete cut short after its
-  tombstone now reaches the changes feed as a delete, where it was reported as a
-  live Resource and did not replicate.
+  `totalItems`, the changes feed, export, the equality query and unique checks,
+  or the chunk listing. A delete cut short after its tombstone now reaches the
+  changes feed as a delete, where it was reported as a live Resource and did not
+  replicate.
 - A Resource whose filesystem sidecar does not parse is left out of every
   listing, scan and query, the changes feed and export, with a `warn` line. The
   Resource's own reads and writes still fail on it. A unique value it holds is
@@ -63,15 +63,15 @@
   the ones a directory scan listed. A name that does not parse beside one that
   does is read as absent, with a `warn` line, and the next write or delete of
   the id removes it. Archives still carry a tombstone as `.meta.<id>.json`.
-- The filesystem Collection listing's `totalItems` and the Resource count quota
-  count the ids with a live sidecar name and a representation file in the
-  directory listing, and open no sidecar outside the listing page. A tombstone,
-  a file beside it, and a file with no sidecar do not count.
+- The filesystem Collection listing's `totalItems` counts the ids with a live
+  sidecar name and a representation file in the directory listing, and opens no
+  sidecar outside the listing page. A tombstone, a file beside it, and a file
+  with no sidecar do not count.
 - A file a crash left beside a filesystem Resource is reclaimed by the next
   Delete Resource of the id or the next create over its tombstone. Filesystem
   Delete Chunk removes every representation file of the index.
-- The byte and Resource count quotas share one measurement per Space: a write
-  that finds the cached figure expired while a measurement is running awaits it.
+- The byte quota shares one measurement per Space: a write that finds the cached
+  figure expired while a measurement is running awaits it.
 - The filesystem storage layout advances to version 5. A data dir holding a
   Resource tombstone under the live sidecar name is refused at startup with
   `StoreVersionError`, until it is wiped or restored from an export archive.
@@ -105,6 +105,17 @@
   governed Collection's Resources were not checked.
 - A server-side fault met while verifying a submitted revocation's chain
   surfaces as its 5xx rather than as a 400 `invalid-revocation`.
+
+### Removed
+
+- **BREAKING**: the per-Space Resource count quota. The
+  `MAX_RESOURCES_PER_SPACE` setting and the `maxResourcesPerSpace` plugin and
+  backend option are gone, and neither backend refuses a Resource create for the
+  number of Resources a Space holds. A `MAX_RESOURCES_PER_SPACE` still set in
+  the environment is ignored. On the filesystem backend the count listed every
+  Collection of the Space each time its cache expired, so its cost grew with the
+  Space. The byte quota (`STORAGE_LIMIT_PER_SPACE`) and the
+  Spaces-per-controller and Collections-per-Space quotas are unchanged.
 
 ## 0.42.1 - 2026-10-05
 
