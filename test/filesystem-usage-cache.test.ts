@@ -93,13 +93,13 @@ describe('FileSystemBackend: the byte-quota usage cache', () => {
   }
 
   /**
-   * Expires whatever the cache holds, by moving the clock the entries are
-   * stamped with past their TTL.
+   * Expires whatever the cache holds, by moving the clock `LruCache` times
+   * its TTL off (`performance.now`, not `Date.now`) past that TTL.
    * @returns {void}
    */
   function expireCache(): void {
-    const later = Date.now() + QUOTA_USAGE_CACHE_TTL + 1
-    vi.spyOn(Date, 'now').mockReturnValue(later)
+    const later = performance.now() + QUOTA_USAGE_CACHE_TTL + 1
+    vi.spyOn(performance, 'now').mockReturnValue(later)
   }
 
   beforeEach(async () => {
@@ -158,6 +158,42 @@ describe('FileSystemBackend: the byte-quota usage cache', () => {
     assert.equal(du.calls, 1)
     // A measurement that had filled the cache would make this write hit it.
     await writeJson('after')
+    assert.equal(du.calls, 2)
+  })
+
+  it('a chunk delete while a measurement runs forgets it too, so the next write measures again', async () => {
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'chunked',
+      input: { kind: 'json', contentType: 'application/json', data: {} }
+    })
+    await backend.writeChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'chunked',
+      chunkIndex: 0,
+      input: { kind: 'json', contentType: 'application/json', data: {} }
+    })
+    du.calls = 0
+    expireCache()
+    const release = holdDu()
+    const write = writeJson('during-chunk')
+    await duCalled(1)
+    // Frees bytes mid-measurement, same as the Resource-delete case above:
+    // the running `du` read the tree before this, so its total must not be
+    // cached.
+    await backend.deleteChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'chunked',
+      chunkIndex: 0
+    })
+    release()
+    await write
+    assert.equal(du.calls, 1)
+    // A measurement that had filled the cache would make this write hit it.
+    await writeJson('after-chunk')
     assert.equal(du.calls, 2)
   })
 })
