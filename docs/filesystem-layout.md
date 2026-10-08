@@ -166,10 +166,13 @@ sidecar, except the page the listing serves. An id with both names is resolved
 by reading those two sidecars, and only those. A tombstone, a file beside a
 tombstone, and a file with no sidecar do not count.
 
-The byte quota caches its `du` figure per Space for a short time and re-measures
-when the entry expires. A write that finds the entry expired while another
-write's measurement is running awaits that measurement rather than starting its
-own.
+The byte quota caches its `du` figure per Space in an `LruCache`
+(`@interop/lru-memoize`) for a short time and re-measures when the entry
+expires; `memoize` shares one running measurement among writes that find the
+entry expired at the same time, rather than each starting its own, and evicts a
+rejected measurement instead of caching it. Two differences from a hand-rolled
+TTL cache: the TTL starts at measurement start rather than completion, and it is
+timed off `performance.now` rather than `Date.now`.
 
 ### Reads
 

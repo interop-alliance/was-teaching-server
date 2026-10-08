@@ -34,6 +34,7 @@ import {
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
   QUOTA_USAGE_CACHE_TTL,
+  QUOTA_USAGE_CACHE_MAX,
   normalizeCountLimit,
   normalizeCapacityBytes
 } from '../config.default.js'
@@ -45,6 +46,7 @@ import {
 } from '../lib/importTar.js'
 import type { ImportPlan } from '../lib/importTar.js'
 import { isJsonContentType, isWriteStamp } from '@interop/storage-core'
+import { LruCache } from '@interop/lru-memoize'
 import { collectionPath, spacePath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
@@ -268,9 +270,10 @@ type SidecarNameRead = { sidecar?: MetaSidecar; damage?: SyntaxError }
 
 /**
  * One entry of the per-Space quota cache (`#usageCache`): the measured
- * figure and when it expires.
+ * figure. Expiry is owned by the `LruCache` itself (`QUOTA_USAGE_CACHE_TTL`),
+ * not carried on the entry.
  */
-type QuotaSnapshot = { used: number; expiresAt: number }
+type UsageSnapshot = { used: number }
 
 const execFileAsync = promisify(execFile)
 
@@ -684,19 +687,22 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Per-Space usage totals for the write-path quota pre-flight, so
    * `#assertSpaceHeadroom` does not spawn `du` (a whole-Space tree walk) on
-   * every resource write. Entries live `QUOTA_USAGE_CACHE_TTL` ms; each
-   * accepted write adds its incoming bytes to the cached total, and deletes
-   * invalidate the Space's entry. Quota reports (`reportUsage`) always
-   * re-measure. Single-instance only, like `#writeMutex`.
+   * every resource write. One `LruCache` entry per Space, keyed by `spaceId`:
+   * `memoize` shares one running measurement among callers that find the
+   * entry absent or expired at the same time, and evicts a rejected
+   * measurement rather than caching it. Each accepted write adds its incoming
+   * bytes to the cached total; deletes invalidate the Space's entry
+   * (`#dropUsageCache`). Quota reports (`reportUsage`) always re-measure.
+   * Single-instance only, like `#writeMutex`: the write stamps and the policy
+   * / Space Metadata caches rest on the same assumption. Two accepted
+   * differences from the cache this replaced: the TTL starts at measurement
+   * start rather than completion, and the library times it off
+   * `performance.now` rather than `Date.now`.
    */
-  #usageCache = new Map<string, QuotaSnapshot>()
-
-  /**
-   * The measurement running for each Space's `#usageCache` entry, so callers
-   * that find the entry absent or expired at the same time share one tree
-   * walk (see `#assertSpaceHeadroom`).
-   */
-  #usageMeasurements = new Map<string, Promise<QuotaSnapshot>>()
+  #usageCache = new LruCache({
+    max: QUOTA_USAGE_CACHE_MAX,
+    ttl: QUOTA_USAGE_CACHE_TTL
+  })
 
   /**
    * The sidecars `readMetaSidecar` resolved from both names, a live sidecar
@@ -718,7 +724,20 @@ export class FileSystemBackend implements StorageBackend {
    */
   #dropUsageCache({ spaceId }: { spaceId: string }): void {
     this.#usageCache.delete(spaceId)
-    this.#usageMeasurements.delete(spaceId)
+  }
+
+  /**
+   * The promise currently backing a Space's `#usageCache` entry, or
+   * `undefined` when there is none (absent, expired, or dropped). The one
+   * reach past `LruCache`'s `memoize`/`delete` surface into its underlying
+   * `cache`, so `#assertSpaceHeadroom` has a single place to compare against
+   * rather than repeating the raw `.cache.peek` call at each call site.
+   * @param spaceId {string}
+   * @returns {Promise<UsageSnapshot> | undefined}
+   */
+  #usageCacheHandle(spaceId: string): Promise<UsageSnapshot> | undefined {
+    return this.#usageCache.cache.peek(spaceId) as
+      Promise<UsageSnapshot> | undefined
   }
 
   /**
@@ -1145,11 +1164,10 @@ export class FileSystemBackend implements StorageBackend {
    * reflects it -- without that, every streamed write inside one TTL would be
    * admitted against the same total and the Space would sail past capacity.
    *
-   * One measurement runs per Space at a time: a caller that finds the entry
-   * absent or expired while another caller's measurement is running awaits
-   * that one (`#usageMeasurements`) rather than starting its own, so a burst
-   * of writes after the entry expires costs one tree walk. Every caller then
-   * reserves against the same entry.
+   * One measurement runs per Space at a time: `LruCache.memoize` shares one
+   * running measurement among callers that find the entry absent or expired
+   * at the same time, so a burst of writes after the entry expires costs one
+   * tree walk. Every caller then reserves against the same entry.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.capacityBytes {number}   the configured per-Space limit
@@ -1172,35 +1190,24 @@ export class FileSystemBackend implements StorageBackend {
     release: () => void
     reconcile: (actualBytes: number) => void
   }> {
-    let cached = this.#usageCache.get(spaceId)
-    if (!cached || cached.expiresAt <= Date.now()) {
-      let measurement = this.#usageMeasurements.get(spaceId)
-      if (measurement === undefined) {
-        const started: Promise<QuotaSnapshot> = this.#diskUsage(
-          this.#spaceDir(spaceId)
+    // The stored handle this reservation's measurement answered from: the
+    // promise already in the cache on a hit, or the one `fn` returns on a
+    // miss (the same promise `memoize` stores, since it calls `fn`
+    // synchronously before awaiting it). `adjust` below compares the cache's
+    // current entry against this handle to tell whether it is still the live
+    // one.
+    let handle: Promise<UsageSnapshot> | undefined =
+      this.#usageCacheHandle(spaceId)
+    const cached = await this.#usageCache.memoize<UsageSnapshot>({
+      key: spaceId,
+      fn: () => {
+        const started = this.#diskUsage(this.#spaceDir(spaceId)).then(
+          ({ total }) => ({ used: total })
         )
-          .then(({ total }) => {
-            const entry = {
-              used: total,
-              expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
-            }
-            // A cache drop while this ran forgot it (`#dropUsageCache`):
-            // its figure may predate the change, so it fills no cache.
-            if (this.#usageMeasurements.get(spaceId) === started) {
-              this.#usageCache.set(spaceId, entry)
-            }
-            return entry
-          })
-          .finally(() => {
-            if (this.#usageMeasurements.get(spaceId) === started) {
-              this.#usageMeasurements.delete(spaceId)
-            }
-          })
-        this.#usageMeasurements.set(spaceId, started)
-        measurement = started
+        handle = started
+        return started
       }
-      cached = await measurement
-    }
+    })
     const headroom = capacityBytes - cached.used
     if (headroom <= 0 || incomingBytes > headroom) {
       throw new QuotaExceededError({ spaceId, capacityBytes })
@@ -1211,10 +1218,11 @@ export class FileSystemBackend implements StorageBackend {
     // it to the amount actually consumed, so `release` always gives back what
     // is really held rather than the original estimate.
     let held = incomingBytes
-    // Only adjust while this snapshot is still the live one: a later
-    // re-measurement already reflects the write's real outcome.
+    // Only adjust while this snapshot's measurement is still the cache's live
+    // entry: a later re-measurement, or a drop (`#dropUsageCache`), already
+    // reflects the write's real outcome.
     const adjust = (actualBytes: number): void => {
-      if (this.#usageCache.get(spaceId) === reserved) {
+      if (this.#usageCacheHandle(spaceId) === handle) {
         reserved.used += actualBytes - held
       }
       held = actualBytes
@@ -6538,8 +6546,10 @@ export class FileSystemBackend implements StorageBackend {
             if (remaining.length === 0) {
               await fs.promises.rmdir(chunkDir)
             }
-            // Freed bytes: drop the cached quota usage so the next write re-measures.
-            this.#usageCache.delete(spaceId)
+            // Freed bytes: drop the cached quota usage so the next write
+            // re-measures (`#dropUsageCache` also forgets a measurement
+            // already running, which may have read the tree before this).
+            this.#dropUsageCache({ spaceId })
             return true
           }
         )
