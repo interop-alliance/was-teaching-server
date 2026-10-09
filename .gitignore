@@ -142,6 +142,7 @@ yarn.lock
 
 # Project specific
 data/*
+.perf-fs-seed/
 
 # TypeScript build output (tsc → dist/)
 dist/
