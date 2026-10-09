@@ -105,23 +105,16 @@
   governed Collection's Resources were not checked.
 - A server-side fault met while verifying a submitted revocation's chain
   surfaces as its 5xx rather than as a 400 `invalid-revocation`.
-- The filesystem backend's byte-quota usage cache is now one `LruCache`
-  (`@interop/lru-memoize`), the same library already backing the Space Metadata
-  and policy caches, replacing the hand-rolled pair of maps and their two
-  `=== started` identity guards. `memoize` shares one running measurement among
-  writes that find the entry expired at the same time and evicts a rejected
-  measurement, so a single structure now owns what used to be spread across two.
-  Two accepted differences from the cache it replaces: the TTL starts at
-  measurement start rather than completion, and it is timed off
-  `performance.now` rather than `Date.now`.
+- The filesystem backend's byte-quota usage cache is an `LruCache`
+  (`@interop/lru-memoize`), the library behind the Space Metadata and policy
+  caches, bounded by `QUOTA_USAGE_CACHE_MAX`. Its TTL counts from the start of a
+  measurement rather than its completion.
 
 ### Fixed
 
-- Filesystem Delete Chunk drops the byte-quota usage cache through the same path
-  every other free does (`#dropUsageCache`), instead of clearing only the cached
-  total directly. A `du` measurement already running when the chunk was deleted
-  could otherwise still land its pre-delete total in the cache afterward,
-  letting the Space refuse writes it had room for until the cache's TTL expired.
+- Filesystem Delete Chunk invalidates the byte-quota usage cache the same way
+  every other free does, so a measurement already running when the chunk was
+  deleted no longer caches its pre-delete total.
 
 ### Removed
 

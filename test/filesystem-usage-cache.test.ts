@@ -93,13 +93,15 @@ describe('FileSystemBackend: the byte-quota usage cache', () => {
   }
 
   /**
-   * Expires whatever the cache holds, by moving the clock `LruCache` times
-   * its TTL off (`performance.now`, not `Date.now`) past that TTL.
-   * @returns {void}
+   * Expires whatever the cache holds by moving `performance.now`, the clock
+   * `LruCache` times its TTL off, past that TTL, then waits out the 1 ms for
+   * which `lru-cache` reuses its last clock reading.
+   * @returns {Promise<void>}
    */
-  function expireCache(): void {
+  async function expireCache(): Promise<void> {
     const later = performance.now() + QUOTA_USAGE_CACHE_TTL + 1
     vi.spyOn(performance, 'now').mockReturnValue(later)
+    await new Promise(resolve => setTimeout(resolve, 5))
   }
 
   beforeEach(async () => {
@@ -130,7 +132,7 @@ describe('FileSystemBackend: the byte-quota usage cache', () => {
   })
 
   it('two writes racing an expired entry run one measurement', async () => {
-    expireCache()
+    await expireCache()
     const release = holdDu()
     const writes = Promise.all([writeJson('first'), writeJson('second')])
     await duCalled(1)
@@ -145,55 +147,64 @@ describe('FileSystemBackend: the byte-quota usage cache', () => {
     assert.equal(listing.totalItems, 3)
   })
 
-  it('a delete while a measurement runs forgets it, so the next write measures again', async () => {
-    expireCache()
-    const release = holdDu()
-    const write = writeJson('during')
-    await duCalled(1)
-    // Frees bytes mid-measurement: the running `du` read the tree before
-    // this, so its total must not be cached.
-    await backend.deleteResource({ spaceId, collectionId, resourceId: 'seed' })
-    release()
-    await write
-    assert.equal(du.calls, 1)
-    // A measurement that had filled the cache would make this write hit it.
-    await writeJson('after')
-    assert.equal(du.calls, 2)
-  })
+  // Each kind of free that bytes come back through: a Resource delete and a
+  // chunk delete. `prepare` stores what `free` removes.
+  const frees = [
+    {
+      kind: 'Resource',
+      prepare: async () => {},
+      free: () =>
+        backend.deleteResource({ spaceId, collectionId, resourceId: 'seed' })
+    },
+    {
+      kind: 'chunk',
+      prepare: async () => {
+        const input = {
+          kind: 'json' as const,
+          contentType: 'application/json',
+          data: {}
+        }
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          input
+        })
+        await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0,
+          input
+        })
+      },
+      free: () =>
+        backend.deleteChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0
+        })
+    }
+  ]
 
-  it('a chunk delete while a measurement runs forgets it too, so the next write measures again', async () => {
-    await backend.writeResource({
-      spaceId,
-      collectionId,
-      resourceId: 'chunked',
-      input: { kind: 'json', contentType: 'application/json', data: {} }
+  for (const { kind, prepare, free } of frees) {
+    it(`a ${kind} delete while a measurement runs forgets it, so the next write measures again`, async () => {
+      await prepare()
+      du.calls = 0
+      await expireCache()
+      const release = holdDu()
+      const write = writeJson('during')
+      await duCalled(1)
+      // Frees bytes mid-measurement: the running `du` read the tree before
+      // this, so its total must not be cached.
+      await free()
+      release()
+      await write
+      assert.equal(du.calls, 1)
+      // A measurement that had filled the cache would make this write hit it.
+      await writeJson('after')
+      assert.equal(du.calls, 2)
     })
-    await backend.writeChunk({
-      spaceId,
-      collectionId,
-      resourceId: 'chunked',
-      chunkIndex: 0,
-      input: { kind: 'json', contentType: 'application/json', data: {} }
-    })
-    du.calls = 0
-    expireCache()
-    const release = holdDu()
-    const write = writeJson('during-chunk')
-    await duCalled(1)
-    // Frees bytes mid-measurement, same as the Resource-delete case above:
-    // the running `du` read the tree before this, so its total must not be
-    // cached.
-    await backend.deleteChunk({
-      spaceId,
-      collectionId,
-      resourceId: 'chunked',
-      chunkIndex: 0
-    })
-    release()
-    await write
-    assert.equal(du.calls, 1)
-    // A measurement that had filled the cache would make this write hit it.
-    await writeJson('after-chunk')
-    assert.equal(du.calls, 2)
-  })
+  }
 })

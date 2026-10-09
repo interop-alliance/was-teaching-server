@@ -167,12 +167,12 @@ by reading those two sidecars, and only those. A tombstone, a file beside a
 tombstone, and a file with no sidecar do not count.
 
 The byte quota caches its `du` figure per Space in an `LruCache`
-(`@interop/lru-memoize`) for a short time and re-measures when the entry
-expires; `memoize` shares one running measurement among writes that find the
-entry expired at the same time, rather than each starting its own, and evicts a
-rejected measurement instead of caching it. Two differences from a hand-rolled
-TTL cache: the TTL starts at measurement start rather than completion, and it is
-timed off `performance.now` rather than `Date.now`.
+(`@interop/lru-memoize`) for a short time, counted from the start of the
+measurement, and re-measures when the entry expires. Writes that find the entry
+expired at the same time share one running measurement, and a rejected
+measurement is not cached. A Space whose `du` takes close to the TTL gets few
+cache hits, which this backend accepts: it is built for a readable layout, not
+throughput.
 
 ### Reads
 
