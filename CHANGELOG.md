@@ -8,6 +8,14 @@
   token. The server records `createdBy` on every Resource, Collection, and Space
   created under a capability invocation, and the token says so to a client that
   builds on attribution.
+- `pnpm perf:fs` runs a local load-performance check of the filesystem backend:
+  it starts the server on a fresh temp data dir, fills Collections at each given
+  size, measures public and signed reads/writes/deletes (k6 for the public ones,
+  `@interop/was-client` for the signed ones), and prints a Markdown report with
+  a scaling summary comparing the smallest and largest size. `pnpm perf:fs:seed`
+  pre-seeds a reusable data dir directly through the backend's own write
+  methods, and `pnpm perf:fs --seed-dir <path>` runs against it instead of
+  refilling over signed HTTP every time.
 
 ### Changed
 

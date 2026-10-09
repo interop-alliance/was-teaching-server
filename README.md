@@ -394,6 +394,62 @@ Useful CLI options: `-s/--suite <id>`, `-g/--grep <pattern>`,
 `--fail-fast`. Exit codes: `0` conformant, `1` failures, `2` usage error or
 server unreachable.
 
+### Performance Tests
+
+`pnpm perf:fs` measures the filesystem backend of the checked-out code. It
+starts the server as its own process on a fresh temp data dir (with
+`DATABASE_URL` and `WAS_ONBOARDING_TOKEN` cleared), fills Collections of 1 and
+500 Resources, runs the tests, prints one Markdown table, and stops the server.
+To compare two versions, run it on each.
+
+```bash
+# Quick run, about 5 minutes:
+pnpm perf:fs
+# Full run, about 15 minutes:
+pnpm perf:fs --sizes 1,500,2000 --duration 20 --writes 300
+# Other sizes, client counts, test lengths (seconds) and in-a-row write counts:
+pnpm perf:fs --sizes 1,10000 --clients 10 --duration 30 --writes 500
+# Other server settings come from the environment as usual:
+STORAGE_LIMIT_PER_SPACE=1000000000 pnpm perf:fs
+```
+
+Each load test runs 5 clients for 10 s by default, each sending one request at a
+time, and reports requests per second, average latency in ms, and failures:
+
+- **Public read** and **public list** of each size, with
+  [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/) (`brew install k6`
+  on macOS). Without k6 these rows are skipped with a warning, and the rest
+  still runs.
+- **Signed read** of each size, and **signed write** and **signed delete** in
+  the smallest and the largest size. A delete test runs in rounds: each client
+  re-creates the same few Resources, untimed, then deletes them, timed, so the
+  Collection stays near its size.
+- **Write, 1 client**: one client writing new Resources in a row into the
+  smallest and the largest size.
+
+Every test that writes or deletes gets fresh data of its own size, so filling
+Collections is a large part of a run, and it grows with the sizes. A run prints
+an estimate of its length when it starts. It uses port 4455 (override with
+`PORT=...`) and keeps the table and the server log in a temp dir, whose path it
+prints at the end. The numbers depend on the machine, so compare runs made on
+the same one.
+
+Filling is the slow part at larger sizes: `pnpm perf:fs:seed` pre-fills a data
+dir once, directly through `FileSystemBackend`'s own write methods (no HTTP, no
+signing), and `pnpm perf:fs --seed-dir <path>` copies it into each run instead
+of refilling over signed HTTP every time. `--sizes` is ignored when `--seed-dir`
+is given -- the sizes come from the seed dir itself, and the original is left
+untouched (each run copies it, so it can be reused). Reseed with
+`pnpm perf:fs:seed` again after a Collection-size change, or whenever you want a
+clean baseline.
+
+```bash
+# Seed once, with the sizes you want to test:
+pnpm perf:fs:seed --sizes 1,500,2000
+# Then run against it, as many times as you like:
+pnpm perf:fs --seed-dir .perf-fs-seed --duration 20 --writes 300
+```
+
 ## Security
 
 This is an experimental research server.
