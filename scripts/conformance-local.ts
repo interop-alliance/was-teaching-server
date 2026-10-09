@@ -35,7 +35,9 @@ async function waitForHealth(url: string): Promise<void> {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url)
-      if (response.ok) return
+      if (response.ok) {
+        return
+      }
     } catch {
       // server not accepting connections yet; keep polling
     }

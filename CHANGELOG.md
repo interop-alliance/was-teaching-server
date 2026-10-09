@@ -19,6 +19,8 @@
 
 ### Changed
 
+- The filesystem backend's per-Space `du` usage snapshot is cached for 20 s
+  (`QUOTA_USAGE_CACHE_TTL`, was 5 s).
 - ARCHITECTURE.md is now the layer map and glossary alone. The per-module
   behavior descriptions moved verbatim into topic docs under `docs/` (request
   pipeline, validators and stamps, changes feed, governed logs, replication,

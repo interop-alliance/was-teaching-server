@@ -1147,8 +1147,14 @@ export class FileSystemBackend implements StorageBackend {
    * reflects it -- without that, every streamed write inside one TTL would be
    * admitted against the same total and the Space would sail past capacity.
    *
-   * Callers that find the entry absent or expired at the same time share one
-   * measurement and then reserve against the same entry (see `#usageCache`).
+   * One measurement runs per Space at a time: `LruCache.memoize` shares one
+   * running measurement among callers that find the entry absent or expired
+   * at the same time, so a burst of writes after the entry expires costs one
+   * tree walk. Every caller then reserves against the same entry. The entry's
+   * TTL runs from the moment the measurement starts, so a `du` that outlives
+   * `QUOTA_USAGE_CACHE_TTL` is not shared with the writes that arrive after
+   * it expires; each of those starts its own. The TTL is long enough that
+   * this is an accepted difference, not a thundering herd.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.capacityBytes {number}   the configured per-Space limit

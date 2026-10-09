@@ -76,7 +76,11 @@ describe('formatProgressLine', () => {
 
   it('formats a skipped line (no k6) with just the skip reason', () => {
     assert.equal(
-      formatProgressLine({ test: 'Public read', size: 1, result: 'skipped (no k6)' }),
+      formatProgressLine({
+        test: 'Public read',
+        size: 1,
+        result: 'skipped (no k6)'
+      }),
       'Public read (size 1): skipped (no k6)'
     )
   })
@@ -127,7 +131,10 @@ describe('estimateMinutes', () => {
     sizes: [1, 500],
     edgeSizes: [1, 500],
     durationSeconds: 10,
-    serialWrites: 100
+    serialWrites: 100,
+    warmUpWrites: 20,
+    pauseMs: 2_000,
+    filling: true
   }
 
   it('returns a positive integer number of minutes', () => {
@@ -150,6 +157,21 @@ describe('estimateMinutes', () => {
     assert.ok(
       longer > shorter,
       `expected a longer duration to raise the estimate, got ${shorter} then ${longer}`
+    )
+  })
+
+  it('leaves out the fill time when a seed dir supplies the Collections', () => {
+    const seeded = estimateMinutes({ ...base, withK6: true, filling: false })
+    const filled = estimateMinutes({ ...base, withK6: true, filling: true })
+    assert.ok(
+      seeded <= filled,
+      `expected a seeded run to estimate no longer, got ${seeded} vs ${filled}`
+    )
+    const large = { ...base, sizes: [1, 20000], edgeSizes: [1, 20000] }
+    assert.ok(
+      estimateMinutes({ ...large, withK6: true, filling: false }) <
+        estimateMinutes({ ...large, withK6: true, filling: true }),
+      'expected the fill of large Collections to raise the unseeded estimate'
     )
   })
 

@@ -233,6 +233,38 @@ async function stopServer(server: ChildProcess): Promise<void> {
 }
 
 /**
+ * Reads the `seed-meta.json` that `pnpm perf:fs:seed` wrote into `seedDir`,
+ * failing with a message that names that script when the dir is not a seed.
+ * @param seedDir {string}
+ * @returns {Promise<{ seed: string, sizes: number[], edgeSizes: number[] }>}
+ */
+async function readSeedMeta(
+  seedDir: string
+): Promise<{ seed: string; sizes: number[]; edgeSizes: number[] }> {
+  const metaPath = join(seedDir, 'seed-meta.json')
+  let text: string
+  try {
+    text = await readFile(metaPath, 'utf8')
+  } catch (err) {
+    throw new Error(
+      `No seed at ${metaPath}. Run \`pnpm perf:fs:seed --out ${seedDir}\` first.`,
+      { cause: err }
+    )
+  }
+  const meta = JSON.parse(text)
+  if (
+    typeof meta.seed !== 'string' ||
+    !Array.isArray(meta.sizes) ||
+    !Array.isArray(meta.edgeSizes)
+  ) {
+    throw new Error(
+      `${metaPath} is not a seed-meta.json. Reseed with \`pnpm perf:fs:seed --out ${seedDir}\`.`
+    )
+  }
+  return meta
+}
+
+/**
  * Makes a client signing with a `did:key`: a fresh throwaway one, or the one
  * `seed` reconstructs (the identity `pnpm perf:fs:seed` wrote Spaces under,
  * when `--seed-dir` is given).
@@ -246,9 +278,7 @@ async function connect({
   const keyPair = await Ed25519VerificationKey.generate({
     seed: seed ?? Uint8Array.from(randomBytes(32))
   })
-  keyPair.controller = `did:key:${keyPair.fingerprint()}`
-  keyPair.id = `${keyPair.controller}#${keyPair.fingerprint()}`
-  return WasClient.fromSigner({ serverUrl, signer: keyPair.signer() })
+  return WasClient.fromSigner({ serverUrl, signer: keyPair.didKeySigner() })
 }
 
 /**
@@ -560,6 +590,13 @@ async function runTests({
  * @returns {Promise<void>}
  */
 async function main(): Promise<void> {
+  let seed: Uint8Array | undefined
+  if (args['seed-dir']) {
+    const meta = await readSeedMeta(args['seed-dir'])
+    seed = Uint8Array.from(Buffer.from(meta.seed, 'base64'))
+    sizes = meta.sizes
+    edgeSizes = meta.edgeSizes
+  }
   await assertPortFree()
   const k6Version = findK6()
   if (!k6Version) {
@@ -573,16 +610,6 @@ async function main(): Promise<void> {
         ''
       ].join('\n')
     )
-  }
-
-  let seed: Uint8Array | undefined
-  if (args['seed-dir']) {
-    const meta = JSON.parse(
-      await readFile(join(args['seed-dir'], 'seed-meta.json'), 'utf8')
-    )
-    seed = Uint8Array.from(Buffer.from(meta.seed, 'base64'))
-    sizes = meta.sizes
-    edgeSizes = meta.edgeSizes
   }
 
   const outDir = await mkdtemp(join(tmpdir(), 'was-perf-fs-'))
@@ -625,7 +652,10 @@ async function main(): Promise<void> {
     edgeSizes,
     durationSeconds,
     serialWrites,
-    withK6: k6Version !== undefined
+    warmUpWrites,
+    pauseMs,
+    withK6: k6Version !== undefined,
+    filling: !args['seed-dir']
   })
   console.log(`Note: this run takes about ${minutes} minutes (an estimate).\n`)
 
