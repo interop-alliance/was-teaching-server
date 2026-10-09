@@ -279,20 +279,24 @@ export function estimateMinutes({
   edgeSizes,
   durationSeconds,
   serialWrites,
-  withK6
+  warmUpWrites,
+  pauseMs,
+  withK6,
+  filling
 }: {
   sizes: number[]
   edgeSizes: number[]
   durationSeconds: number
   serialWrites: number
+  warmUpWrites: number
+  pauseMs: number
   withK6: boolean
+  filling: boolean
 }): number {
   const writesPerSecond = 25
-  const warmUpWrites = 20
-  const pauseMs = 2_000
   const sum = (values: number[]) =>
     values.reduce((total, value) => total + value, 0)
-  const filled = 2 * sum(sizes) + 3 * sum(edgeSizes)
+  const filled = filling ? 2 * sum(sizes) + 3 * sum(edgeSizes) : 0
   const loadTests =
     (withK6 ? 2 * sizes.length : 0) + sizes.length + 2 * edgeSizes.length
   // a delete round refills its Resources at the write rate, about twice as slow
@@ -529,8 +533,10 @@ export async function serialWriteLoad({
   }
   let completed = 0
   let failed = 0
+  let totalMs = 0
   const started = performance.now()
   for (let index = 0; index < serialWrites; index++) {
+    const requestStarted = performance.now()
     try {
       await was.request({
         path: `${path}/s-${index}`,
@@ -538,6 +544,7 @@ export async function serialWriteLoad({
         json: { index }
       })
       completed++
+      totalMs += performance.now() - requestStarted
     } catch {
       failed++
     }
@@ -545,7 +552,7 @@ export async function serialWriteLoad({
   const elapsedMs = performance.now() - started
   return {
     rate: completed / (elapsedMs / 1000),
-    avgMs: completed ? elapsedMs / serialWrites : undefined,
+    avgMs: completed ? totalMs / completed : undefined,
     failed
   }
 }

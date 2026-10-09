@@ -495,8 +495,10 @@ export const QUOTA_NEAR_LIMIT_FRACTION = 0.9
  * bytes, streamed bodies of undeclared size) -- the quota is a documented
  * soft limit, and the TTL bounds the re-measurement window.
  */
-export const QUOTA_USAGE_CACHE_TTL = 5_000 // milliseconds
-/** Max number of Space usage snapshots held in the cache (LRU-bounded). */
+export const QUOTA_USAGE_CACHE_TTL = 20_000 // milliseconds
+/**
+ * Max number of Space usage snapshots held in the cache (LRU-bounded).
+ */
 export const QUOTA_USAGE_CACHE_MAX = 1_000
 
 /**

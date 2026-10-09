@@ -19,7 +19,7 @@
  * Usage: pnpm perf:fs:seed [--sizes 1,500] [--out .perf-fs-seed]
  */
 import { randomBytes } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import process from 'node:process'
 import { parseArgs } from 'node:util'
@@ -147,6 +147,9 @@ async function seedSpace({
  * @returns {Promise<void>}
  */
 async function main(): Promise<void> {
+  // A reseed replaces the previous one in full, so Collections of a size no
+  // longer listed do not linger beside the new `seed-meta.json`.
+  await rm(args.out, { recursive: true, force: true })
   await mkdir(args.out, { recursive: true })
   const seed = Uint8Array.from(randomBytes(32))
   const keyPair = await Ed25519VerificationKey.generate({ seed })
