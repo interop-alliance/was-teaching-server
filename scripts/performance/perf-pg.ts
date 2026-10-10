@@ -40,7 +40,7 @@
  * request can show as a slow one rather than a failure. The table and the
  * server log are kept in a temp dir, printed at the end.
  *
- * Usage: pnpm perf:pg:seed [--sizes 1,500] first, then
+ * Usage: pnpm perf:pg:seed [--sizes 1,500,2000] first, then
  * pnpm perf:pg [--clients 5] [--duration 10] [--writes 100]
  * [--database-url postgres://was:was@localhost:5433/was]. Override the port
  * with `PORT=...` if 4455 is taken.
