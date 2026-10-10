@@ -1,7 +1,8 @@
 /**
- * Pure and injectable-dependency logic behind `pnpm perf:fs`
- * (`scripts/perf-fs.ts`): CLI argument parsing, the run-length estimate, the
- * Markdown table formatting, and the three load-aggregation harnesses. Kept
+ * Pure and injectable-dependency logic shared by `pnpm perf:fs` and
+ * `pnpm perf:pg` (`perf-fs.ts`, `perf-pg.ts`) and their seed scripts: CLI
+ * argument parsing, the run-length estimate, the Markdown table formatting,
+ * and the three load-aggregation harnesses. Kept
  * free of side effects at import time so it can be unit tested without
  * spawning a server, k6, or any network request.
  */
@@ -326,7 +327,7 @@ export function itemIds(count: number): string[] {
 /**
  * The body every seeded Resource carries, whether seeded over signed HTTP
  * (`pnpm perf:fs`) or written directly through the backend
- * (`pnpm perf:fs:seed`).
+ * (`pnpm perf:fs:seed`, `pnpm perf:pg:seed`).
  * @param id {string}
  * @returns {object}
  */
@@ -342,8 +343,8 @@ export function credential(id: string): object {
 
 /**
  * Writes one id at a time per worker, `concurrency` workers sharing one
- * iterator so each id is written exactly once. `pnpm perf:fs` and `pnpm
- * perf:fs:seed` share this shape but differ in how a single id gets written
+ * iterator so each id is written exactly once. `pnpm perf:fs` and the seed
+ * scripts share this shape but differ in how a single id gets written
  * (a signed HTTP `Collection.put` versus a direct backend `writeResource`),
  * so `write` is the seam between them.
  * @param options {object}

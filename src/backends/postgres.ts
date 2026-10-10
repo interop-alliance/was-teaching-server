@@ -717,6 +717,21 @@ function resourceFeedDocument(
 }
 
 /**
+ * Validates a Postgres schema name against the identifier charset this
+ * backend accepts for `PostgresBackendOptions.schema`, throwing if it
+ * doesn't match. Exported so a caller that must act on the schema before
+ * `PostgresBackend.open()` runs -- e.g. dropping it first -- validates
+ * against the same rule rather than its own copy.
+ * @param schema {string}
+ * @returns {void}
+ */
+export function assertValidSchemaName(schema: string): void {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) {
+    throw new Error(`Invalid Postgres schema name: "${schema}".`)
+  }
+}
+
+/**
  * The options `PostgresBackend.open()` takes (documented there).
  */
 export interface PostgresBackendOptions {
@@ -871,8 +886,8 @@ export class PostgresBackend implements StorageBackend {
     maxSpacesPerController,
     maxCollectionsPerSpace
   }: PostgresBackendOptions) {
-    if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/i.test(schema)) {
-      throw new Error(`Invalid Postgres schema name: "${schema}".`)
+    if (schema !== undefined) {
+      assertValidSchemaName(schema)
     }
     this.#schema = schema
     this.logger = logger ?? silentLogger
