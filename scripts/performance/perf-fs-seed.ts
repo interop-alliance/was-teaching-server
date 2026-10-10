@@ -26,13 +26,13 @@ import { parseArgs } from 'node:util'
 
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { FileSystemBackend } from '../../src/backends/filesystem.js'
 import {
   credential,
   fillConcurrently,
   itemIds,
   parseSizes
-} from './perf-fs-lib.js'
+} from './perf-lib.js'
 
 const seedConcurrency = 10
 

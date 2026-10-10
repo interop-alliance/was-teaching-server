@@ -450,6 +450,29 @@ pnpm perf:fs:seed --sizes 1,500,2000
 pnpm perf:fs --seed-dir .perf-fs-seed --duration 20 --writes 300
 ```
 
+`pnpm perf:pg` runs the same tests against the Postgres backend instead, against
+a local Postgres container the repo's `docker-compose.yml` defines
+(`postgres:16-alpine`, matching `pnpm test:pg`'s connection convention):
+
+```bash
+# Start Postgres once:
+docker compose up -d
+# Seed a fixed schema (`perf`) with Collections of 1, 500 and 2,000 Resources
+# (pass `--sizes` for others) -- this always resets the schema, so reseed after
+# a size change or whenever you want a clean baseline:
+pnpm perf:pg:seed
+# Then run against it, as many times as you like; the seeded data is left in
+# place afterward:
+pnpm perf:pg --duration 20 --writes 300
+```
+
+Unlike `pnpm perf:fs`, there is no over-HTTP seeding fallback: `pnpm perf:pg`
+always reads the sizes and signing identity `pnpm perf:pg:seed` recorded in
+`.perf-pg-seed/seed-meta.json`, since seeding Postgres one signed HTTP request
+at a time is much slower than writing straight through `PostgresBackend`.
+Override the connection string with `--database-url` (or `DATABASE_URL`) if
+Postgres is not at the default `postgres://was:was@localhost:5433/was`.
+
 ## Security
 
 This is an experimental research server.

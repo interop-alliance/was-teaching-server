@@ -41,8 +41,10 @@
     "conformance": "was-conformance",
     "conformance:local": "tsx scripts/conformance-local.ts",
     "reencrypt-kms-records": "tsx scripts/reencrypt-kms-records.ts",
-    "perf:fs": "tsx scripts/perf-fs.ts",
-    "perf:fs:seed": "tsx scripts/perf-fs-seed.ts",
+    "perf:fs": "tsx scripts/performance/perf-fs.ts",
+    "perf:fs:seed": "tsx scripts/performance/perf-fs-seed.ts",
+    "perf:pg": "tsx scripts/performance/perf-pg.ts",
+    "perf:pg:seed": "tsx scripts/performance/perf-pg-seed.ts",
     "roadmap": "node scripts/roadmap-order.mjs"
   },
   "dependencies": {

@@ -1,5 +1,28 @@
 # History
 
+## TBD
+
+### Added
+
+- `pnpm perf:pg` runs the same local load-performance check as `pnpm perf:fs`
+  (see 0.42.2's entry) against the Postgres backend instead, so the two are
+  directly comparable. A new `docker-compose.yml` defines a local Postgres
+  container matching `pnpm test:pg`'s existing connection convention
+  (`postgres://was:was@localhost:5433/was`). `pnpm perf:pg:seed` resets a fixed
+  schema (`perf`) and fills it directly through `PostgresBackend`'s own write
+  methods; `pnpm perf:pg` always runs against that pre-seeded schema (there is
+  no over-HTTP seeding fallback, since seeding Postgres one signed request at a
+  time is far slower than writing straight through the backend), and leaves the
+  seeded data in place afterward for inspection or reuse.
+
+### Changed
+
+- The load-performance scripts moved from `scripts/` into `scripts/performance/`
+  (`perf-fs.ts`, `perf-fs-seed.ts`, `perf-fs.k6.js`, plus the new
+  `perf-pg.ts`/`perf-pg-seed.ts`), and `perf-fs-lib.ts` became `perf-lib.ts`,
+  since both backends' runners share it. The `pnpm perf:*` script names are
+  unchanged; only the file paths underneath them moved.
+
 ## 0.42.2 - 2026-10-09
 
 ### Added
