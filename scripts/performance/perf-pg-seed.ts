@@ -18,7 +18,7 @@
  * `perf-delete-<size>`, `perf-serial-<size>`), each with a single `items`
  * Collection.
  *
- * Usage: pnpm perf:pg:seed [--sizes 1,500] [--schema perf]
+ * Usage: pnpm perf:pg:seed [--sizes 1,500,2000] [--schema perf]
  *   [--database-url postgres://was:was@localhost:5433/was]
  */
 import { randomBytes } from 'node:crypto'
@@ -47,7 +47,7 @@ const defaultDatabaseUrl = 'postgres://was:was@localhost:5433/was'
 
 const { values: args } = parseArgs({
   options: {
-    sizes: { type: 'string', default: '1,500' },
+    sizes: { type: 'string', default: '1,500,2000' },
     schema: { type: 'string', default: 'perf' },
     'database-url': { type: 'string' }
   }

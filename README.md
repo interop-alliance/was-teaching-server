@@ -457,10 +457,10 @@ a local Postgres container the repo's `docker-compose.yml` defines
 ```bash
 # Start Postgres once:
 docker compose up -d
-# Seed a fixed schema (`perf`), with the sizes you want to test -- this always
-# resets the schema, so reseed after a size change or whenever you want a
-# clean baseline:
-pnpm perf:pg:seed --sizes 1,500,2000
+# Seed a fixed schema (`perf`) with Collections of 1, 500 and 2,000 Resources
+# (pass `--sizes` for others) -- this always resets the schema, so reseed after
+# a size change or whenever you want a clean baseline:
+pnpm perf:pg:seed
 # Then run against it, as many times as you like; the seeded data is left in
 # place afterward:
 pnpm perf:pg --duration 20 --writes 300
