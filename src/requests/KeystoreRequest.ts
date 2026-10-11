@@ -15,14 +15,14 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { generateId } from '@interop/bnid'
-import { handleZcapVerify } from '../zcap.js'
+import { verifyRequestZcap } from '../zcap.js'
 import {
   assertValidController,
   assertValidSpaceController,
   isWebvhControllerShape
 } from '../lib/validateDid.js'
 import { resolveWebvhController } from '../lib/webvhController.js'
-import { kmsKeystoresPath } from '../lib/paths.js'
+import { absoluteUrl, kmsKeystoresPath } from '../lib/paths.js'
 import { fetchKeystoreAndVerify } from './keystoreContext.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
 import {
@@ -170,7 +170,7 @@ export class KeystoreRequest {
       await verifyBodyControllerConsent({
         request,
         controller: body.controller,
-        allowedTarget: new URL(kmsKeystoresPath(), serverUrl).toString(),
+        allowedTarget: absoluteUrl({ path: kmsKeystoresPath(), serverUrl }),
         allowedAction: 'write',
         MismatchError: KeystoreControllerMismatchError,
         requestName,
@@ -182,10 +182,10 @@ export class KeystoreRequest {
     // Server-generated local id, per webkms-switch `generateRandom`: multibase
     // base58btc of a multihash-framed (identity, 16-byte) 128-bit random value.
     const keystoreId = await generateId({ multihash: true })
-    const keystoreUrl = new URL(
-      kmsKeystoresPath({ keystoreId }),
+    const keystoreUrl = absoluteUrl({
+      path: kmsKeystoresPath({ keystoreId }),
       serverUrl
-    ).toString()
+    })
     const config: KeystoreConfig = {
       id: keystoreUrl,
       controller: body.controller,
@@ -217,7 +217,7 @@ export class KeystoreRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const requestName = 'List Keystores'
-    const { url, method, headers, query } = request
+    const { query } = request
     const { serverUrl, storage } = request.server
 
     // The list query schema: `controller` required, no other parameters.
@@ -234,19 +234,14 @@ export class KeystoreRequest {
     assertValidSpaceController(query.controller, { serverUrl, requestName })
     const controller = query.controller as IDID
 
-    const allowedTarget = new URL(kmsKeystoresPath(), serverUrl).toString()
-    await handleZcapVerify({
-      url,
+    const allowedTarget = absoluteUrl({ path: kmsKeystoresPath(), serverUrl })
+    await verifyRequestZcap({
+      request,
       allowedTarget,
       allowedAction: 'read',
-      method,
-      headers,
-      serverUrl,
       spaceController: controller,
       requestName,
-      logger: request.log,
       allowTargetQuery: true,
-      webvh: { storage, serverUrl },
       // The chain roots at the keystores-collection URL (keyed by the query
       // `controller`), not at any one keystore, so no RevocationScope exists
       // for it -- collection-level capabilities are outside the per-scope

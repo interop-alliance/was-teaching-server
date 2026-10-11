@@ -23,10 +23,15 @@
  * link signed by a `did:webvh` whose history log the archive itself restores.
  */
 import type { FastifyBaseLogger } from 'fastify'
-import { isUnderScope, serverFaultIn, verifyRevocationChain } from '../zcap.js'
+import {
+  isUnderScope,
+  throwIfServerFault,
+  verifyRevocationChain
+} from '../zcap.js'
 import type { VerifiedInvocation } from '../zcap.js'
 import { DuplicateRevocationError, InvalidRevocationError } from '../errors.js'
-import { spaceRevocationsPath } from './paths.js'
+import { asList } from './chainCapability.js'
+import { absoluteUrl, spaceRevocationsPath } from './paths.js'
 import { revocationRecordFor } from './revocations.js'
 import type { WebvhResolverContext } from './webvhController.js'
 import type { IDID, RevocationRecord, StorageBackend } from '../types.js'
@@ -95,7 +100,7 @@ function invocationMayRevoke({
   if (invocationTarget === undefined) {
     return false
   }
-  const actions = [allowedAction ?? []].flat()
+  const actions = asList(allowedAction)
   return (
     isUnderScope({ target: revocationUrl, rootTarget: invocationTarget }) &&
     (actions.length === 0 || actions.includes('POST'))
@@ -154,10 +159,10 @@ export async function installImportRevocations({
         rootController,
         webvh
       })
-      const revocationUrl = new URL(
-        spaceRevocationsPath({ spaceId, revocationId: capabilityId }),
-        webvh.serverUrl
-      ).toString()
+      const revocationUrl = absoluteUrl({
+        path: spaceRevocationsPath({ spaceId, revocationId: capabilityId }),
+        serverUrl: webvh.serverUrl
+      })
       if (
         !invocationMayRevoke({ invocation, chainControllers, revocationUrl })
       ) {
@@ -177,10 +182,7 @@ export async function installImportRevocations({
       if (err instanceof DuplicateRevocationError) {
         continue
       }
-      const fault = serverFaultIn({ error: err })
-      if (fault !== undefined) {
-        throw fault
-      }
+      throwIfServerFault({ error: err })
       logger.warn(
         { err, capabilityId },
         'Skipping an archived revocation the import may not install.'

@@ -34,7 +34,7 @@ import {
   recordKekLoader
 } from '../lib/kmsRecordCipher.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
-import { kmsKeysPath } from '../lib/paths.js'
+import { absoluteUrl, kmsKeysPath } from '../lib/paths.js'
 import { nextPageUrl, seekPage } from '../lib/pagination.js'
 import { isPlainObject } from '../lib/isPlainObject.js'
 import {
@@ -194,6 +194,17 @@ async function fetchKeyRecord({
 }
 
 /**
+ * The `invocationTarget` fields of a Generate Key envelope, as
+ * `assertGenerateKeyTarget` narrows them.
+ */
+type GenerateKeyTarget = {
+  type: string
+  maxCapabilityChainLength?: number
+  publicAlias?: string
+  publicAliasTemplate?: string
+}
+
+/**
  * Asserts a `GenerateKeyOperation`'s object `invocationTarget`: a required
  * non-empty string `type`, an optional integer `maxCapabilityChainLength`
  * (1-10; the chain includes the root, so 1 means controller-only), and at
@@ -210,12 +221,7 @@ function assertGenerateKeyTarget({
 }: {
   invocationTarget: unknown
   requestName: string
-}): {
-  type: string
-  maxCapabilityChainLength?: number
-  publicAlias?: string
-  publicAliasTemplate?: string
-} {
+}): GenerateKeyTarget {
   if (!isPlainObject(invocationTarget)) {
     throw new InvalidRequestBodyError({
       requestName,
@@ -286,12 +292,7 @@ function assertGenerateKeyTarget({
       pointer: '#/invocationTarget/publicAlias'
     })
   }
-  return target as {
-    type: string
-    maxCapabilityChainLength?: number
-    publicAlias?: string
-    publicAliasTemplate?: string
-  }
+  return target as GenerateKeyTarget
 }
 
 export class KeyRequest {
@@ -432,10 +433,10 @@ export class KeyRequest {
     })
     // The envelope names the key it operates on; it must be the key it was
     // posted to (webkms-switch's invocation-target-vs-request-URL 400).
-    const fullRequestUrl = new URL(
-      kmsKeysPath({ keystoreId, keyId }),
+    const fullRequestUrl = absoluteUrl({
+      path: kmsKeysPath({ keystoreId, keyId }),
       serverUrl
-    ).toString()
+    })
     if (envelope.invocationTarget !== fullRequestUrl) {
       throw new InvalidRequestBodyError({
         requestName,
@@ -594,13 +595,12 @@ export class KeyRequest {
       keyUrl: `${config.id}/keys/${localId}`
     }))
 
-    let next: string | undefined
-    if (hasMore) {
-      next = nextPageUrl({
-        path: kmsKeysPath({ keystoreId }),
-        after: page[page.length - 1]!.localId
-      })
-    }
+    const next = hasMore
+      ? nextPageUrl({
+          path: kmsKeysPath({ keystoreId }),
+          after: page[page.length - 1]!.localId
+        })
+      : undefined
 
     return reply.send({ results, ...(next !== undefined && { next }) })
   }

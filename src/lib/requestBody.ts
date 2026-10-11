@@ -40,15 +40,14 @@ export async function readTextBody({
   reply: FastifyReply
   backendId?: string
 }): Promise<string> {
-  const buffered =
-    request.rawBody ??
-    (typeof request.body === 'string'
-      ? Buffer.from(request.body, 'utf8')
-      : Buffer.isBuffer(request.body)
-        ? request.body
-        : undefined)
-  if (buffered !== undefined) {
-    return buffered.toString('utf8')
+  if (request.rawBody !== undefined) {
+    return request.rawBody.toString('utf8')
+  }
+  if (typeof request.body === 'string') {
+    return request.body
+  }
+  if (Buffer.isBuffer(request.body)) {
+    return request.body.toString('utf8')
   }
   const body = await readBoundedBody({
     request,
@@ -117,10 +116,58 @@ export function assertOnlyAllowedKeys({
         requestName,
         detail: `Unexpected ${label} "${key}".`,
         ...(pointerPrefix !== undefined && {
-          // RFC 6901 reference-token escaping: `~` then `/`, in that order.
-          pointer: `${pointerPrefix}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`
+          pointer: `${pointerPrefix}/${escapePointerToken(key)}`
         })
       })
     }
   }
+}
+
+/**
+ * Escapes a member name as a JSON Pointer reference token (RFC 6901): `~`
+ * then `/`, in that order.
+ * @param token {string}
+ * @returns {string}
+ */
+export function escapePointerToken(token: string): string {
+  return token.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
+/**
+ * Parses an OPTIONAL single-valued request header that carries a non-empty
+ * string. Resolves `{ [member]: value }` when the header is present, `{}`
+ * when it is absent, and throws `invalid-request-body` (400) for an empty or
+ * array-valued header.
+ * @param options {object}
+ * @param options.headers {object}   the Fastify request headers
+ * @param options.header {string}   the lowercase header key
+ * @param options.member {string}   the result member the value lands in
+ * @param options.label {string}   the wire header name, for the 400 detail
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {object}
+ */
+export function parseOptionalStringHeader<Member extends string>({
+  headers,
+  header,
+  member,
+  label,
+  requestName
+}: {
+  headers: Record<string, string | string[] | undefined>
+  header: string
+  member: Member
+  label: string
+  requestName?: string
+}): Partial<Record<Member, string>> {
+  const value = headers[header]
+  if (value === undefined) {
+    return {}
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: `The "${label}" header must be a non-empty string.`
+    })
+  }
+  return { [member]: value } as Partial<Record<Member, string>>
 }

@@ -64,8 +64,14 @@ import {
   SERVER_SPACE_ID,
   signingKeyRelationshipProblem
 } from './serverIdentity.js'
-import { parseSelfHostedWebvh } from './validateDid.js'
-import { dereferenceFragment, verifyWebvhLog } from './webvhController.js'
+import { didOfMethodId, parseSelfHostedWebvh } from './validateDid.js'
+import {
+  dereferenceFragment,
+  findVerificationMethod,
+  headOf,
+  logDid,
+  verifyWebvhLog
+} from './webvhController.js'
 
 /**
  * One verdict: the name of the `ImportStats.provenance` count it adds to.
@@ -212,7 +218,7 @@ export async function applyImportProvenance({
     // the verdict is only counted.
     await judge({
       path: spaceMetaPath({ spaceId: sourceSpaceId }),
-      claims: metadataClaims(spaceMetadataBytes)
+      claims: serverFieldsOf({ bytes: spaceMetadataBytes })
     })
   }
 
@@ -228,7 +234,7 @@ export async function applyImportProvenance({
       metadataBytes !== undefined &&
       (await judge({
         path: collectionMetaPath({ spaceId: sourceSpaceId, collectionId }),
-        claims: metadataClaims(metadataBytes)
+        claims: serverFieldsOf({ bytes: metadataBytes })
       }))
     const collectionMetadata = metadataEarned
       ? collection.collectionMetadata
@@ -356,8 +362,8 @@ async function establishSigner({
   } catch {
     return { reason: 'The archived DID history log does not parse.' }
   }
-  const did = log.at(-1)?.state?.id
-  if (typeof did !== 'string') {
+  const did = logDid(log)
+  if (did === undefined) {
     return { reason: 'The archived DID history log names no DID.' }
   }
   let head: { doc: DIDDoc; deactivated: boolean }
@@ -372,7 +378,7 @@ async function establishSigner({
   // verification just resolved answers them without a second pass.
   const docs = new Map<string, Promise<DIDDoc | undefined>>()
   docs.set(
-    log.at(-1)!.versionId,
+    headOf(log).versionId,
     Promise.resolve(head.deactivated ? undefined : head.doc)
   )
   return { did, log, docs }
@@ -448,7 +454,7 @@ async function judgeStatement({
     return { verdict: 'proofInvalid', reason: 'The statement has no proof.' }
   }
   const methodId = proof.verificationMethod
-  if (typeof methodId !== 'string' || methodId.split('#')[0] !== signer.did) {
+  if (typeof methodId !== 'string' || didOfMethodId(methodId) !== signer.did) {
     return {
       verdict: 'unknownSigner',
       reason: 'The proof names a method outside the archived DID.'
@@ -479,10 +485,10 @@ async function judgeStatement({
         'The statement names no live version of the archived DID history log.'
     }
   }
-  const method = (doc.verificationMethod ?? []).find(
-    candidate => candidate.id === methodId
-  )
-  const publicKeyMultibase = method?.publicKeyMultibase
+  const publicKeyMultibase = findVerificationMethod({
+    doc,
+    id: methodId
+  })?.publicKeyMultibase
   if (
     typeof publicKeyMultibase !== 'string' ||
     signingKeyRelationshipProblem({ doc, publicKeyMultibase }) !== undefined
@@ -547,17 +553,6 @@ async function judgeStatement({
     }
   }
   return { verdict: 'verified' }
-}
-
-/**
- * The members a Metadata statement attests, read off an archived
- * `.space.<id>.json` or `.collection.<id>.json` file, whose stamp members are
- * stored bare.
- * @param bytes {Buffer}
- * @returns {Claims}
- */
-function metadataClaims(bytes: Buffer): Claims {
-  return serverFieldsOf({ bytes })
 }
 
 /**

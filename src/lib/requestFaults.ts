@@ -10,6 +10,7 @@
  * request those hooks refuse never reaches them.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify'
+import { didOfMethodId } from './validateDid.js'
 
 /**
  * One request the server received, in arrival order.
@@ -307,7 +308,7 @@ function recordOf(request: FastifyRequest): RequestRecord {
   return {
     method: request.method,
     path: request.url.split('?')[0]!,
-    ...(keyId && { did: keyId.split('#')[0] })
+    ...(keyId && { did: didOfMethodId(keyId) })
   }
 }
 

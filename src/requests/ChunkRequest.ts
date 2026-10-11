@@ -22,18 +22,15 @@ import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { parseChunkIndexSegment } from '@interop/space-archive'
 import { chunkPath, chunksContainerPath } from '../lib/paths.js'
+import { etagOf, formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import { InvalidChunkIndexError, ResourceNotFoundError } from '../errors.js'
+import { withStorageErrors } from '../lib/storageErrors.js'
+import type { StorageBackend } from '../types.js'
 import {
-  type EtagValidator,
-  etagOf,
-  formatEtag,
-  parseWritePreconditions
-} from '../lib/etag.js'
-import {
-  InvalidChunkIndexError,
-  ResourceNotFoundError,
-  rethrowOrWrapStorageError
-} from '../errors.js'
-import { notModifiedBeforeStream, notModifiedReply } from './notModified.js'
+  notModifiedBeforeStream,
+  sendHeadFromMetadata,
+  withEtag
+} from './notModified.js'
 
 /**
  * Parses and validates the `:chunkIndex` path param -- the canonical decimal
@@ -62,6 +59,64 @@ interface ChunkParams {
   collectionId: string
   resourceId: string
   chunkIndex: string
+}
+
+/**
+ * The prologue Get Chunk and Head Chunk share. Validates the ids and the
+ * `:chunkIndex` param before any storage access, authorizes the read
+ * (capability-or-policy) against the chunk's own URL with the policy level
+ * resolved at the parent Resource, as for Get Resource, and only then fetches
+ * the Collection and its selected (data-plane) backend.
+ * @param options {object}
+ * @param options.request {FastifyRequest}
+ * @param options.requestName {string}   request name used in error titles
+ * @returns {Promise<object>}   the parsed ids, the chunk index, and the
+ *   Collection's data-plane backend
+ */
+async function authorizeChunkRead({
+  request,
+  requestName
+}: {
+  request: FastifyRequest<{ Params: ChunkParams }>
+  requestName: string
+}): Promise<{
+  spaceId: string
+  collectionId: string
+  resourceId: string
+  chunkIndex: number
+  dataBackend: StorageBackend
+}> {
+  const {
+    params: { spaceId, collectionId, resourceId }
+  } = request
+
+  // Reject path-traversal / non-URL-safe ids before any storage access.
+  assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
+  const chunkIndex = parseChunkIndex(request.params.chunkIndex, {
+    requestName
+  })
+
+  // Authorize (capability-or-policy) against the chunk's own URL; the policy
+  // level resolves at the parent Resource, as for Get Resource.
+  await fetchSpaceAndAuthorize({
+    request,
+    spaceId,
+    collectionId,
+    resourceId,
+    targetPath: chunkPath({ spaceId, collectionId, resourceId, chunkIndex }),
+    requestName
+  })
+
+  // authorized, continue
+
+  // Fetch collection by id, and its selected (data-plane) backend.
+  const { dataBackend } = await fetchCollectionAndBackend({
+    request,
+    spaceId,
+    collectionId,
+    requestName
+  })
+  return { spaceId, collectionId, resourceId, chunkIndex, dataBackend }
 }
 
 export class ChunkRequest {
@@ -119,9 +174,8 @@ export class ChunkRequest {
     // Surface any `If-Match` / `If-None-Match` write precondition to the
     // storage layer, which evaluates it against the chunk's own validator
     // atomically with the write (412 `precondition-failed` on a mismatch).
-    let written: EtagValidator
-    try {
-      written = await dataBackend.writeChunk({
+    const written = await withStorageErrors({ requestName }, () =>
+      dataBackend.writeChunk({
         spaceId,
         collectionId,
         resourceId,
@@ -137,9 +191,7 @@ export class ChunkRequest {
         }),
         ...parseWritePreconditions(request.headers)
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
     // Return the new ETag so a client can chain a subsequent conditional write.
     return reply.status(204).header('etag', formatEtag(written)).send()
   }
@@ -159,38 +211,9 @@ export class ChunkRequest {
     request: FastifyRequest<{ Params: ChunkParams }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
-    const {
-      params: { spaceId, collectionId, resourceId }
-    } = request
     const requestName = 'Get Chunk'
-
-    // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
-    const chunkIndex = parseChunkIndex(request.params.chunkIndex, {
-      requestName
-    })
-
-    // Authorize (capability-or-policy) against the chunk's own URL; the policy
-    // level resolves at the parent Resource, as for Get Resource.
-    await fetchSpaceAndAuthorize({
-      request,
-      spaceId,
-      collectionId,
-      resourceId,
-      targetPath: chunkPath({ spaceId, collectionId, resourceId, chunkIndex }),
-      requestName
-    })
-
-    // authorized, continue
-
-    // Fetch collection by id, and read the bytes from the Collection's selected
-    // (data-plane) backend.
-    const { dataBackend } = await fetchCollectionAndBackend({
-      request,
-      spaceId,
-      collectionId,
-      requestName
-    })
+    const { spaceId, collectionId, resourceId, chunkIndex, dataBackend } =
+      await authorizeChunkRead({ request, requestName })
 
     // A conditional read (spec "Caching") consults the chunk's metadata first
     // (through the same parent-Resource gate as Head Chunk) and answers 304
@@ -212,15 +235,14 @@ export class ChunkRequest {
       return reply
     }
 
-    let result
-    try {
-      // The parent Resource must exist (and not be a tombstone) for any of its
-      // chunks to be readable: an orphan chunk left behind by out-of-band
-      // state 404s here exactly like the Resource route and the chunk listing
-      // do -- checked via its metadata, never its byte stream. A chunk stream
-      // the gate discards is destroyed, since the filesystem backend has
-      // already opened its file descriptor by then.
-      result = await readGatedOnParentResource({
+    // The parent Resource must exist (and not be a tombstone) for any of its
+    // chunks to be readable: an orphan chunk left behind by out-of-band
+    // state 404s here exactly like the Resource route and the chunk listing
+    // do -- checked via its metadata, never its byte stream. A chunk stream
+    // the gate discards is destroyed, since the filesystem backend has
+    // already opened its file descriptor by then.
+    const result = await withStorageErrors({ requestName }, () =>
+      readGatedOnParentResource({
         dataBackend,
         spaceId,
         collectionId,
@@ -234,16 +256,12 @@ export class ChunkRequest {
         discard: ({ resourceStream }) => resourceStream.destroy(),
         requestName
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
 
-    const getReply = reply.status(200).type(result.storedResourceType)
-    const resultEtag = etagOf(result)
-    if (resultEtag !== undefined) {
-      getReply.header('etag', resultEtag)
-    }
-    return getReply.send(result.resourceStream)
+    return withEtag({
+      reply: reply.status(200).type(result.storedResourceType),
+      etag: etagOf(result)
+    }).send(result.resourceStream)
   }
 
   /**
@@ -262,38 +280,11 @@ export class ChunkRequest {
     request: FastifyRequest<{ Params: ChunkParams }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
-    const {
-      params: { spaceId, collectionId, resourceId }
-    } = request
     const requestName = 'Head Chunk'
-
-    // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
-    const chunkIndex = parseChunkIndex(request.params.chunkIndex, {
-      requestName
-    })
-
-    // Authorize (capability-or-policy): the same read decision as Get Chunk,
-    // against the same target (a HEAD reveals nothing a GET would not).
-    await fetchSpaceAndAuthorize({
-      request,
-      spaceId,
-      collectionId,
-      resourceId,
-      targetPath: chunkPath({ spaceId, collectionId, resourceId, chunkIndex }),
-      requestName
-    })
-
-    // authorized, continue
-
-    // Fetch collection by id, and read chunk metadata from the Collection's
-    // selected (data-plane) backend.
-    const { dataBackend } = await fetchCollectionAndBackend({
-      request,
-      spaceId,
-      collectionId,
-      requestName
-    })
+    // The same read decision as Get Chunk, against the same target (a HEAD
+    // reveals nothing a GET would not).
+    const { spaceId, collectionId, resourceId, chunkIndex, dataBackend } =
+      await authorizeChunkRead({ request, requestName })
     // The same parent-Resource existence gate as Get Chunk (an orphan chunk's
     // headers reveal what a GET would).
     const metadata = await readChunkMetadataOrThrow({
@@ -305,22 +296,7 @@ export class ChunkRequest {
       requestName
     })
 
-    // A conditional read (spec "Caching"): the same 304 a GET would answer.
-    const chunkEtag = etagOf(metadata)
-    const notModified = notModifiedReply({ request, reply, etag: chunkEtag })
-    if (notModified) {
-      return notModified
-    }
-
-    // Set the payload headers a GET would send, but send no body.
-    const headReply = reply
-      .status(200)
-      .type(metadata.contentType)
-      .header('content-length', metadata.size)
-    if (chunkEtag !== undefined) {
-      headReply.header('etag', chunkEtag)
-    }
-    return headReply.send()
+    return sendHeadFromMetadata({ request, reply, metadata })
   }
 
   /**
@@ -371,8 +347,7 @@ export class ChunkRequest {
     // zCap checks out, continue. An `If-Match` precondition is evaluated by
     // the storage layer atomically with the removal (412 on mismatch).
     const { ifMatch } = parseWritePreconditions(request.headers)
-    let removed: boolean
-    try {
+    const removed = await withStorageErrors({ requestName }, async () => {
       // The same parent-Resource existence gate as the read handlers: a
       // chunk of an absent (or tombstoned) parent is a 404, not a deletable
       // orphan.
@@ -383,16 +358,14 @@ export class ChunkRequest {
         resourceId,
         requestName
       })
-      removed = await dataBackend.deleteChunk({
+      return await dataBackend.deleteChunk({
         spaceId,
         collectionId,
         resourceId,
         chunkIndex,
         ifMatch
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    })
     if (!removed) {
       throw new ResourceNotFoundError({ requestName })
     }
@@ -453,9 +426,8 @@ export class ChunkRequest {
       collectionId,
       requestName
     })
-    let listing
-    try {
-      listing = await readGatedOnParentResource({
+    const listing = await withStorageErrors({ requestName }, () =>
+      readGatedOnParentResource({
         dataBackend,
         spaceId,
         collectionId,
@@ -467,9 +439,7 @@ export class ChunkRequest {
         }),
         requestName
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
 
     return reply
       .status(200)

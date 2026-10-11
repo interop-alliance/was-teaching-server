@@ -86,7 +86,11 @@ import {
 import { ProblemError, StorageError } from '../errors.js'
 import { backendScoped, deleteByPrefix } from './backendCache.js'
 import { WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
-import { locateWebvhLog, selfHostedLogLocation } from './webvhLogLocation.js'
+import {
+  locateWebvhLog,
+  readWebvhLogResource,
+  selfHostedLogLocation
+} from './webvhLogLocation.js'
 import type { StorageBackend } from '../types.js'
 import { etagOf } from './etag.js'
 import type { PeerWebvhResolver } from './peerWebvh.js'
@@ -197,6 +201,26 @@ const documentCaches = backendScoped(() => {
 export type LogHead = { count: number; versionId: string }
 
 /**
+ * The head of a non-empty log, as a {@link LogHead}.
+ * @param log {DIDLog}   a log with at least one entry
+ * @returns {LogHead}
+ */
+export function headOf(log: DIDLog): LogHead {
+  return { count: log.length, versionId: log.at(-1)!.versionId }
+}
+
+/**
+ * The DID a log's head entry names (its `state.id`), or `undefined` when the
+ * log is empty or the head names none.
+ * @param log {DIDLog}
+ * @returns {string | undefined}
+ */
+export function logDid(log: DIDLog): string | undefined {
+  const did: unknown = log.at(-1)?.state?.id
+  return typeof did === 'string' ? did : undefined
+}
+
+/**
  * The head of the last log verified for each DID, per storage backend, keyed
  * by {@link headKey}: like the document cache for a self-hosted DID, and by
  * the DID alone for a replicated one. `count` is the number of
@@ -239,7 +263,28 @@ function cacheKey({
   collectionId: string
   did: string
 }): string {
-  return `${spaceId}|${collectionId}|${did}`
+  return `${locationPrefix({ spaceId, collectionId })}${did}`
+}
+
+/**
+ * The key prefix every {@link cacheKey} anchored at a location starts with:
+ * the Space's alone, or the Space's and one Collection's. Invalidation by log
+ * location deletes by this prefix.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param [options.collectionId] {string}
+ * @returns {string}
+ */
+function locationPrefix({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId?: string
+}): string {
+  return collectionId !== undefined
+    ? `${spaceId}|${collectionId}|`
+    : `${spaceId}|`
 }
 
 /**
@@ -325,8 +370,7 @@ export function invalidateResolvedWebvhDid({
     return
   }
   const { cache, inFlight } = caches
-  const prefix =
-    collectionId !== undefined ? `${spaceId}|${collectionId}|` : `${spaceId}|`
+  const prefix = locationPrefix({ spaceId, collectionId })
   // Settled slots and in-flight ones alike (see `documentCaches` for why the
   // latter are listed separately); deleting an in-flight slot lets its fetch
   // finish for whoever is waiting on it without writing the result back.
@@ -369,9 +413,7 @@ export function forgetDeletedWebvhLocation({
     return
   }
   record.forgets++
-  const prefix =
-    collectionId !== undefined ? `${spaceId}|${collectionId}|` : `${spaceId}|`
-  deleteByPrefix(record.heads, prefix)
+  deleteByPrefix(record.heads, locationPrefix({ spaceId, collectionId }))
 }
 
 /**
@@ -384,8 +426,9 @@ export function forgetDeletedWebvhLocation({
  * @param options.storage {StorageBackend}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @returns {Promise<{ text: string, etag: string | undefined }>}   the
- *   raw JSON Lines log and its content `ETag`
+ * @returns {Promise<{ text: string, etag: string | undefined } | undefined>}
+ *   the raw JSON Lines log and its content `ETag`, or `undefined` when no log
+ *   is stored there
  */
 async function readLog({
   storage,
@@ -395,12 +438,11 @@ async function readLog({
   storage: StorageBackend
   spaceId: string
   collectionId: string
-}): Promise<{ text: string; etag: string | undefined }> {
-  const result = await storage.getResource({
-    spaceId,
-    collectionId,
-    resourceId: WEBVH_LOG_RESOURCE_ID
-  })
+}): Promise<{ text: string; etag: string | undefined } | undefined> {
+  const result = await readWebvhLogResource({ storage, spaceId, collectionId })
+  if (result === undefined) {
+    return undefined
+  }
   return { text: await text(result.resourceStream), etag: etagOf(result) }
 }
 
@@ -575,14 +617,9 @@ async function resolveVerifiedDocument({
   // Taken before the read, so a forget that lands while this resolve is
   // reading or verifying keeps it from recording a head below.
   const forgets = record.forgets
-  let logText: string
-  let etag: string | undefined
+  let stored: { text: string; etag: string | undefined } | undefined
   try {
-    ;({ text: logText, etag } = await readLog({
-      storage,
-      spaceId,
-      collectionId
-    }))
+    stored = await readLog({ storage, spaceId, collectionId })
   } catch (err) {
     // Only an absent log is a resolution failure. A backend fault (I/O, a
     // dropped database) must surface as a 5xx, not be masked as an
@@ -590,15 +627,15 @@ async function resolveVerifiedDocument({
     if (!(err instanceof ProblemError)) {
       throw new StorageError({ cause: err as Error })
     }
-    if (err.statusCode !== 404) {
-      throw err
-    }
+    throw err
+  }
+  if (stored === undefined) {
     throw new Error(
       `No did:webvh history log is published at ` +
-        `"${spaceId}/${collectionId}/${WEBVH_LOG_RESOURCE_ID}".`,
-      { cause: err }
+        `"${spaceId}/${collectionId}/${WEBVH_LOG_RESOURCE_ID}".`
     )
   }
+  const { text: logText, etag } = stored
 
   let log: DIDLog
   try {
@@ -627,7 +664,7 @@ async function resolveVerifiedDocument({
     record.forgets === forgets &&
     log.length >= (heads.get(key)?.count ?? 0)
   ) {
-    heads.set(key, { count: log.length, versionId: log.at(-1)!.versionId })
+    heads.set(key, headOf(log))
   }
   return { doc, etag }
 }
@@ -711,6 +748,55 @@ export function extendsHead({
     return true
   }
   return log[head.count - 1]?.versionId === head.versionId
+}
+
+/**
+ * The verification method a resolved document lists under exactly the id
+ * `id`, or `undefined` when it lists none.
+ * @param options {object}
+ * @param options.doc {DIDDoc}   the resolved DID document
+ * @param options.id {string}   the fully-qualified method id (`did#fragment`)
+ * @returns {NonNullable<DIDDoc['verificationMethod']>[number] | undefined}
+ */
+export function findVerificationMethod({
+  doc,
+  id
+}: {
+  doc: DIDDoc
+  id: string
+}): NonNullable<DIDDoc['verificationMethod']>[number] | undefined {
+  return (doc.verificationMethod ?? []).find(method => method.id === id)
+}
+
+/**
+ * The absolute method ids one verification relationship names. The document
+ * comes verbatim from a verified log, and DID Core lets a relationship entry
+ * be an id-reference string (absolute or `#fragment`-relative) or an embedded
+ * verification-method object, so entries are normalized to absolute ids
+ * before any comparison -- an unnormalized match would misclassify a method
+ * listed in a non-string form.
+ * @param options {object}
+ * @param options.entries {unknown}   the relationship value from the document
+ * @param options.docId {string}   the document id, the base for relative refs
+ * @returns {string[]}
+ */
+export function relationshipMethodIds({
+  entries,
+  docId
+}: {
+  entries: unknown
+  docId: string
+}): string[] {
+  const ids: string[] = []
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const id =
+      typeof entry === 'string' ? entry : (entry as { id?: unknown })?.id
+    if (typeof id !== 'string') {
+      continue
+    }
+    ids.push(id.startsWith('#') ? `${docId}${id}` : id)
+  }
+  return ids
 }
 
 /** JSON-LD context for `Multikey` verification methods. */

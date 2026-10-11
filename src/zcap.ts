@@ -35,6 +35,7 @@
  * not name the DID or its host.
  */
 import type { IncomingHttpHeaders } from 'node:http'
+import type { FastifyRequest } from 'fastify'
 import {
   createDefaultDidResolver,
   securityLoader
@@ -76,12 +77,16 @@ import {
   capabilitySummaries,
   revocationChainInspector
 } from './lib/revocations.js'
+import { capabilityControllers } from './lib/chainCapability.js'
 import {
-  capabilityControllers,
   clientAnnexChainInspector,
   composeChainInspectors
 } from './lib/clientAnnexClause.js'
+import { isPlainObject } from './lib/isPlainObject.js'
+import { absoluteUrl } from './lib/paths.js'
+import { didOfMethodId } from './lib/validateDid.js'
 import {
+  findVerificationMethod,
   resolveWebvhController,
   webvhDidResolverDriver,
   type WebvhResolverContext
@@ -176,7 +181,7 @@ export function delegationProofCryptosuites(): string[] {
 /**
  * The prefix of every root capability id.
  */
-const ROOT_PREFIX = 'urn:zcap:root:'
+export const ROOT_PREFIX = 'urn:zcap:root:'
 
 /**
  * The root capability id convention: `urn:zcap:root:` + the url-encoded
@@ -184,8 +189,24 @@ const ROOT_PREFIX = 'urn:zcap:root:'
  * @param target {string}   the root invocation target (full URL)
  * @returns {string}
  */
-function rootCapabilityId(target: string): string {
+export function rootCapabilityId(target: string): string {
   return `${ROOT_PREFIX}${encodeURIComponent(target)}`
+}
+
+/**
+ * The invocation target a root capability id names: the id with its
+ * {@link ROOT_PREFIX} removed, url-decoded. The inverse of
+ * {@link rootCapabilityId}.
+ * @param id {string}   a root capability id
+ * @returns {string | undefined}   `undefined` when `id` is not a root
+ *   capability id
+ * @throws {URIError}   when the encoded target is not a valid escape sequence
+ */
+export function rootTargetOf(id: string): string | undefined {
+  if (!id.startsWith(ROOT_PREFIX)) {
+    return undefined
+  }
+  return decodeURIComponent(id.slice(ROOT_PREFIX.length))
 }
 
 /**
@@ -230,7 +251,7 @@ function rootCapabilityLoader({
       get: async ({ id, url }: { id: string; url?: string }) => {
         const resolvedUrl = url || id
         const rootZcapTarget = decodeURIComponent(
-          resolvedUrl.split('urn:zcap:root:')[1]!
+          resolvedUrl.split(ROOT_PREFIX)[1]!
         )
         return {
           '@context': 'https://w3id.org/zcap/v1',
@@ -345,13 +366,11 @@ async function webvhVerifier({
   webvh: WebvhResolverContext
   keyId: string
 }) {
-  const [did = ''] = keyId.split('#')
+  const did = didOfMethodId(keyId)
   // A peer DID's resolver may fetch its log once more when the cached
   // document lacks the key; a local log is re-read on every write instead.
   const doc = await resolveWebvhController({ ...webvh, did, keyId })
-  const method = (doc.verificationMethod ?? []).find(
-    entry => entry.id === keyId
-  )
+  const method = findVerificationMethod({ doc, id: keyId })
   if (!method?.publicKeyMultibase) {
     throw new Error(
       `Verification method "${keyId}" is not in the current DID document.`
@@ -460,7 +479,9 @@ function keyResolutionError({
   return err
 }
 
-/** Minimal logger surface used during verification (console / request.log). */
+/**
+ * Minimal logger surface used during verification (`request.log`).
+ */
 interface ZcapLogger {
   error: (...args: any[]) => void
   debug: (...args: any[]) => void
@@ -488,14 +509,78 @@ export function isRootInvocation({
 
 /**
  * The subset of an embedded delegated capability (and of the embedded entries
- * of its `proof.capabilityChain`) that {@link baseDelegationSigner} reads.
+ * of its `proof.capabilityChain`) that the readers of an unverified
+ * `Capability-Invocation` header look at.
  */
-interface EmbeddedDelegation {
+export interface EmbeddedDelegation {
+  controller?: string | string[]
   parentCapability?: string
+  expires?: string
   proof?: {
     verificationMethod?: string
     capabilityChain?: Array<string | EmbeddedDelegation>
   }
+}
+
+/**
+ * The delegated capability a `Capability-Invocation` header embeds
+ * (`capability="<base64url(gzip(json))>"`), decoded and NOT verified. Returns
+ * `undefined` when the header embeds no capability or cannot be read.
+ *
+ * @param options {object}
+ * @param options.invocation {string}   the raw `Capability-Invocation` header
+ * @returns {EmbeddedDelegation | undefined}
+ */
+export function embeddedCapabilityOf({
+  invocation
+}: {
+  invocation: string
+}): EmbeddedDelegation | undefined {
+  try {
+    const encoded = parseSignatureHeader(invocation).params.capability
+    if (typeof encoded !== 'string') {
+      return undefined
+    }
+    return decodeEmbeddedCapability({ encoded }) as EmbeddedDelegation
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The delegation chain a `Capability-Invocation` header embeds, read WITHOUT
+ * verifying anything: `chain` in delegation order (the `capabilityChain`
+ * entries, root id first and intermediate delegations embedded whole, plus
+ * the invoked capability itself, which is not listed in its own chain), the
+ * embedded `delegations` among them, and the `rootId` the chain hangs off.
+ * Returns `undefined` when the header embeds no readable capability.
+ *
+ * @param options {object}
+ * @param options.invocation {string}   the raw `Capability-Invocation` header
+ * @returns {{ capability: EmbeddedDelegation, chain: Array<string |
+ *   EmbeddedDelegation>, delegations: EmbeddedDelegation[], rootId?: string }
+ *   | undefined}
+ */
+export function embeddedDelegations({ invocation }: { invocation: string }):
+  | {
+      capability: EmbeddedDelegation
+      chain: Array<string | EmbeddedDelegation>
+      delegations: EmbeddedDelegation[]
+      rootId?: string
+    }
+  | undefined {
+  const capability = embeddedCapabilityOf({ invocation })
+  if (capability === undefined) {
+    return undefined
+  }
+  const chain = [...(capability.proof?.capabilityChain ?? []), capability]
+  const delegations = chain.filter(
+    (entry): entry is EmbeddedDelegation =>
+      typeof entry === 'object' && entry !== null
+  )
+  const rootId =
+    typeof chain[0] === 'string' ? chain[0] : capability.parentCapability
+  return { capability, chain, delegations, rootId }
 }
 
 /**
@@ -517,30 +602,15 @@ export function baseDelegationSigner({
 }: {
   invocation: string
 }): string | undefined {
-  let capability: EmbeddedDelegation
-  try {
-    const encoded = parseSignatureHeader(invocation).params.capability
-    if (typeof encoded !== 'string') {
-      return undefined
-    }
-    capability = decodeEmbeddedCapability({ encoded }) as EmbeddedDelegation
-  } catch {
+  const embedded = embeddedDelegations({ invocation })
+  if (embedded === undefined) {
     return undefined
   }
-  // The chain in delegation order: the `capabilityChain` entries (root id
-  // first, intermediate delegations embedded whole) plus the invoked
-  // capability itself, which is not listed in its own chain.
-  const chain = [...(capability.proof?.capabilityChain ?? []), capability]
-  const delegations = chain.filter(
-    (entry): entry is EmbeddedDelegation =>
-      typeof entry === 'object' && entry !== null
-  )
-  const rootId =
-    typeof chain[0] === 'string' ? chain[0] : capability.parentCapability
+  const { delegations, rootId } = embedded
   const base =
     delegations.find(delegation => delegation.parentCapability === rootId) ??
     delegations[0]
-  const [signer] = (base?.proof?.verificationMethod ?? '').split('#')
+  const signer = didOfMethodId(base?.proof?.verificationMethod ?? '')
   return signer || undefined
 }
 
@@ -558,7 +628,7 @@ export function baseDelegationSigner({
  *   verification result
  * @returns {boolean}
  */
-export function verifiedRootInvocation({
+function verifiedRootInvocation({
   result
 }: {
   result: VerifyCapabilityInvocationResult
@@ -603,10 +673,9 @@ export function verifiedInvocation({
   return {
     rootInvocation: verifiedRootInvocation({ result }),
     ...(invoker !== undefined && { invoker }),
-    ...(typeof capability === 'object' &&
-      capability !== null && {
-        invokedCapability: capability as VerifiedInvocation['invokedCapability']
-      })
+    ...(isPlainObject(capability) && {
+      invokedCapability: capability as VerifiedInvocation['invokedCapability']
+    })
   }
 }
 
@@ -634,8 +703,7 @@ export function verifiedInvocation({
  *   Space (the driver still refuses DIDs this server does not host)
  * @param [options.requestName] {string}   human-readable request name, used in
  *   error titles
- * @param [options.logger] {ZcapLogger}   logger for verification errors;
- *   defaults to `console`
+ * @param options.logger {ZcapLogger}   logger for verification errors
  * @param [options.allowTargetQuery] {boolean}   tolerate query parameters that
  *   extend `allowedTarget` on the request URL (see `verifyZcap`)
  * @param [options.allowTargetAttenuation] {boolean}   accept a request URL
@@ -682,7 +750,7 @@ export async function handleZcapVerify({
   spaceController,
   webvh,
   requestName = '',
-  logger = console,
+  logger,
   allowTargetQuery = false,
   allowTargetAttenuation = false,
   attenuatedRootTarget,
@@ -701,7 +769,7 @@ export async function handleZcapVerify({
   spaceController: IDID
   webvh?: WebvhResolverContext
   requestName?: string
-  logger?: ZcapLogger
+  logger: ZcapLogger
   allowTargetQuery?: boolean
   allowTargetAttenuation?: boolean
   attenuatedRootTarget?: string
@@ -785,7 +853,7 @@ export async function handleZcapVerify({
           rootsFor: () =>
             expectedRoots({
               allowedTarget,
-              fullRequestUrl: new URL(url, serverUrl).toString(),
+              fullRequestUrl: absoluteUrl({ path: url, serverUrl }),
               allowTargetQuery,
               allowTargetAttenuation,
               attenuatedRootTarget
@@ -825,6 +893,46 @@ export async function handleZcapVerify({
 }
 
 /**
+ * {@link handleZcapVerify} for a Fastify request: the request URL, method and
+ * headers, the server's base URL, the request logger and the local
+ * `did:webvh` resolver context (the server's storage backend and base URL)
+ * are all read off `request`. The network resolver for a foreign
+ * `did:webvh` invoker is an opt-in: set `peerWebvh` to hand it
+ * `request.server.peerWebvh`, which only the WAS route families do.
+ *
+ * @param options {object}
+ * @param options.request {FastifyRequest}   the request being authorized
+ * @param [options.peerWebvh] {boolean}   let a foreign `did:webvh` with no
+ *   stored log invoke a delegated capability (see `handleZcapVerify`)
+ * @returns {Promise<VerifyCapabilityInvocationResult>}   as
+ *   `handleZcapVerify` returns it; every other option is passed to it as is
+ */
+export async function verifyRequestZcap({
+  request,
+  peerWebvh = false,
+  ...options
+}: {
+  request: FastifyRequest
+  peerWebvh?: boolean
+} & Omit<
+  Parameters<typeof handleZcapVerify>[0],
+  'url' | 'method' | 'headers' | 'serverUrl' | 'webvh' | 'logger' | 'peerWebvh'
+>): Promise<VerifyCapabilityInvocationResult> {
+  const { url, method, headers } = request
+  const { serverUrl, storage } = request.server
+  return await handleZcapVerify({
+    ...options,
+    url,
+    method,
+    headers,
+    serverUrl,
+    webvh: { storage, serverUrl },
+    logger: request.log,
+    ...(peerWebvh && { peerWebvh: request.server.peerWebvh })
+  })
+}
+
+/**
  * The raw `Capability-Invocation` header, or the empty string when absent.
  *
  * @param options {object}
@@ -858,23 +966,22 @@ function invokerIsController({
 }: {
   headers: IncomingHttpHeaders
 }): boolean {
+  let keyId: unknown
   try {
-    const keyId = parseSignatureHeader(headers.authorization ?? '').params.keyId
-    const encoded = parseSignatureHeader(
-      capabilityInvocationHeader({ headers })
-    ).params.capability
-    if (typeof keyId !== 'string' || typeof encoded !== 'string') {
-      return false
-    }
-    const capability = decodeEmbeddedCapability({ encoded }) as {
-      controller?: string | string[]
-    }
-    const controllers = [capability.controller ?? []].flat()
-    const did = keyId.split('#')[0] ?? keyId
-    return controllers.includes(keyId) || controllers.includes(did)
+    keyId = parseSignatureHeader(headers.authorization ?? '').params.keyId
   } catch {
     return false
   }
+  const capability = embeddedCapabilityOf({
+    invocation: capabilityInvocationHeader({ headers })
+  })
+  if (typeof keyId !== 'string' || capability === undefined) {
+    return false
+  }
+  const controllers = capabilityControllers(capability)
+  return (
+    controllers.includes(keyId) || controllers.includes(didOfMethodId(keyId))
+  )
 }
 
 /**
@@ -977,10 +1084,7 @@ async function verifiedOrThrow({
   if (!zcapVerifyResult.verified) {
     // The verifier catches a fault raised under a document loader or a chain
     // inspector and hands it back here. It keeps its 5xx too.
-    const fault = serverFaultIn({ error: zcapVerifyResult.error })
-    if (fault !== undefined) {
-      throw fault
-    }
+    throwIfServerFault({ error: zcapVerifyResult.error })
     throw denialError({ error: zcapVerifyResult.error, headers, requestName })
   }
   return zcapVerifyResult
@@ -1020,6 +1124,81 @@ export function serverFaultIn({
     }
   }
   return undefined
+}
+
+/**
+ * Throws the server-side fault behind a verification that did not verify,
+ * when there is one ({@link serverFaultIn}), so it keeps its 5xx rather than
+ * reading as a denial; returns otherwise.
+ * @param options {object}
+ * @param [options.error] {unknown}   the verify result's `error`, or a caught
+ *   error
+ * @returns {void}
+ */
+export function throwIfServerFault({ error }: { error?: unknown }): void {
+  const fault = serverFaultIn({ error })
+  if (fault !== undefined) {
+    throw fault
+  }
+}
+
+/**
+ * The result of a `jsigs.verify` run under the `CapabilityDelegation` proof
+ * purpose, reduced to what its callers read.
+ */
+type DelegationChainResult = {
+  verified: boolean
+  error?: Error
+  results?: Array<{
+    purposeResult?: { delegator?: { id?: string } | string }
+  }>
+}
+
+/**
+ * Verifies a delegated capability's chain (`CapabilityDelegation` proof
+ * purpose, under every accepted delegation-proof suite), as the peer pre-pass
+ * and the revocation chain check both do. The result is handed back as the
+ * library returns it; a caller reads a server fault out of it.
+ * @param options {object}
+ * @param options.capability {object}   the delegated capability
+ * @param options.documentLoader {IDocumentLoader}   synthesizes the root
+ * @param options.expectedRootCapability {string[]}   the accepted roots
+ * @param options.allowTargetAttenuation {boolean}
+ * @param [options.maxChainLength] {number}   max chain length, root included
+ * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
+ * @param [options.inspectCapabilityChain] {InspectCapabilityChain}
+ * @returns {Promise<DelegationChainResult>}
+ */
+async function verifyDelegationChain({
+  capability,
+  documentLoader,
+  expectedRootCapability,
+  allowTargetAttenuation,
+  maxChainLength,
+  maxDelegationTtl,
+  inspectCapabilityChain
+}: {
+  capability: object
+  documentLoader: IDocumentLoader
+  expectedRootCapability: string[]
+  allowTargetAttenuation: boolean
+  maxChainLength?: number
+  maxDelegationTtl?: number
+  inspectCapabilityChain?: InspectCapabilityChain
+}): Promise<DelegationChainResult> {
+  const suite = delegationProofSuites()
+  return (await jsigs.verify(capability, {
+    documentLoader,
+    suite,
+    purpose: new CapabilityDelegation({
+      suite,
+      expectedRootCapability,
+      allowTargetAttenuation,
+      maxChainLength,
+      maxDelegationTtl,
+      inspectCapabilityChain
+    })
+  })) as DelegationChainResult
 }
 
 /**
@@ -1146,38 +1325,33 @@ async function peerInvokerGrant({
   logger: ZcapLogger
 }): Promise<string | undefined> {
   let did: string
-  let capability: { controller?: unknown }
+  const invocation = capabilityInvocationHeader({ headers })
   try {
     const { keyId } = parseSignatureHeader(headers.authorization ?? '').params
     if (typeof keyId !== 'string') {
       return undefined
     }
-    did = keyId.split('#')[0] ?? ''
+    did = didOfMethodId(keyId)
     if (!peerWebvh.mayFetch({ did, serverUrl })) {
       return undefined
     }
-    const invocation = capabilityInvocationHeader({ headers })
     if (isRootInvocation({ invocation })) {
       return undefined
     }
-    const { params } = parseSignatureHeader(invocation)
     // The verifier reads `id` first and runs a header carrying both as a
     // root invocation, so the chain verified here would not be the one it
     // checks.
-    if (params.id !== undefined) {
+    if (parseSignatureHeader(invocation).params.id !== undefined) {
       return undefined
-    }
-    const encoded = params.capability
-    if (typeof encoded !== 'string') {
-      return undefined
-    }
-    capability = decodeEmbeddedCapability({ encoded }) as {
-      controller?: unknown
     }
   } catch {
     return undefined
   }
-  const controllers = [capability.controller].flat()
+  const capability = embeddedCapabilityOf({ invocation })
+  if (capability === undefined) {
+    return undefined
+  }
+  const controllers = capabilityControllers(capability)
   if (controllers.length !== 1 || controllers[0] !== did) {
     return undefined
   }
@@ -1193,32 +1367,25 @@ async function peerInvokerGrant({
     controllerFor: () => spaceController,
     webvh
   })
-  const suite = delegationProofSuites()
   const expected = rootsFor()
-  let result: { verified: boolean; error?: Error }
+  let result: DelegationChainResult
   try {
-    result = (await jsigs.verify(capability, {
+    result = await verifyDelegationChain({
+      capability,
       documentLoader,
-      suite,
-      purpose: new CapabilityDelegation({
-        suite,
-        expectedRootCapability: expected.rootCapabilities,
-        allowTargetAttenuation: expected.attenuates,
-        maxChainLength,
-        maxDelegationTtl,
-        inspectCapabilityChain
-      })
-    })) as { verified: boolean; error?: Error }
+      expectedRootCapability: expected.rootCapabilities,
+      allowTargetAttenuation: expected.attenuates,
+      maxChainLength,
+      maxDelegationTtl,
+      inspectCapabilityChain
+    })
   } catch (err) {
     result = { verified: false, error: err as Error }
   }
   if (!result.verified) {
     // A storage fault keeps its 5xx, as on the invocation's own path. The
     // verifier hands a loader or inspector fault back in the result.
-    const fault = serverFaultIn({ error: result.error })
-    if (fault !== undefined) {
-      throw fault
-    }
+    throwIfServerFault({ error: result.error })
     logger.debug(
       { err: result.error, did },
       'A foreign invoker chain did not verify; its log is not fetched.'
@@ -1327,7 +1494,7 @@ export async function verifyZcap({
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<VerifyCapabilityInvocationResult> {
-  const fullRequestUrl = new URL(url, serverUrl).toString()
+  const fullRequestUrl = absoluteUrl({ path: url, serverUrl })
   const roots = expectedRoots({
     allowedTarget,
     fullRequestUrl,
@@ -1335,32 +1502,31 @@ export async function verifyZcap({
     allowTargetAttenuation,
     attenuatedRootTarget
   })
-  let expected
-  if (roots.attenuates) {
-    expected = {
-      expectedAction: allowedAction,
-      expectedHost: new URL(serverUrl).host,
-      expectedRootCapability: roots.rootCapabilities,
-      // The proof's invocationTarget is the invoked URL: `allowedTarget`
-      // itself, a path under it (accepted as a RESTful attenuation), or
-      // (under `allowTargetQuery`) the query-bearing request URL.
-      // The array form is narrowed to `string` by the verify fork's option
-      // type, but the underlying `@interop/zcap` CapabilityInvocation
-      // accepts `string | string[]` -- hence the cast.
-      expectedTarget: [
-        ...new Set([allowedTarget, fullRequestUrl])
-      ] as unknown as string,
-      allowTargetAttenuation: true
-    }
-  } else {
-    expected = {
-      expectedAction: allowedAction,
-      expectedHost: new URL(serverUrl).host,
-      rootInvocationTarget: allowedTarget,
-      expectedRootCapability: rootCapabilityId(allowedTarget),
-      expectedTarget: allowedTarget
-    }
+  const common = {
+    expectedAction: allowedAction,
+    expectedHost: new URL(serverUrl).host
   }
+  const expected = roots.attenuates
+    ? {
+        ...common,
+        expectedRootCapability: roots.rootCapabilities,
+        // The proof's invocationTarget is the invoked URL: `allowedTarget`
+        // itself, a path under it (accepted as a RESTful attenuation), or
+        // (under `allowTargetQuery`) the query-bearing request URL.
+        // The array form is narrowed to `string` by the verify fork's option
+        // type, but the underlying `@interop/zcap` CapabilityInvocation
+        // accepts `string | string[]` -- hence the cast.
+        expectedTarget: [
+          ...new Set([allowedTarget, fullRequestUrl])
+        ] as unknown as string,
+        allowTargetAttenuation: true
+      }
+    : {
+        ...common,
+        rootInvocationTarget: allowedTarget,
+        expectedRootCapability: rootCapabilityId(allowedTarget),
+        expectedTarget: allowedTarget
+      }
 
   // The webvh resolver is engaged whenever a context is supplied, not only
   // when the Space controller itself is a did:webvh: a delegated capability
@@ -1427,16 +1593,16 @@ function expectedRevocationRoots({
   }>
   const chainRoot = proofs.find(proof => Array.isArray(proof?.capabilityChain))
     ?.capabilityChain?.[0]
-  if (typeof chainRoot !== 'string' || !chainRoot.startsWith(ROOT_PREFIX)) {
+  if (typeof chainRoot !== 'string') {
     return [scopeRoot]
   }
-  let target: string
+  let target: string | undefined
   try {
-    target = decodeURIComponent(chainRoot.slice(ROOT_PREFIX.length))
+    target = rootTargetOf(chainRoot)
   } catch {
     return [scopeRoot]
   }
-  if (!isUnderScope({ target, rootTarget })) {
+  if (target === undefined || !isUnderScope({ target, rootTarget })) {
     return [scopeRoot]
   }
   return [...new Set([scopeRoot, rootCapabilityId(target)])]
@@ -1534,48 +1700,35 @@ export async function verifyRevocationChain({
     },
     webvh
   })
-  const suite = delegationProofSuites()
-  const result = (await jsigs.verify(capability, {
+  const result = await verifyDelegationChain({
+    capability,
     documentLoader,
-    suite,
-    purpose: new CapabilityDelegation({
-      suite,
-      expectedRootCapability: expectedRevocationRoots({
-        capability,
-        rootTarget
-      }),
-      // Attenuation is always tolerated when judging revocability: a zcap
-      // delegated with attenuation rules an invocation endpoint would refuse
-      // can still be revoked (ezcap-express `_verifyDelegation`).
-      allowTargetAttenuation: true,
-      maxChainLength,
-      maxDelegationTtl,
-      inspectCapabilityChain: async details => {
-        // Capture every controller in the dereferenced chain -- these are the
-        // parties the dual-root rule lets submit this revocation -- and the
-        // chain's lookup pairs for the caller's post-authorization store check.
-        for (const chainCapability of details.capabilityChain) {
-          chainControllers.push(...capabilityControllers(chainCapability))
-        }
-        capabilities = capabilitySummaries(details)
-        return { valid: true }
+    expectedRootCapability: expectedRevocationRoots({
+      capability,
+      rootTarget
+    }),
+    // Attenuation is always tolerated when judging revocability: a zcap
+    // delegated with attenuation rules an invocation endpoint would refuse
+    // can still be revoked (ezcap-express `_verifyDelegation`).
+    allowTargetAttenuation: true,
+    maxChainLength,
+    maxDelegationTtl,
+    inspectCapabilityChain: async details => {
+      // Capture every controller in the dereferenced chain -- these are the
+      // parties the dual-root rule lets submit this revocation -- and the
+      // chain's lookup pairs for the caller's post-authorization store check.
+      for (const chainCapability of details.capabilityChain) {
+        chainControllers.push(...capabilityControllers(chainCapability))
       }
-    })
-  })) as {
-    verified: boolean
-    error?: Error
-    results?: Array<{
-      purposeResult?: { delegator?: { id?: string } | string }
-    }>
-  }
+      capabilities = capabilitySummaries(details)
+      return { valid: true }
+    }
+  })
   if (!result.verified) {
     // A server-side fault met under the document loader (a storage error
     // under a did:webvh log read) is not the submitter's doing and keeps its
     // 5xx rather than reading as an invalid delegation.
-    const fault = serverFaultIn({ error: result.error })
-    if (fault !== undefined) {
-      throw fault
-    }
+    throwIfServerFault({ error: result.error })
     throw new InvalidRevocationError({
       detail: 'The provided capability delegation is invalid.',
       cause: result.error
@@ -1614,9 +1767,9 @@ export async function verifyRevocationChain({
  * @param options.rootTarget {string}   the scope's full URL (the keystore or
  *   the Space)
  * @param options.rootController {IDID}   the scope's controller
- * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
- *   local `did:webvh` resolver; engaged whenever supplied, as in `verifyZcap`,
- *   so a `did:webvh` delegee can self-revoke under the dual-root rule
+ * @param options.webvh {WebvhResolverContext}   storage + serverUrl for the
+ *   local `did:webvh` resolver, as in `verifyZcap`, so a `did:webvh` delegee
+ *   can self-revoke under the dual-root rule
  * @param options.chainControllers {string[]}   every controller in the
  *   to-be-revoked capability's (already verified) chain
  * @param options.expectedAction {string}   the action the invocation must
@@ -1627,7 +1780,7 @@ export async function verifyRevocationChain({
  * @param [options.maxChainLength] {number}   max chain length, root included
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
  * @param [options.requestName] {string}   request name used in error titles
- * @param [options.logger] {ZcapLogger}   logger for verification errors
+ * @param options.logger {ZcapLogger}   logger for verification errors
  * @returns {Promise<void>}
  */
 export async function handleRevocationInvocationVerify({
@@ -1644,7 +1797,7 @@ export async function handleRevocationInvocationVerify({
   maxChainLength,
   maxDelegationTtl,
   requestName = '',
-  logger = console
+  logger
 }: {
   url: string
   method: string
@@ -1652,16 +1805,16 @@ export async function handleRevocationInvocationVerify({
   serverUrl: string
   rootTarget: string
   rootController: IDID
-  webvh?: WebvhResolverContext
+  webvh: WebvhResolverContext
   chainControllers: string[]
   expectedAction: string
   inspectCapabilityChain?: InspectCapabilityChain
   maxChainLength?: number
   maxDelegationTtl?: number
   requestName?: string
-  logger?: ZcapLogger
+  logger: ZcapLogger
 }): Promise<void> {
-  const fullRequestUrl = new URL(url, serverUrl).toString()
+  const fullRequestUrl = absoluteUrl({ path: url, serverUrl })
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
       if (target === rootTarget) {

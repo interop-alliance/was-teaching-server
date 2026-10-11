@@ -1,7 +1,7 @@
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
-import { assertValidId } from './validateId.js'
+import { assertValidId, type IdKind } from './validateId.js'
 import {
   parseChunkDirName,
   parseChunkIndexSegment,
@@ -42,6 +42,68 @@ import type {
   StoredCollectionLog,
   WriteStamp
 } from '../types.js'
+
+/**
+ * The request name the import's refusals carry.
+ */
+const IMPORT_REQUEST_NAME = 'Import Space'
+
+/**
+ * Rejects a path-traversal / non-URL-safe id parsed from the archive before
+ * it is used to build a destination path.
+ * @param id {string}
+ * @param kind {IdKind}
+ * @returns {void}
+ */
+function assertImportId(id: string, kind: IdKind): void {
+  assertValidId(id, { kind, requestName: IMPORT_REQUEST_NAME })
+}
+
+/**
+ * Parses an archive entry's bytes as JSON, refusing the import
+ * (`InvalidImportError`, 400) with `message` when they are not.
+ * @param options {object}
+ * @param options.bytes {Buffer}
+ * @param options.message {string}   the refusal's message
+ * @returns {unknown}
+ */
+function parseArchivedJson({
+  bytes,
+  message
+}: {
+  bytes: Buffer
+  message: string
+}): unknown {
+  try {
+    return JSON.parse(bytes.toString('utf8'))
+  } catch (err) {
+    throw new InvalidImportError({ message, cause: err as Error })
+  }
+}
+
+/**
+ * Parses an archive entry's bytes as JSON, or returns `undefined` when they
+ * are not.
+ * @param bytes {Buffer}
+ * @returns {unknown}
+ */
+function tryParseArchivedJson(bytes: Buffer): unknown {
+  try {
+    return JSON.parse(bytes.toString('utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The bytes of an extracted file entry, or `undefined` for a directory or an
+ * entry with no body.
+ * @param entry {TarEntry}
+ * @returns {Buffer | undefined}
+ */
+function fileBody(entry: TarEntry): Buffer | undefined {
+  return entry.type === 'file' ? entry.body : undefined
+}
 
 /**
  * If `fileName` is a dot-file with the given prefix and `.json` suffix, returns
@@ -103,15 +165,10 @@ function assertImportedCollectionLog({
   bytes: Buffer
 }): { revisions?: CollectionRevisions } {
   const where = `history log of Collection '${collectionId}'`
-  let record: unknown
-  try {
-    record = JSON.parse(bytes.toString('utf8'))
-  } catch (err) {
-    throw new InvalidImportError({
-      message: `The ${where} is not valid JSON.`,
-      cause: err as Error
-    })
-  }
+  const record = parseArchivedJson({
+    bytes,
+    message: `The ${where} is not valid JSON.`
+  })
   if (
     !isPlainObject(record) ||
     typeof record.body !== 'string' ||
@@ -127,7 +184,7 @@ function assertImportedCollectionLog({
   try {
     return assertGoverningLogAppend({
       body: record.body,
-      requestName: 'Import Space'
+      requestName: IMPORT_REQUEST_NAME
     })
   } catch (err) {
     rethrowAsMalformed({ what: where, err })
@@ -193,7 +250,7 @@ function assertImportedRevisions({
   try {
     const revisions = assertValidRevisions({
       revisions: stored,
-      requestName: 'Import Space'
+      requestName: IMPORT_REQUEST_NAME
     })
     if (log !== undefined) {
       assertRevisionsTransition({
@@ -314,12 +371,7 @@ function parseChunkFileName(
     if (chunkIndex === undefined) {
       return undefined
     }
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(body.toString('utf8'))
-    } catch {
-      parsed = undefined
-    }
+    const parsed = tryParseArchivedJson(body)
     // Any JSON value parses; only an object carries the generation, and only
     // one this server could have minted is kept.
     const sidecar: { generation?: unknown } = isPlainObject(parsed)
@@ -354,7 +406,7 @@ export interface TarEntry {
 }
 
 /** One resource staged for import by {@link buildImportPlan}. */
-export interface ImportPlanResource {
+interface ImportPlanResource {
   fileName: string
   resourceId: string
   body: Buffer
@@ -373,7 +425,7 @@ export interface ImportPlanResource {
  * kept. The filesystem backend writes a representation's `fileName`/`body`
  * verbatim.
  */
-export interface ImportPlanChunkFile {
+interface ImportPlanChunkFile {
   resourceId: string
   fileName: string
   body: Buffer
@@ -423,7 +475,7 @@ export interface ImportPlanCollection {
  * archived generation travels. The importing backend writes the tombstone
  * only when it holds no record under the id, re-stamped by its own clock.
  */
-export interface ImportPlanCollectionTombstone {
+interface ImportPlanCollectionTombstone {
   collectionId: string
   /**
    * The archived generation when it is one this server could have minted,
@@ -578,15 +630,10 @@ function importedCollectionMetadata({
   collectionId: string
 }): CollectionMetadata {
   const where = `Collection Metadata file of Collection '${collectionId}'`
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'))
-  } catch (err) {
-    throw new InvalidImportError({
-      message: `The ${where} is not valid JSON.`,
-      cause: err as Error
-    })
-  }
+  const parsed = parseArchivedJson({
+    bytes,
+    message: `The ${where} is not valid JSON.`
+  })
   if (!isPlainObject(parsed)) {
     throw new InvalidImportError({
       message: `The ${where} is not a JSON object.`
@@ -600,7 +647,10 @@ function importedCollectionMetadata({
     })
   }
   try {
-    parseCollectionMetadataBody({ body: parsed, requestName: 'Import Space' })
+    parseCollectionMetadataBody({
+      body: parsed,
+      requestName: IMPORT_REQUEST_NAME
+    })
   } catch (err) {
     rethrowAsMalformed({ what: where, err })
   }
@@ -677,20 +727,29 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         fileName: SPACE_POLICY_FILE_NAME
       })
     : undefined
+  // One pass over the archive: the Collection ids its directories name, and
+  // each Collection's file entries, in archive order, keyed by their name
+  // relative to the Collection directory.
   const collectionIds = new Set<string>()
-  for (const name of entries.keys()) {
+  const collectionFiles = new Map<string, Array<[string, Buffer]>>()
+  for (const [name, entry] of entries) {
     if (!name.startsWith(prefix)) {
       continue
     }
     const match = name.slice(prefix.length).match(/^([^/]+)\//)
-    if (match?.[1]) {
-      // Reject a path-traversal / non-URL-safe id parsed from the archive
-      // before it is used to build a destination path.
-      assertValidId(match[1], {
-        kind: 'collection',
-        requestName: 'Import Space'
-      })
-      collectionIds.add(match[1])
+    const collectionId = match?.[1]
+    if (!collectionId) {
+      continue
+    }
+    // Reject a path-traversal / non-URL-safe id parsed from the archive
+    // before it is used to build a destination path.
+    assertImportId(collectionId, 'collection')
+    collectionIds.add(collectionId)
+    const body = fileBody(entry)
+    if (body) {
+      const files = collectionFiles.get(collectionId) ?? []
+      files.push([name.slice(prefix.length + collectionId.length + 1), body])
+      collectionFiles.set(collectionId, files)
     }
   }
 
@@ -713,7 +772,6 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       })
     }
 
-    const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
     const resourceIds = new Set<string>()
     let collectionPolicy: ImportedPolicy | undefined
@@ -722,40 +780,27 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const resourcePolicies = new Map<string, ImportedPolicy>()
     const resourceMetadata = new Map<string, Buffer>()
     const chunkFiles: ImportPlanChunkFile[] = []
-    for (const [entryName, entry] of entries) {
-      if (
-        !entryName.startsWith(collectionPrefix) ||
-        entry.type !== 'file' ||
-        !entry.body
-      ) {
-        continue
-      }
-
-      const fileName = entryName.slice(collectionPrefix.length)
-
+    for (const [fileName, body] of collectionFiles.get(collectionId) ?? []) {
       // Chunk files of a chunked Resource live in a per-Resource subdirectory
       // (`.chunks.<encId>/<chunkFile>`), so they are the one Collection entry
       // carrying a slash. Carry them verbatim, keyed by the parent resourceId
       // decoded from the directory name (validated against path traversal).
       const chunk = chunkEntryName(fileName)
       if (chunk) {
-        assertValidId(chunk.resourceId, {
-          kind: 'resource',
-          requestName: 'Import Space'
-        })
+        assertImportId(chunk.resourceId, 'resource')
         // Drop a chunk file with a non-canonical index (or a stray file that
         // is neither a representation nor a sidecar): written verbatim it
         // would be unreachable at the canonical member URL yet advertised by
         // the listing. The parse also decodes the chunk fields carried on the
         // plan (for the row-oriented Postgres import).
-        const parsedChunk = parseChunkFileName(chunk.chunkFileName, entry.body)
+        const parsedChunk = parseChunkFileName(chunk.chunkFileName, body)
         if (parsedChunk === undefined) {
           continue
         }
         chunkFiles.push({
           resourceId: chunk.resourceId,
           fileName: chunk.chunkFileName,
-          body: entry.body,
+          body,
           chunkIndex: parsedChunk.chunkIndex,
           contentType: parsedChunk.contentType,
           generation: parsedChunk.generation
@@ -771,19 +816,16 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       // policy; `.r.<resourceId>.policy.json` is a Resource policy keyed by
       // resource id.
       if (fileName === COLLECTION_POLICY_FILE_NAME) {
-        collectionPolicy = importedPolicy({ bytes: entry.body, fileName })
+        collectionPolicy = importedPolicy({ bytes: body, fileName })
         continue
       }
       const policyResourceId = parseResourcePolicyFileName(fileName)
       if (policyResourceId !== undefined) {
         // Reject a path-traversal / non-URL-safe id parsed from the archive.
-        assertValidId(policyResourceId, {
-          kind: 'resource',
-          requestName: 'Import Space'
-        })
+        assertImportId(policyResourceId, 'resource')
         resourcePolicies.set(
           policyResourceId,
-          importedPolicy({ bytes: entry.body, fileName })
+          importedPolicy({ bytes: body, fileName })
         )
         continue
       }
@@ -798,9 +840,9 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         if (collectionLogId === collectionId) {
           collectionLogHead = assertImportedCollectionLog({
             collectionId,
-            bytes: entry.body
+            bytes: body
           })
-          collectionLog = entry.body
+          collectionLog = body
         }
         continue
       }
@@ -812,8 +854,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       // (see `importSpace`).
       const metaId = metaSidecarFileId(fileName)
       if (metaId !== undefined) {
-        assertValidId(metaId, { kind: 'resource', requestName: 'Import Space' })
-        resourceMetadata.set(metaId, entry.body)
+        assertImportId(metaId, 'resource')
+        resourceMetadata.set(metaId, body)
         continue
       }
 
@@ -834,10 +876,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
       // Reject a path-traversal / non-URL-safe resource id parsed from the
       // archive before its bytes are written to a destination path.
-      assertValidId(resourceId, {
-        kind: 'resource',
-        requestName: 'Import Space'
-      })
+      assertImportId(resourceId, 'resource')
 
       // One representation per Resource id: the first in archive order is the
       // one the backends write, so a second file under the same id (another
@@ -848,11 +887,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       }
       resourceIds.add(resourceId)
 
-      resources.push({
-        fileName,
-        resourceId,
-        body: entry.body
-      })
+      resources.push({ fileName, resourceId, body })
     }
 
     assertImportedRevisions({
@@ -925,19 +960,16 @@ function collectionTombstones({
   const tombstones: ImportPlanCollectionTombstone[] = []
   for (const [name, entry] of entries) {
     const parsed = parseArchivePath(name)
+    const body = fileBody(entry)
     if (
       parsed.area !== 'collectionTombstone' ||
       parsed.spaceId !== sourceSpaceId ||
-      entry.type !== 'file' ||
-      !entry.body
+      !body
     ) {
       continue
     }
     const { collectionId } = parsed
-    assertValidId(collectionId, {
-      kind: 'collection',
-      requestName: 'Import Space'
-    })
+    assertImportId(collectionId, 'collection')
     if (collectionIds.has(collectionId)) {
       throw new InvalidImportError({
         message:
@@ -946,15 +978,16 @@ function collectionTombstones({
       })
     }
     try {
-      collectionTombstoneFromFile({ bytes: entry.body })
+      collectionTombstoneFromFile({ bytes: body })
     } catch (err) {
       throw new InvalidImportError({
         message: `The archive's tombstone of Collection "${collectionId}" is not a Collection tombstone.`,
         cause: err as Error
       })
     }
+    // The reader above strips `_generation`, so it is read off the bytes.
     const { _generation: archivedGeneration } = JSON.parse(
-      entry.body.toString('utf8')
+      body.toString('utf8')
     ) as { _generation?: unknown }
     tombstones.push({
       collectionId,
@@ -989,12 +1022,7 @@ function importedSpaceMetadata({
   if (!entry?.body) {
     return undefined
   }
-  let archived: unknown
-  try {
-    archived = JSON.parse(entry.body.toString('utf8'))
-  } catch {
-    return undefined
-  }
+  const archived = tryParseArchivedJson(entry.body)
   if (!isPlainObject(archived)) {
     return undefined
   }
@@ -1123,6 +1151,12 @@ export async function assertImportBodiesFit({
   trailingChunkBodies?: Iterable<{ body: Buffer }>
 }): Promise<number> {
   let incomingBytes = 0
+  // Each body is checked against the per-upload cap and counted toward the
+  // total.
+  const admit = (body: Buffer): void => {
+    assertUploadSize(body.length)
+    incomingBytes += body.length
+  }
   for (const collection of collections) {
     const { collectionId, collectionMetadata, collectionLog, resources } =
       collection
@@ -1139,38 +1173,28 @@ export async function assertImportBodiesFit({
       } else if (collectionLog !== undefined) {
         log = parseArchivedLog(collectionLog).body
       }
-      if (log !== undefined) {
-        effectiveEncryption = storedGoverningEncryption({ body: log })
-      } else {
-        effectiveEncryption = (existing ?? collectionMetadata).encryption
-      }
+      effectiveEncryption =
+        log !== undefined
+          ? storedGoverningEncryption({ body: log })
+          : (existing ?? collectionMetadata).encryption
     }
     for (const { fileName, body } of resources) {
-      assertUploadSize(body.length)
+      admit(body)
       if (effectiveEncryption?.scheme !== undefined) {
         const { contentType } = parseResourceFileName(fileName)
-        let parsedBody: unknown
-        try {
-          parsedBody = JSON.parse(body.toString('utf8'))
-        } catch {
-          parsedBody = undefined
-        }
         assertEncryptedWriteConforms({
           collectionMetadata: { encryption: effectiveEncryption },
           contentType,
-          body: parsedBody
+          body: tryParseArchivedJson(body)
         })
       }
-      incomingBytes += body.length
     }
     for (const { body } of chunkBodiesFor?.(collection) ?? []) {
-      assertUploadSize(body.length)
-      incomingBytes += body.length
+      admit(body)
     }
   }
   for (const { body } of trailingChunkBodies ?? []) {
-    assertUploadSize(body.length)
-    incomingBytes += body.length
+    admit(body)
   }
   return incomingBytes
 }
@@ -1200,10 +1224,10 @@ export function archivedRevocations(
 ): RevocationRecord['capability'][] {
   const capabilities: RevocationRecord['capability'][] = []
   for (const [entryName, entry] of entries) {
+    const body = fileBody(entry)
     if (
       !entryName.startsWith(REVOCATIONS_PREFIX) ||
-      entry.type !== 'file' ||
-      !entry.body ||
+      !body ||
       entryName.slice(REVOCATIONS_PREFIX.length).includes('/')
     ) {
       continue
@@ -1215,15 +1239,10 @@ export function archivedRevocations(
           `${IMPORT_MAX_REVOCATIONS} revocation records.`
       })
     }
-    let record: unknown
-    try {
-      record = JSON.parse(entry.body.toString('utf8'))
-    } catch (err) {
-      throw new InvalidImportError({
-        message: `Archive revocation record "${entryName}" is not valid JSON.`,
-        cause: err as Error
-      })
-    }
+    const record = parseArchivedJson({
+      bytes: body,
+      message: `Archive revocation record "${entryName}" is not valid JSON.`
+    })
     const capability = isPlainObject(record) ? record.capability : undefined
     if (
       !isPlainObject(capability) ||

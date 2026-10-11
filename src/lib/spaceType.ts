@@ -13,7 +13,9 @@
  */
 import { InvalidRequestBodyError } from '../errors.js'
 
-/** The base type every Space Metadata object carries. */
+/**
+ * The base type every Space Metadata object carries.
+ */
 const BASE_SPACE_TYPE = 'Space'
 
 /**
@@ -30,7 +32,7 @@ export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
  * assertValidSpaceType}): a Space carrying it is bookkeeping by declaration,
  * so it cannot double as a data Space.
  */
-export const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
+const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
 
 /**
  * The auxiliary-Space subtype naming the Space that hosts this server's own
@@ -42,6 +44,14 @@ export const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
  * `DelegatedClientsSpace`, it is only valid alongside `AuxiliarySpace`.
  */
 export const SERVER_INSTANCE_SPACE_TYPE = 'ServerInstanceSpace'
+
+/**
+ * The subtypes only valid alongside `AuxiliarySpace`.
+ */
+const AUXILIARY_SUBTYPES = [
+  DELEGATED_CLIENTS_SPACE_TYPE,
+  SERVER_INSTANCE_SPACE_TYPE
+]
 
 /**
  * Validates a client-supplied Space Metadata `type` and returns it, or
@@ -98,10 +108,7 @@ export function spaceTypeProblem(type: unknown): string | undefined {
     )
   }
   const typeArray = type as string[]
-  for (const subtype of [
-    DELEGATED_CLIENTS_SPACE_TYPE,
-    SERVER_INSTANCE_SPACE_TYPE
-  ]) {
+  for (const subtype of AUXILIARY_SUBTYPES) {
     if (
       typeArray.includes(subtype) &&
       !typeArray.includes(AUXILIARY_SPACE_TYPE)
@@ -215,12 +222,10 @@ export function isSameTypeSet({
 export function isServerInstanceSpace(
   spaceMetadata: { type?: unknown } | undefined
 ): boolean {
-  const { type } = spaceMetadata ?? {}
-  return (
-    Array.isArray(type) &&
-    type.includes(AUXILIARY_SPACE_TYPE) &&
-    type.includes(SERVER_INSTANCE_SPACE_TYPE)
-  )
+  return hasAuxiliarySubtype({
+    spaceMetadata,
+    subtype: SERVER_INSTANCE_SPACE_TYPE
+  })
 }
 
 /**
@@ -234,10 +239,31 @@ export function isServerInstanceSpace(
 export function isDelegatedClientsSpace(
   spaceMetadata: { type?: unknown } | undefined
 ): boolean {
+  return hasAuxiliarySubtype({
+    spaceMetadata,
+    subtype: DELEGATED_CLIENTS_SPACE_TYPE
+  })
+}
+
+/**
+ * Whether a Space Metadata object's `type` names both `AuxiliarySpace` and
+ * the given auxiliary subtype.
+ * @param options {object}
+ * @param options.spaceMetadata {{ type?: unknown } | undefined}
+ * @param options.subtype {string}
+ * @returns {boolean}
+ */
+function hasAuxiliarySubtype({
+  spaceMetadata,
+  subtype
+}: {
+  spaceMetadata: { type?: unknown } | undefined
+  subtype: string
+}): boolean {
   const { type } = spaceMetadata ?? {}
   return (
     Array.isArray(type) &&
     type.includes(AUXILIARY_SPACE_TYPE) &&
-    type.includes(DELEGATED_CLIENTS_SPACE_TYPE)
+    type.includes(subtype)
   )
 }

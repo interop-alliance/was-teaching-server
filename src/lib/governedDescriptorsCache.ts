@@ -26,7 +26,7 @@ import {
   type GovernedDescriptors,
   deriveGovernedDescriptors
 } from './governedLog.js'
-import { collectionLogPath } from './paths.js'
+import { absoluteUrl, collectionLogPath } from './paths.js'
 
 /**
  * One memoization cache per storage backend, keyed by Collection and log
@@ -156,10 +156,10 @@ export async function getCachedGovernedDescriptors({
     fn: async () =>
       deriveGovernedDescriptors({
         body: log.body,
-        logUrl: new URL(
-          collectionLogPath({ spaceId, collectionId }),
+        logUrl: absoluteUrl({
+          path: collectionLogPath({ spaceId, collectionId }),
           serverUrl
-        ).toString()
+        })
       })
   })
 }

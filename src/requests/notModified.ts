@@ -14,7 +14,26 @@ import {
   isNotModified,
   parseIfNoneMatch
 } from '../lib/etag.js'
-import type { RecordValidatorParts } from '../types.js'
+import type { ChunkMetadata, RecordValidatorParts } from '../types.js'
+
+/**
+ * Sets the `etag` response header when the representation has an `ETag`, and
+ * leaves the reply alone when it has none (a record the backend tracks no
+ * validator for).
+ * @param options {object}
+ * @param options.reply {FastifyReply}
+ * @param [options.etag] {string}   the representation's current `ETag`
+ * @returns {FastifyReply}   the same reply, for chaining
+ */
+export function withEtag({
+  reply,
+  etag
+}: {
+  reply: FastifyReply
+  etag?: string
+}): FastifyReply {
+  return etag === undefined ? reply : reply.header('etag', etag)
+}
 
 /**
  * Answers 304 when the request's `If-None-Match` covers `etag`, else
@@ -43,10 +62,7 @@ export function notModifiedReply({
   if (!isNotModified({ held, etag })) {
     return undefined
   }
-  const notModified = reply.status(304)
-  if (etag !== undefined) {
-    notModified.header('etag', etag)
-  }
+  const notModified = withEtag({ reply: reply.status(304), etag })
   if (request.method === 'HEAD') {
     // Fastify's implicit HEAD route stamps `Content-Length: 0` on an
     // undefined payload, from an `onSend` hook that runs after every other.
@@ -96,4 +112,41 @@ export async function notModifiedBeforeStream({
     etag: etagOf(metadata)
   })
   return sent !== undefined
+}
+
+/**
+ * The answer of a HEAD handler that serves a stored record's headers from its
+ * metadata (Head Resource, Head Chunk), so the byte stream is never opened.
+ * A conditional read (spec "Caching") gets the same 304 a GET would answer.
+ * Otherwise it sets the payload headers a GET would send, but sends no body.
+ * Fastify keeps a manually-set `Content-Length` on a bodyless send (it is not
+ * recomputed to 0).
+ * @param options {object}
+ * @param options.request {FastifyRequest}
+ * @param options.reply {FastifyReply}
+ * @param options.metadata {ChunkMetadata}   the record's stored content-type,
+ *   size and validator parts
+ * @returns {FastifyReply}
+ */
+export function sendHeadFromMetadata({
+  request,
+  reply,
+  metadata
+}: {
+  request: FastifyRequest
+  reply: FastifyReply
+  metadata: ChunkMetadata
+}): FastifyReply {
+  const etag = etagOf(metadata)
+  const notModified = notModifiedReply({ request, reply, etag })
+  if (notModified) {
+    return notModified
+  }
+  return withEtag({
+    reply: reply
+      .status(200)
+      .type(metadata.contentType)
+      .header('content-length', metadata.size),
+    etag
+  }).send()
 }

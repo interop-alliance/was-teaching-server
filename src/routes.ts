@@ -59,6 +59,7 @@ import {
   provisioningGateFor,
   spaceIsAbsent,
   unlessProvisioningAuthorized,
+  type OnRequestHook,
   type ProvisioningRoute
 } from './provisioning.js'
 
@@ -98,39 +99,28 @@ function installGroupHooks(
   }
   // The auth and digest hooks are skipped for a request the gate granted (it
   // carries a Bearer token, not an HTTP Signature), and for a `noAuth` route.
+  function guarded(hook: OnRequestHook): OnRequestHook {
+    return unlessNoAuthRoute(unlessProvisioningAuthorized(hook))
+  }
   if (strictAuth) {
     // Every operation is privileged: 401 when auth headers are absent.
-    app.addHook(
-      'onRequest',
-      unlessNoAuthRoute(unlessProvisioningAuthorized(requireAuthHeaders))
-    )
+    app.addHook('onRequest', guarded(requireAuthHeaders))
   } else {
     // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
     // handler can fall back to an access-control policy (e.g. a public Space,
     // Collection or Resource). In the SpacesRepository group that fallback is
     // the spec's empty-items 200 for an anonymous List Spaces, never an error
     // (the exception to 404 masking).
-    app.addHook(
-      'onRequest',
-      unlessNoAuthRoute(
-        unlessProvisioningAuthorized(requireAuthHeadersOrPublicRead)
-      )
-    )
+    app.addHook('onRequest', guarded(requireAuthHeadersOrPublicRead))
   }
   // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook(
-    'onRequest',
-    unlessNoAuthRoute(unlessProvisioningAuthorized(parseAuthHeaders))
-  )
+  app.addHook('onRequest', guarded(parseAuthHeaders))
   // Capture raw body bytes (JSON/text) so the digest can be recomputed against
   // exactly what the client signed (spec "Request Body Integrity").
   app.addHook('preParsing', captureRawBodyUnlessNoAuth)
   // Enforce the Digest header binding: require it covered by the signature and,
   // when the raw body is available, recompute and compare it.
-  app.addHook(
-    'preValidation',
-    unlessNoAuthRoute(unlessProvisioningAuthorized(verifyBodyDigest))
-  )
+  app.addHook('preValidation', guarded(verifyBodyDigest))
   // Mark the response to a non-idempotent operation non-cacheable (spec
   // "Caching"). Only POST is non-idempotent here; reads carry an `ETag` for
   // validation instead, and the spec defers further `Cache-Control` semantics.
@@ -145,13 +135,10 @@ function installGroupHooks(
  * 405 method refusal or a 308 slash redirect, which answer the same whatever
  * the caller's identity. Every other request reaches the wrapped hook
  * unchanged.
- * @param hook {(request: FastifyRequest, reply: FastifyReply) => Promise<void>}
- *   the hook to guard
- * @returns {(request: FastifyRequest, reply: FastifyReply) => Promise<void>}
+ * @param hook {OnRequestHook}   the hook to guard
+ * @returns {OnRequestHook}
  */
-function unlessNoAuthRoute(
-  hook: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
-): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+function unlessNoAuthRoute(hook: OnRequestHook): OnRequestHook {
   return async function skipForNoAuthRoute(
     request: FastifyRequest,
     reply: FastifyReply
@@ -238,24 +225,30 @@ function splitQuery(url: string): { pathPart: string; query: string } {
 }
 
 /**
- * Toggles the trailing slash on the request's actual path (preserving any query
- * string), returning the canonical target for a slash/no-slash redirect. Built
- * from `request.url` rather than the route template so the `Location` carries
- * the concrete ids (`/space/abc123`), not the literal `/space/:spaceId` -- which
- * a client cannot follow.
+ * The request's actual path with a trailing slash appended (preserving any
+ * query string): the canonical target for a slash redirect. Built from
+ * `request.url` rather than the route template so the `Location` carries the
+ * concrete ids (`/space/abc123`), not the literal `/space/:spaceId` -- which a
+ * client cannot follow.
  * @param url {string}   the request URL (path plus optional query string)
- * @param addSlash {boolean}   append (true) or strip (false) the trailing slash
  * @returns {string}
  */
-function toggleTrailingSlash(url: string, addSlash: boolean): string {
+function withSlash(url: string): string {
   const { pathPart, query } = splitQuery(url)
-  const canonical = addSlash
-    ? pathPart.endsWith('/')
-      ? pathPart
-      : `${pathPart}/`
-    : pathPart.endsWith('/')
-      ? pathPart.slice(0, -1)
-      : pathPart
+  const canonical = pathPart.endsWith('/') ? pathPart : `${pathPart}/`
+  return `${canonical}${query}`
+}
+
+/**
+ * The request's actual path with its trailing slash stripped (preserving any
+ * query string): the canonical target for a no-slash redirect (see
+ * {@link withSlash}).
+ * @param url {string}   the request URL (path plus optional query string)
+ * @returns {string}
+ */
+function withoutSlash(url: string): string {
+  const { pathPart, query } = splitQuery(url)
+  const canonical = pathPart.endsWith('/') ? pathPart.slice(0, -1) : pathPart
   return `${canonical}${query}`
 }
 
@@ -272,7 +265,7 @@ function redirectAddSlash(
   request: FastifyRequest,
   reply: FastifyReply
 ): FastifyReply {
-  return reply.redirect(toggleTrailingSlash(request.url, true), 308)
+  return reply.redirect(withSlash(request.url), 308)
 }
 
 /**
@@ -286,7 +279,7 @@ function redirectStripSlash(
   request: FastifyRequest,
   reply: FastifyReply
 ): FastifyReply {
-  return reply.redirect(toggleTrailingSlash(request.url, false), 308)
+  return reply.redirect(withoutSlash(request.url), 308)
 }
 
 /**
@@ -559,6 +552,25 @@ const CONTAINER_REDIRECT_METHODS: HTTPMethods[] = [...CONTAINER_METHODS, 'PUT']
 const STRIP_SLASH_METHODS: HTTPMethods[] = ['GET', 'HEAD', 'PUT', 'DELETE']
 
 /**
+ * Registers the access-control policy routes at one level's `policy` URL
+ * (Space, Collection or Resource): Get, Put and Delete Policy. A policy is not
+ * public data, so its GET is privileged even though the group's hook lets
+ * safe methods through: the route-level `requireAuthHeaders` (run after the
+ * group chain) demands the auth headers (401).
+ * @param app {import('fastify').FastifyInstance}   the owning route group
+ * @param url {string}   the `policy` URL template
+ * @returns {void}
+ */
+function registerPolicyRoutes(app: FastifyInstance, url: string): void {
+  app.get<{
+    Params: PolicyParams
+    Querystring: { include?: string | string[] }
+  }>(url, { onRequest: requireAuthHeaders }, PolicyRequest.get)
+  app.put(url, PolicyRequest.put)
+  app.delete(url, PolicyRequest.delete)
+}
+
+/**
  * Registers SpacesRepository routes (POST/GET /spaces/, the bare `/spaces`
  * redirect, and the 405 refusals of every other method). Installs the
  * `requireAuthHeadersOrPublicRead` then `parseAuthHeaders` onRequest hooks and
@@ -654,43 +666,23 @@ export async function initSpaceRoutes(
   // The retired `collections` endpoint (reserved segment): listing and
   // creating Collections moved to the Space URL in v0.5, so both slash forms
   // redirect there for the two methods it served.
-  app.get(
+  for (const url of [
     '/space/:spaceId/collections',
-    noAuthRoute,
-    redirectCollectionsToSpace
-  )
-  app.get(
-    '/space/:spaceId/collections/',
-    noAuthRoute,
-    redirectCollectionsToSpace
-  )
-  app.post(
-    '/space/:spaceId/collections',
-    noAuthRoute,
-    redirectCollectionsToSpace
-  )
-  app.post(
-    '/space/:spaceId/collections/',
-    noAuthRoute,
-    redirectCollectionsToSpace
-  )
+    '/space/:spaceId/collections/'
+  ]) {
+    app.route({
+      method: ['GET', 'POST'],
+      url,
+      ...noAuthRoute,
+      handler: redirectCollectionsToSpace
+    })
+  }
 
   // Space access-control policy (reserved segment; Fastify routes static
   // segments ahead of the `:collectionId` parameter, so this never collides).
-  // A policy is not public data, so its GET is privileged even though the
-  // group's hook lets safe methods through: the route-level `requireAuthHeaders`
-  // (run after the group chain) demands the auth headers (401). The same
-  // applies to the Collection- and Resource-level policy GETs below.
-  app.get<{
-    Params: PolicyParams
-    Querystring: { include?: string | string[] }
-  }>(
-    '/space/:spaceId/policy',
-    { onRequest: requireAuthHeaders },
-    PolicyRequest.get
-  )
-  app.put('/space/:spaceId/policy', PolicyRequest.put)
-  app.delete('/space/:spaceId/policy', PolicyRequest.delete)
+  // Its GET is privileged, as are the Collection- and Resource-level policy
+  // GETs below (`registerPolicyRoutes`).
+  registerPolicyRoutes(app, '/space/:spaceId/policy')
 
   // Space linkset (RFC9264 policy discovery)
   app.get('/space/:spaceId/linkset', SpaceRequest.linkset)
@@ -813,16 +805,7 @@ export async function initCollectionRoutes(
 
   // Collection access-control policy (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter).
-  app.get<{
-    Params: PolicyParams
-    Querystring: { include?: string | string[] }
-  }>(
-    '/space/:spaceId/:collectionId/policy',
-    { onRequest: requireAuthHeaders },
-    PolicyRequest.get
-  )
-  app.put('/space/:spaceId/:collectionId/policy', PolicyRequest.put)
-  app.delete('/space/:spaceId/:collectionId/policy', PolicyRequest.delete)
+  registerPolicyRoutes(app, '/space/:spaceId/:collectionId/policy')
 
   // Collection linkset (RFC9264 policy discovery)
   app.get('/space/:spaceId/:collectionId/linkset', CollectionRequest.linkset)
@@ -928,19 +911,7 @@ export async function initResourceRoutes(
   )
 
   // Resource access-control policy (reserved segment)
-  app.get<{
-    Params: PolicyParams
-    Querystring: { include?: string | string[] }
-  }>(
-    '/space/:spaceId/:collectionId/:resourceId/policy',
-    { onRequest: requireAuthHeaders },
-    PolicyRequest.get
-  )
-  app.put('/space/:spaceId/:collectionId/:resourceId/policy', PolicyRequest.put)
-  app.delete(
-    '/space/:spaceId/:collectionId/:resourceId/policy',
-    PolicyRequest.delete
-  )
+  registerPolicyRoutes(app, '/space/:spaceId/:collectionId/:resourceId/policy')
 
   // Resource metadata (reserved segment; spec "Resource Metadata Data Model")
   app.get(

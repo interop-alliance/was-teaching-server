@@ -26,6 +26,8 @@ import {
   RequestFaults,
   RequestFaultDisarmedError
 } from './lib/requestFaults.js'
+import { absoluteUrl, resourcePath, spacePath } from './lib/paths.js'
+import { WEBVH_LOG_RESOURCE_ID } from './lib/validateDid.js'
 import { composeApp, createInstance } from './server.js'
 import type { createApp } from './server.js'
 
@@ -356,7 +358,11 @@ export async function provisionWebvhIdentity<
       }
     }
 
-    const logPath = `/space/${spaceId}/${collectionId}/did.jsonl`
+    const logPath = resourcePath({
+      spaceId,
+      collectionId,
+      resourceId: WEBVH_LOG_RESOURCE_ID
+    })
     const published = await owner.was.request({
       path: logPath,
       method: 'PUT',
@@ -365,14 +371,17 @@ export async function provisionWebvhIdentity<
     })
     if (published.status !== 201) {
       throw new WebvhIdentityPublishError({
-        url: new URL(logPath, serverUrl).toString(),
+        url: absoluteUrl({ path: logPath, serverUrl }),
         status: published.status
       })
     }
 
     const identity: WebvhIdentity = {
       spaceId,
-      spaceUrl: new URL(`/space/${spaceId}/`, serverUrl).toString(),
+      spaceUrl: absoluteUrl({
+        path: spacePath({ spaceId, trailingSlash: true }),
+        serverUrl
+      }),
       did: created.did,
       log: created.log,
       logSigner,

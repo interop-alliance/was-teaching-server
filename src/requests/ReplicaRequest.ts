@@ -19,7 +19,12 @@ import {
   controllerUnmappedByRemoval,
   invalidateReplicaIndex
 } from '../lib/webvhLogLocation.js'
-import { replicaPath, replicasPath, replicaStatusPath } from '../lib/paths.js'
+import {
+  absoluteUrl,
+  replicaPath,
+  replicasPath,
+  replicaStatusPath
+} from '../lib/paths.js'
 import { assertValidIds, isReplicaId } from '../lib/validateId.js'
 import {
   assertReplicaAcceptable,
@@ -99,10 +104,10 @@ export class ReplicaRequest {
 
     reply.header(
       'Location',
-      new URL(
-        replicaPath({ spaceId, replicaId: record.id }),
+      absoluteUrl({
+        path: replicaPath({ spaceId, replicaId: record.id }),
         serverUrl
-      ).toString()
+      })
     )
     reply.header('ETag', replicaEtag(stored.generation))
     return reply.status(201).send(stored.record)

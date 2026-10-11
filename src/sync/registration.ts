@@ -20,9 +20,13 @@ import {
   PeerRequestError,
   ReplicaRefusedError
 } from '../errors.js'
+import { actionsWithin } from '../lib/chainCapability.js'
 import { isPlainObject } from '../lib/isPlainObject.js'
+import { mapInBatches } from '../lib/mapInBatches.js'
+import { cursorOfNextUrl } from '../lib/pagination.js'
 import { mergeAppliedCollectionMetadata } from '../lib/replicaApply.js'
 import {
+  absoluteUrl,
   collectionMetaPath,
   resourcePath,
   spaceMetaPath,
@@ -44,6 +48,7 @@ import {
 } from '../lib/validateId.js'
 import { verifyWebvhLog } from '../lib/webvhController.js'
 import { replicaMappingConflict } from '../lib/webvhLogLocation.js'
+import { rootCapabilityId } from '../zcap.js'
 import { selectedCollectionIds } from './collectionSelection.js'
 import type {
   CollectionMetadata,
@@ -58,7 +63,7 @@ import type { PeerFetch } from './peerFetch.js'
 /**
  * The actions a pull capability may carry. The loop only reads.
  */
-const PULL_ACTIONS = new Set(['GET', 'HEAD'])
+const PULL_ACTIONS = ['GET', 'HEAD']
 
 /**
  * An absolute URL for a path on the peer's server, resolved against the
@@ -75,7 +80,8 @@ export function peerUrlOf({
   path: string
   fromSpace: string
 }): string {
-  return new URL(path, fromSpace).toString()
+  // The peer's Space URL supplies the origin the path is resolved against.
+  return absoluteUrl({ path, serverUrl: fromSpace })
 }
 
 /**
@@ -122,10 +128,10 @@ export function parseReplicaRegistration({
       '#/fromSpace'
     )
   }
-  const localSpaceUrl = new URL(
-    spacePath({ spaceId, trailingSlash: true }),
+  const localSpaceUrl = absoluteUrl({
+    path: spacePath({ spaceId, trailingSlash: true }),
     serverUrl
-  ).toString()
+  })
   if (toSpace !== localSpaceUrl) {
     return refuse(
       `The registration "toSpace" must be this Space's canonical URL, "${localSpaceUrl}".`,
@@ -184,19 +190,13 @@ export function parseReplicaRegistration({
   }
   const proofs = [pull.proof].flat()
   const chainRoot = proofs[0]?.capabilityChain?.[0]
-  if (
-    chainRoot !== `urn:zcap:root:${encodeURIComponent(fromSpace as string)}`
-  ) {
+  if (chainRoot !== rootCapabilityId(fromSpace as string)) {
     return refuse(
       "The capability's chain must start at the peer Space's root capability.",
       '#/capability/proof/capabilityChain'
     )
   }
-  const actions = [pull.allowedAction ?? []].flat()
-  if (
-    actions.length === 0 ||
-    !actions.every(action => PULL_ACTIONS.has(action))
-  ) {
+  if (!actionsWithin({ capability: pull, allowed: PULL_ACTIONS })) {
     return refuse(
       'The capability "allowedAction" must be present and within ["GET", "HEAD"].',
       '#/capability/allowedAction'
@@ -578,38 +578,57 @@ async function assertImmutableMembersMatch({
     do {
       const page = await storage.listCollections({ spaceId, cursor })
       collectionIds.push(...page.items.map(({ id }) => id))
-      cursor =
-        page.next === undefined
-          ? undefined
-          : (new URL(page.next, 'http://local').searchParams.get('cursor') ??
-            undefined)
+      cursor = cursorOfNextUrl(page.next)
     } while (cursor !== undefined)
   }
-  for (const [index, collectionId] of collectionIds.entries()) {
-    const local = await storage.getCollectionMetadata({ spaceId, collectionId })
-    if (local === undefined) {
-      continue
+  // The reads run in batches, and their outcomes are then taken in list
+  // order, so the error thrown is the one a read in order would meet first.
+  const outcomes = await mapInBatches({
+    items: collectionIds,
+    map: async (
+      collectionId
+    ): Promise<{ fork?: string } | { error: unknown }> => {
+      try {
+        const local = await storage.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        if (local === undefined) {
+          return {}
+        }
+        const served = await peer.readJson({
+          url: peerUrlOf({
+            path: collectionMetaPath({ spaceId: peerSpaceId, collectionId }),
+            fromSpace: record.fromSpace
+          }),
+          expect: [200, 404]
+        })
+        if (served.status === 404) {
+          return {}
+        }
+        const incoming = storedProjectionOfCollection(served.json)
+        const forward = mergeAppliedCollectionMetadata({
+          held: local,
+          incoming
+        })
+        const backward = mergeAppliedCollectionMetadata({
+          held: incoming,
+          incoming: local
+        })
+        const fork = [forward, backward].find(result => 'fork' in result)
+        return fork !== undefined && 'fork' in fork ? { fork: fork.fork } : {}
+      } catch (err) {
+        return { error: err }
+      }
     }
-    const served = await peer.readJson({
-      url: peerUrlOf({
-        path: collectionMetaPath({ spaceId: peerSpaceId, collectionId }),
-        fromSpace: record.fromSpace
-      }),
-      expect: [200, 404]
-    })
-    if (served.status === 404) {
-      continue
+  })
+  for (const [index, outcome] of outcomes.entries()) {
+    if ('error' in outcome) {
+      throw outcome.error
     }
-    const incoming = storedProjectionOfCollection(served.json)
-    const forward = mergeAppliedCollectionMetadata({ held: local, incoming })
-    const backward = mergeAppliedCollectionMetadata({
-      held: incoming,
-      incoming: local
-    })
-    const fork = [forward, backward].find(result => 'fork' in result)
-    if (fork !== undefined && 'fork' in fork) {
+    if (outcome.fork !== undefined) {
       throw new ReplicaRefusedError({
-        detail: `Collection "${collectionId}" differs from the peer's: ${fork.fork}`,
+        detail: `Collection "${collectionIds[index]}" differs from the peer's: ${outcome.fork}`,
         pointer:
           record.collections === undefined
             ? '#/fromSpace'

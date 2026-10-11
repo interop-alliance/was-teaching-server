@@ -14,8 +14,11 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndVerify } from './spaceContext.js'
-import { fetchCollectionAndBackend } from './collectionContext.js'
-import { notModifiedReply } from './notModified.js'
+import {
+  fetchCollectionAndBackend,
+  isControlPlaneBackend
+} from './collectionContext.js'
+import { notModifiedReply, withEtag } from './notModified.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
 import { invalidatePolicy } from '../lib/policyCache.js'
@@ -93,10 +96,7 @@ export class PolicyRequest {
     if (notModified) {
       return notModified
     }
-    if (etag !== undefined) {
-      reply.header('etag', etag)
-    }
-    return reply
+    return withEtag({ reply, etag })
       .status(200)
       .type('application/json')
       .send(JSON.stringify(record.deleted ? record.tombstone : record.policy))
@@ -154,7 +154,7 @@ export class PolicyRequest {
         collectionId,
         requestName
       })
-      requireLiveResource = dataBackend === storage
+      requireLiveResource = isControlPlaneBackend({ request, dataBackend })
     }
 
     const {
@@ -223,9 +223,11 @@ export class PolicyRequest {
     // Bust the cached policy at this exact level so the next read sees it gone
     // rather than a stale cached grant.
     invalidatePolicy({ storage, spaceId, collectionId, resourceId })
-    if (validator !== undefined) {
-      reply.header('etag', formatEtag(validator))
-    }
-    return reply.status(204).send()
+    return withEtag({
+      reply,
+      etag: validator === undefined ? undefined : formatEtag(validator)
+    })
+      .status(204)
+      .send()
   }
 }

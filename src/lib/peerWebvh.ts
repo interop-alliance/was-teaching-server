@@ -45,10 +45,9 @@
  * The fetcher is injectable (the `peerLogFetcher` plugin option), since the
  * host bound keeps a real fetch out of the test suite.
  */
-import { lookup as dnsLookup } from 'node:dns/promises'
 import type { FastifyBaseLogger } from 'fastify'
 import { LRUCache } from 'lru-cache'
-import { Agent, fetch, type Dispatcher, type Response } from 'undici'
+import { fetch, type Agent, type Dispatcher, type Response } from 'undici'
 import { readLogFromString } from '@interop/did-method-webvh'
 import type { DIDDoc, DIDLog } from '@interop/did-method-webvh'
 
@@ -65,13 +64,21 @@ import {
 } from '../config.default.js'
 import { PeerLogFetchError, PeerWebvhResolutionError } from '../errors.js'
 import {
-  createPinnedLookup,
-  isBlockedIp,
-  readBodyBounded
+  pinnedAgentFor,
+  readBodyBounded,
+  resolvePublicHost,
+  vetAddresses,
+  type AddressRefusal,
+  type ResolvedAddress
 } from './outboundAddress.js'
 import { parseCrossHostWebvh } from './validateDid.js'
 import { isBlockedWebvh, type WebvhBlocklist } from './webvhBlocklist.js'
-import { extendsHead, verifyWebvhLog, type LogHead } from './webvhController.js'
+import {
+  extendsHead,
+  headOf,
+  verifyWebvhLog,
+  type LogHead
+} from './webvhController.js'
 
 /**
  * Performs the HTTP GET of a foreign history log and resolves its body bytes.
@@ -359,10 +366,7 @@ export class PeerWebvhResolver {
         })
       }
       // The log extends the recorded head, so this only moves it forward.
-      this.#heads.set(did, {
-        count: log.length,
-        versionId: log.at(-1)!.versionId
-      })
+      this.#heads.set(did, headOf(log))
       const entry = { doc, fetchedAt: performance.now() }
       this.#documents.set(did, entry)
       return entry
@@ -565,7 +569,7 @@ export function checkPeerLogUrl({ url }: { url: string }): URL {
  * address). A host with one such address is refused whole.
  * @param options {object}
  * @param options.url {string}   the fetched URL, for the error
- * @param options.addresses {{ address: string, family: number }[]}
+ * @param options.addresses {ResolvedAddress[]}
  * @returns {void}
  */
 export function assertPublicAddresses({
@@ -573,18 +577,35 @@ export function assertPublicAddresses({
   addresses
 }: {
   url: string
-  addresses: { address: string; family: number }[]
+  addresses: ResolvedAddress[]
 }): void {
-  if (addresses.length === 0) {
-    throw new PeerLogFetchError({ url, detail: 'the host has no address.' })
+  const refusal = vetAddresses(addresses)
+  if (refusal !== undefined) {
+    throw addressRefusalError({ url, refusal })
   }
-  const blocked = addresses.find(({ address }) => isBlockedIp(address))
-  if (blocked !== undefined) {
-    throw new PeerLogFetchError({
-      url,
-      detail: `the host resolves to a non-public address (${blocked.address}).`
-    })
+}
+
+/**
+ * The `PeerLogFetchError` for a host whose addresses were refused.
+ * @param options {object}
+ * @param options.url {string}   the fetched URL, for the error
+ * @param options.refusal {AddressRefusal}   a `no-address` or `blocked` refusal
+ * @returns {PeerLogFetchError}
+ */
+function addressRefusalError({
+  url,
+  refusal
+}: {
+  url: string
+  refusal: Exclude<AddressRefusal, { refusal: 'unresolved' }>
+}): PeerLogFetchError {
+  if (refusal.refusal === 'no-address') {
+    return new PeerLogFetchError({ url, detail: 'the host has no address.' })
   }
+  return new PeerLogFetchError({
+    url,
+    detail: `the host resolves to a non-public address (${refusal.address}).`
+  })
 }
 
 /**
@@ -607,13 +628,15 @@ export async function openPinnedAgent({ url }: { url: string }): Promise<{
   release: () => void
 }> {
   const parsed = checkPeerLogUrl({ url })
-  // Brackets off an IPv6 literal, so the lookup and the pin see the address.
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const addresses = await dnsLookup(hostname, { all: true })
-  assertPublicAddresses({ url, addresses })
-  const agent = new Agent({
-    connect: { lookup: createPinnedLookup(new Map([[hostname, addresses]])) }
-  })
+  const resolved = await resolvePublicHost({ url: parsed })
+  if ('refusal' in resolved) {
+    if (resolved.refusal === 'unresolved') {
+      // The lookup's own failure, which the caller words.
+      throw resolved.cause
+    }
+    throw addressRefusalError({ url, refusal: resolved })
+  }
+  const agent = pinnedAgentFor(resolved)
   const release = (): void => {
     agent.destroy().catch(() => {
       // best-effort teardown of a one-request agent

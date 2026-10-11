@@ -14,6 +14,7 @@ import {
 import { assertValidGenerator } from './generator.js'
 import { assertValidRevisions } from './revisions.js'
 import { parseMetaEpoch } from './keyEpoch.js'
+import { assertJsonObjectBody } from './requestBody.js'
 import { InvalidRequestBodyError } from '../errors.js'
 import type { CollectionMetadata } from '../types.js'
 
@@ -55,13 +56,11 @@ export function parseCollectionMetadataBody({
   body: unknown
   requestName: string
 }): ParsedCollectionMetadataBody {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'The Collection Metadata body must be a JSON object.'
-    })
-  }
-  const record = body as Record<string, unknown>
+  const record = assertJsonObjectBody({
+    body,
+    requestName,
+    detail: 'The Collection Metadata body must be a JSON object.'
+  })
   if (record.name !== undefined && typeof record.name !== 'string') {
     throw new InvalidRequestBodyError({
       requestName,

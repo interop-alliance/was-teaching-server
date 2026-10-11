@@ -32,16 +32,15 @@ import type {
   CollectionMetadata,
   CollectionIndexDeclaration
 } from '../types.js'
-import { encodeCursor } from './cursor.js'
-import { compareCodeUnits, resolvePageSize, seekPage } from './pagination.js'
+import { asList } from './chainCapability.js'
 import { isPlainObject } from './isPlainObject.js'
 import {
-  assertCountIsBoolean,
   assertEqualsIsNonEmptyArray,
   assertExactlyOneOfEqualsOrHas,
   assertHasIsNonEmptyStringArray,
-  coerceQueryLimit,
-  parseOptionalCursor
+  assertNoTermOverlap,
+  pageMatches,
+  parseQueryPaging
 } from './queryProfile.js'
 import {
   InvalidRequestBodyError,
@@ -134,7 +133,7 @@ function isIndexableValue(value: unknown): value is EqualityValue {
  *   Collection Metadata object's declared `plaintext.indexes`
  * @returns {NormalizedIndexDeclaration[]}
  */
-export function normalizeIndexes({
+function normalizeIndexes({
   indexes
 }: {
   indexes?: Array<string | CollectionIndexDeclaration>
@@ -461,17 +460,9 @@ export function parseEqualityQueryBody({
     query.has = names
   }
 
-  assertCountIsBoolean({ count, requestName })
-
-  const resolvedCursor = parseOptionalCursor({ cursor, requestName })
-
-  const resolvedLimit = coerceQueryLimit({ limit })
-
   return {
     query,
-    count: count === true,
-    ...(resolvedLimit !== undefined && { limit: resolvedLimit }),
-    ...(resolvedCursor !== undefined && { cursor: resolvedCursor })
+    ...parseQueryPaging({ count, limit, cursor, requestName })
   }
 }
 
@@ -493,7 +484,7 @@ export function parseEqualityQueryBody({
  * @param [options.custom] {unknown}   the custom metadata object
  * @returns {Map<string, EqualityValue[]>}   declared name to its indexable values
  */
-export function extractEqualityAttributes({
+function extractEqualityAttributes({
   indexes,
   content,
   custom
@@ -509,16 +500,7 @@ export function extractEqualityAttributes({
       continue
     }
     const member = source[declaration.name]
-    const values: EqualityValue[] = []
-    if (Array.isArray(member)) {
-      for (const element of member) {
-        if (isIndexableValue(element)) {
-          values.push(element)
-        }
-      }
-    } else if (isIndexableValue(member)) {
-      values.push(member)
-    }
+    const values = asList(member).filter(isIndexableValue)
     if (values.length > 0) {
       // A name may be declared once (unique across the array), so no merge is
       // needed; the last declaration for a name wins if that ever changes.
@@ -542,7 +524,7 @@ export function extractEqualityAttributes({
  * @param options.indexes {NormalizedIndexDeclaration[]}
  * @returns {boolean}
  */
-export function matchesEqualityQuery({
+function matchesEqualityQuery({
   candidate,
   query,
   indexes
@@ -562,7 +544,7 @@ export function matchesEqualityQuery({
       return (
         pairs.length > 0 &&
         pairs.every(([name, value]) =>
-          (attributes.get(name) ?? []).some(held => held === value)
+          (attributes.get(name) ?? []).includes(value)
         )
       )
     })
@@ -608,36 +590,20 @@ export function runEqualityQuery({
   limit?: number
   cursor?: string
 }): { count: number } | EqualityQueryPage {
-  const matches = candidates
-    .filter(candidate => matchesEqualityQuery({ candidate, query, indexes }))
-    // Ascending `resourceId` in code-unit order -- the SAME ordering the cursor
-    // seek (`resourceId > after`) uses, so the keyset is stable.
-    .sort((left, right) => compareCodeUnits(left.resourceId, right.resourceId))
-
-  if (count === true) {
-    return { count: matches.length }
-  }
-
-  const { page, hasMore } = seekPage({
-    items: matches,
-    cursor,
-    pageSize: resolvePageSize(limit),
-    keyOf: ({ resourceId }) => resourceId
-  })
-
-  return {
-    documents: page.map(candidate => ({
+  return pageMatches({
+    candidates,
+    isMatch: candidate => matchesEqualityQuery({ candidate, query, indexes }),
+    project: candidate => ({
       id: candidate.resourceId,
       // `data` present iff the Resource has JSON content (absent for a blob);
       // `custom` present when the Resource carries a custom metadata object.
       ...(candidate.content !== undefined && { data: candidate.content }),
       ...(isPlainObject(candidate.custom) && { custom: candidate.custom })
-    })),
-    hasMore,
-    ...(hasMore && {
-      cursor: encodeCursor(page[page.length - 1]!.resourceId)
-    })
-  }
+    }),
+    count,
+    limit,
+    cursor
+  })
 }
 
 /**
@@ -653,7 +619,7 @@ export function runEqualityQuery({
  * @param [options.custom] {unknown}   the custom metadata object
  * @returns {Array<{ name: string, value: EqualityValue }>}
  */
-export function collectUniqueEqualityTerms({
+function collectUniqueEqualityTerms({
   indexes,
   content,
   custom
@@ -662,12 +628,8 @@ export function collectUniqueEqualityTerms({
   content?: unknown
   custom?: unknown
 }): Array<{ name: string; value: EqualityValue }> {
-  const uniqueDeclarations = uniqueIndexesOf({ indexes })
-  if (uniqueDeclarations.length === 0) {
-    return []
-  }
   const extracted = extractEqualityAttributes({
-    indexes: uniqueDeclarations,
+    indexes: uniqueIndexesOf({ indexes }),
     content,
     custom
   })
@@ -715,28 +677,42 @@ export function assertNoUniqueEqualityConflict({
   custom?: unknown
   candidates: EqualityCandidate[]
 }): void {
-  const incoming = collectUniqueEqualityTerms({ indexes, content, custom })
-  if (incoming.length === 0) {
-    return
-  }
-  // Key the claims unambiguously (a name or a string value may itself contain
-  // any delimiter, and the value's JSON type must stay distinct -- `1` vs `"1"`
-  // -- so a joined string could collide).
-  const claimed = new Set(
-    incoming.map(term => JSON.stringify([term.name, term.value]))
+  assertNoTermOverlap({
+    incoming: uniqueEqualityKeys({ indexes, content, custom }),
+    candidates,
+    termsOf: candidate =>
+      uniqueEqualityKeys({
+        indexes,
+        content: candidate.content,
+        custom: candidate.custom
+      }),
+    onConflict: () => new UniqueAttributeConflictError({ variant: 'equality' })
+  })
+}
+
+/**
+ * The claim keys of a Resource's `unique: true` attribute claims. Each claim
+ * is keyed unambiguously (a name or a string value may itself contain any
+ * delimiter, and the value's JSON type must stay distinct -- `1` vs `"1"` --
+ * so a joined string could collide).
+ * @param options {object}
+ * @param options.indexes {NormalizedIndexDeclaration[]}
+ * @param [options.content] {unknown}   the stored JSON content
+ * @param [options.custom] {unknown}   the custom metadata object
+ * @returns {string[]}
+ */
+function uniqueEqualityKeys({
+  indexes,
+  content,
+  custom
+}: {
+  indexes: NormalizedIndexDeclaration[]
+  content?: unknown
+  custom?: unknown
+}): string[] {
+  return collectUniqueEqualityTerms({ indexes, content, custom }).map(term =>
+    JSON.stringify([term.name, term.value])
   )
-  for (const candidate of candidates) {
-    const held = collectUniqueEqualityTerms({
-      indexes,
-      content: candidate.content,
-      custom: candidate.custom
-    })
-    for (const term of held) {
-      if (claimed.has(JSON.stringify([term.name, term.value]))) {
-        throw new UniqueAttributeConflictError({ variant: 'equality' })
-      }
-    }
-  }
 }
 
 /**
@@ -760,16 +736,12 @@ export function findEqualityUniqueViolation({
   indexes: NormalizedIndexDeclaration[]
   candidates: EqualityCandidate[]
 }): { name: string; value: EqualityValue } | undefined {
-  const uniqueDeclarations = uniqueIndexesOf({ indexes })
-  if (uniqueDeclarations.length === 0) {
-    return undefined
-  }
   // Map each seen claim key to the resourceId holding it; a second, different
   // holder is the violation.
   const holders = new Map<string, string>()
   for (const candidate of candidates) {
     const held = collectUniqueEqualityTerms({
-      indexes: uniqueDeclarations,
+      indexes,
       content: candidate.content,
       custom: candidate.custom
     })

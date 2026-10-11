@@ -17,8 +17,20 @@ import type {
   CollectionEncryption,
   CollectionRevisions
 } from '@interop/storage-core'
-import type { CollectionLogResult, StoredCollectionLog } from '../types.js'
-import { type EtagValidator, stampedValidator } from './etag.js'
+import type {
+  CollectionLogResult,
+  StoredCollectionLog,
+  StoredCollectionMetadata
+} from '../types.js'
+import {
+  type EtagValidator,
+  type HeldValidators,
+  etagOf,
+  mintValidator,
+  stampedValidator
+} from './etag.js'
+import type { HybridLogicalClock } from './hlc.js'
+import { assertCollectionLogWritePrecondition } from './preconditions.js'
 import {
   InvalidRequestBodyError,
   PreconditionFailedError,
@@ -162,6 +174,68 @@ export function unchangedLogValidator({
     return undefined
   }
   return collectionLogResultOf(prior).validator
+}
+
+/**
+ * The backend-agnostic body of `writeCollectionLog`, run inside the backend's
+ * critical section against the stored log and the live Collection Metadata
+ * object it read there. In order: the precondition against the stored log's
+ * `ETag`, the no-op check ({@link unchangedLogValidator}), the caller's
+ * transition check, and the new validator's mint. A re-sent log whose
+ * preconditions pass resolves the current validator with `changed: false`,
+ * and the backend stores nothing. Otherwise the backend stores the log under
+ * the minted validator.
+ * @param options {object}
+ * @param options.collectionId {string}   for the error detail
+ * @param options.collectionMetadata {StoredCollectionMetadata}   the live
+ *   Collection Metadata object
+ * @param [options.prior] {StoredCollectionLog}   the stored log, if any
+ * @param options.body {string}   the new JSON Lines body
+ * @param [options.ifMatch] {string}
+ * @param [options.ifNoneMatch] {HeldValidators}
+ * @param [options.assertTransition] {Function}   run against the prior log
+ *   and the Collection Metadata object; throwing aborts the write
+ * @param options.clock {HybridLogicalClock}   the store's clock
+ * @returns {Promise<{ validator: EtagValidator, changed: boolean }>}
+ */
+export async function mintCollectionLogWrite({
+  collectionId,
+  collectionMetadata,
+  prior,
+  body,
+  ifMatch,
+  ifNoneMatch,
+  assertTransition,
+  clock
+}: {
+  collectionId: string
+  collectionMetadata: StoredCollectionMetadata
+  prior?: StoredCollectionLog
+  body: string
+  ifMatch?: string
+  ifNoneMatch?: HeldValidators
+  assertTransition?: (context: {
+    prior?: CollectionLogResult
+    collectionMetadata: StoredCollectionMetadata
+  }) => void | Promise<void>
+  clock: HybridLogicalClock
+}): Promise<{ validator: EtagValidator; changed: boolean }> {
+  assertCollectionLogWritePrecondition({
+    collectionId,
+    currentEtag: prior && etagOf(prior),
+    ifMatch,
+    ifNoneMatch
+  })
+  const unchanged = unchangedLogValidator({ prior, body })
+  if (unchanged !== undefined) {
+    return { validator: unchanged, changed: false }
+  }
+  await assertTransition?.({
+    prior: prior && collectionLogResultOf(prior),
+    collectionMetadata
+  })
+  const validator = await mintValidator({ clock, prior })
+  return { validator, changed: true }
 }
 
 /**

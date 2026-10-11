@@ -1,0 +1,11 @@
+{
+  "format": ["typescript"],
+  "path": ["src"],
+  "ignore": ["**/src/backends/postgresSchema.ts"],
+  "ignorePattern": ["\\(\\{[^{}()]*\\}: \\{(?:[^{}]|\\{[^{}]*\\})*\\}\\)"],
+  "minLines": 10,
+  "minTokens": 70,
+  "threshold": 0,
+  "reporters": ["consoleFull"],
+  "gitignore": true
+}

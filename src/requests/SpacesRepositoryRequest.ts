@@ -7,8 +7,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import {
   baseDelegationSigner,
-  handleZcapVerify,
-  isRootInvocation
+  isRootInvocation,
+  verifyRequestZcap
 } from '../zcap.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import {
@@ -22,7 +22,7 @@ import {
 } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertCreatableSpaceId, assertValidId } from '../lib/validateId.js'
-import { spacePath, spacesPath } from '../lib/paths.js'
+import { absoluteUrl, spacePath, spacesPath } from '../lib/paths.js'
 import { decodeCursor } from '../lib/cursor.js'
 import {
   compareCodeUnits,
@@ -30,7 +30,7 @@ import {
   parsePageParams,
   resolvePageSize
 } from '../lib/pagination.js'
-import { assertValidController } from '../lib/validateDid.js'
+import { assertValidController, didOfMethodId } from '../lib/validateDid.js'
 import {
   assertClientCreatableSpaceType,
   assertValidSpaceType,
@@ -100,7 +100,6 @@ export class SpacesRepositoryRequest {
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
-    const { url, method, headers } = request
     const { serverUrl, storage } = request.server
 
     const items: SpaceSummary[] = []
@@ -118,9 +117,9 @@ export class SpacesRepositoryRequest {
     }
 
     const { keyId, invocation } = request.zcap
-    const [zcapSigningDid] = keyId.split('#')
+    const zcapSigningDid = didOfMethodId(keyId)
     const rootInvocation = isRootInvocation({ invocation })
-    const allowedTarget = new URL(spacesPath(), serverUrl).toString()
+    const allowedTarget = absoluteUrl({ path: spacesPath(), serverUrl })
 
     const { limit, cursor } = parsePageParams({ query: request.query })
 
@@ -133,25 +132,24 @@ export class SpacesRepositoryRequest {
 
     const pageSize = resolvePageSize(limit)
 
-    // Sort by `id` ascending in code-unit order -- the keyset order the cursor
-    // seeks within; do not rely on backend ordering.
-    const spaces = (await storage.listSpaces()).sort((left, right) =>
-      compareCodeUnits(left.id, right.id)
-    )
-
-    // Seek to the first space id strictly greater than the cursor's anchor.
-    let startIndex = 0
-    if (after !== undefined) {
-      const found = spaces.findIndex(space => space.id > after)
-      startIndex = found === -1 ? spaces.length : found
-    }
-
     // The one controller whose Spaces this invocation can reveal (see above).
     // `undefined` when a delegated invocation's chain cannot be read, which
     // could not verify for any controller either.
     const eligibleController = rootInvocation
       ? zcapSigningDid
       : baseDelegationSigner({ invocation })
+
+    // The eligible controller's Spaces, sorted by `id` ascending in code-unit
+    // order -- the keyset order the cursor seeks within; do not rely on
+    // backend ordering.
+    const spaces = (await storage.listSpaces())
+      .filter(space => space.controller === eligibleController)
+      .sort((left, right) => compareCodeUnits(left.id, right.id))
+
+    // Seek to the first space id strictly greater than the cursor's anchor.
+    const found =
+      after === undefined ? 0 : spaces.findIndex(space => space.id > after)
+    const startIndex = found === -1 ? spaces.length : found
     // Verified lazily, on the first Space the eligible controller holds, and
     // at most once. A failed verification just excludes that controller's
     // Spaces -- never an error response.
@@ -164,22 +162,14 @@ export class SpacesRepositoryRequest {
     let hasMore = false
     for (let index = startIndex; index < spaces.length; index++) {
       const space = spaces[index]!
-      if (space.controller !== eligibleController) {
-        continue
-      }
       if (authorized === undefined) {
         try {
-          await handleZcapVerify({
-            url,
+          await verifyRequestZcap({
+            request,
             allowedTarget,
             allowedAction: 'GET',
-            method,
-            headers,
-            serverUrl,
             spaceController: space.controller,
-            webvh: { storage, serverUrl },
             requestName: 'List Spaces',
-            logger: request.log,
             // The `?limit`/`cursor` query selects a page of an already-
             // authorized target; it must still verify against the bare
             // `/spaces/` root capability (see `verifyZcap`).
@@ -297,7 +287,7 @@ export class SpacesRepositoryRequest {
       await verifyBodyControllerConsent({
         request,
         controller: body.controller,
-        allowedTarget: new URL(spacesPath(), serverUrl).toString(),
+        allowedTarget: absoluteUrl({ path: spacesPath(), serverUrl }),
         allowedAction: 'POST',
         MismatchError: SpaceControllerMismatchError,
         requestName: 'Create Space'
@@ -313,10 +303,11 @@ export class SpacesRepositoryRequest {
     // consented, because a 409 here against an id that exists -- where a fresh
     // id would have failed the consent check -- would tell a caller with no
     // verifying signature which Spaces exist.
-    if (body.id !== undefined) {
-      if (await storage.getSpaceMetadata({ spaceId: body.id })) {
-        throw new IdConflictError({ kind: 'Space' })
-      }
+    if (
+      body.id !== undefined &&
+      (await storage.getSpaceMetadata({ spaceId: body.id }))
+    ) {
+      throw new IdConflictError({ kind: 'Space' })
     }
 
     // zCap checks out, continue.
@@ -348,10 +339,10 @@ export class SpacesRepositoryRequest {
 
     // `Location` names the Space that was created, in its canonical
     // trailing-slash (container) form (spec "Create Space").
-    const createdSpaceUrl = new URL(
-      spacePath({ spaceId, trailingSlash: true }),
+    const createdSpaceUrl = absoluteUrl({
+      path: spacePath({ spaceId, trailingSlash: true }),
       serverUrl
-    ).toString()
+    })
     reply.header('Location', createdSpaceUrl)
     // Surface the Metadata object's ETag so a client can chain a conditional
     // Update Space (read-modify-CAS on the Space Metadata object).

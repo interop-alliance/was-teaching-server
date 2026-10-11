@@ -114,6 +114,11 @@ export async function assertSupportedBackend({
     })
   }
   const { id } = backend as { id: string }
+  // The server's own backend heads every Space's backends-available, so
+  // selecting it needs no read of the registered records.
+  if (id === storage.describe().id) {
+    return { id }
+  }
   const available = await listRegisteredBackends({ storage, spaceId })
   if (!available.some(entry => entry.id === id)) {
     throw new UnsupportedBackendError({ backendId: id })

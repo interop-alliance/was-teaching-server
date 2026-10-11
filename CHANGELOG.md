@@ -1,5 +1,30 @@
 # History
 
+## 0.42.3 - TBD
+
+### Changed
+
+- Codebase-wide cleanup pass with no change in behavior: duplicated logic in the
+  two storage backends, the request layer, the authorization path, the
+  replication loop and the import/export path now goes through shared helpers
+  (`src/lib/jsonBytes.ts`, `src/lib/storageErrors.ts`, `pickStamp`,
+  `absoluteUrl`, `verifyRequestZcap`, `withEtag`, `collectionsList`,
+  `resolvePublicHost`, among others), and dead branches, nested ternaries and
+  unused exports are removed.
+- Fewer file opens and queries on hot paths: filesystem JSON metadata reads no
+  longer go through `fs-json-store`; revocation checks, replica applies and
+  equality scans run their independent reads concurrently; the Postgres equality
+  and blinded-index candidate scan is one query that no longer transfers
+  non-JSON blob bytes; the Postgres apply guard and governed-log writes use one
+  statement each; `List Spaces` filters by controller before sorting.
+- `fs-json-store` is no longer a dependency.
+- `pnpm run lint` now refuses hand-written copies of the shared helpers
+  (`absoluteUrl`, `didOfMethodId`, `isPlainObject`, `pickStamp`, `isEnoent`,
+  `asList`, the root-capability prefix) and nested ternaries through
+  `no-restricted-syntax`, and runs `jscpd` (`pnpm run lint:dup`) as a copy-paste
+  detector over `src/`. A project `.claude/settings.json` hook runs ESLint on
+  every `src/` file an agent edits.
+
 ## 0.42.2 - 2026-10-09
 
 ### Added

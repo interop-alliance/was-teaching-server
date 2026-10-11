@@ -12,6 +12,7 @@ import type {
   WriteStamp
 } from '../types.js'
 import { isCollectionTombstone as isTombstoneBody } from '@interop/space-archive'
+import { pickStamp } from './hlc.js'
 import { embedMetadataValidator } from './metadataValidator.js'
 import { collectionPath } from './paths.js'
 
@@ -25,8 +26,7 @@ import { collectionPath } from './paths.js'
 export function collectionTombstoneBody(
   stamp: WriteStamp
 ): { deleted: true } & WriteStamp {
-  const { updatedAt, updatedAtCounter, originId } = stamp
-  return { deleted: true, updatedAt, updatedAtCounter, originId }
+  return { deleted: true, ...pickStamp(stamp) }
 }
 
 /**

@@ -15,13 +15,18 @@
  *   policy resource.
  */
 import type { FastifyRequest } from 'fastify'
-import { handleZcapVerify, verifiedInvocation } from '../zcap.js'
+import { verifiedInvocation, verifyRequestZcap } from '../zcap.js'
 import type { VerifiedInvocation } from '../zcap.js'
 import type { ContainerRule } from '../lib/containerRule.js'
 import { authorize } from '../authorize.js'
-import { spacePath } from '../lib/paths.js'
+import { absoluteUrl, spacePath } from '../lib/paths.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
-import { getCachedSpaceMetadata } from '../lib/spaceMetadataCache.js'
+import {
+  getCachedSpaceMetadata,
+  invalidateSpaceMetadata
+} from '../lib/spaceMetadataCache.js'
+import { invalidateSpacePolicies } from '../lib/policyCache.js'
+import { invalidateSpaceGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import { SpaceNotFoundError } from '../errors.js'
 import type { StorageBackend, StoredSpaceMetadata } from '../types.js'
 
@@ -145,11 +150,11 @@ async function fetchSpaceContext({
     spaceId,
     requestName
   })
-  const allowedTarget = new URL(targetPath, serverUrl).toString()
-  const spaceRootTarget = new URL(
-    spacePath({ spaceId, trailingSlash: true }),
+  const allowedTarget = absoluteUrl({ path: targetPath, serverUrl })
+  const spaceRootTarget = absoluteUrl({
+    path: spacePath({ spaceId, trailingSlash: true }),
     serverUrl
-  ).toString()
+  })
   return { spaceMetadata, allowedTarget, spaceRootTarget }
 }
 
@@ -275,24 +280,41 @@ export async function fetchSpaceAndVerify({
     targetPath,
     requestName
   })
-  const { url, method, headers } = request
-  const { serverUrl, storage } = request.server
-  const result = await handleZcapVerify({
-    url,
+  const result = await verifyRequestZcap({
+    request,
+    peerWebvh: true,
     allowedTarget: context.allowedTarget,
-    allowedAction: method,
-    method,
-    headers,
-    serverUrl,
+    allowedAction: request.method,
     spaceController: context.spaceMetadata.controller,
-    webvh: { storage, serverUrl },
     requestName,
-    logger: request.log,
     attenuatedRootTarget: context.spaceRootTarget,
     allowTargetQuery,
-    revocation: { storage, scope: { spaceId } },
-    containerRule,
-    peerWebvh: request.server.peerWebvh
+    revocation: { storage: request.server.storage, scope: { spaceId } },
+    containerRule
   })
   return { ...context, ...verifiedInvocation({ result }) }
+}
+
+/**
+ * Drops every per-process cache entry a Space-wide write can leave stale: the
+ * cached Space Metadata object, every policy cached at the Space level or
+ * under any of its Collections/Resources, and every descriptor derived from a
+ * governing log in the Space. For the writes that touch the whole Space
+ * (Delete Space, Import Space). The `did:webvh` and replica caches differ
+ * between them, so each caller drops those itself.
+ * @param options {object}
+ * @param options.storage {StorageBackend}   the backend the caches belong to
+ * @param options.spaceId {string}
+ * @returns {void}
+ */
+export function invalidateSpaceCaches({
+  storage,
+  spaceId
+}: {
+  storage: StorageBackend
+  spaceId: string
+}): void {
+  invalidateSpaceMetadata({ storage, spaceId })
+  invalidateSpacePolicies({ storage, spaceId })
+  invalidateSpaceGovernedDescriptors({ storage, spaceId })
 }

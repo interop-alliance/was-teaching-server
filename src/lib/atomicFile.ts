@@ -19,7 +19,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import type { FastifyBaseLogger } from 'fastify'
 
-const { open, rename, unlink, link, opendir, stat } = fs.promises
+const { open, rename, unlink, link, opendir, readFile, stat } = fs.promises
 
 /**
  * The file-name prefix every staging temp file carries.
@@ -98,7 +98,7 @@ export async function sweepTempFiles({
         }
       }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      if (!isEnoent(err)) {
         logger.warn({ err, dir }, 'Temp file sweep skipped a directory')
       }
     }
@@ -132,7 +132,7 @@ async function removeIfStale({
     await unlink(filePath)
     return 1
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+    if (!isEnoent(err)) {
       logger.warn({ err, filePath }, 'Temp file sweep could not remove a file')
     }
     return 0
@@ -197,6 +197,39 @@ async function writeAndSyncTemp({
 }
 
 /**
+ * The skeleton both atomic writes share: write + fsync a temp file beside
+ * `filePath`, `publish` it under the final name, then fsync the directory. On
+ * any failure before the directory fsync the temp file is cleaned up.
+ * @param options {object}
+ * @param options.filePath {string}
+ * @param options.data {string|Buffer}
+ * @param options.publish {(tempPath: string) => Promise<void>}   moves or
+ *   links the synced temp file onto `filePath`
+ * @returns {Promise<void>}
+ */
+async function publishViaTemp({
+  filePath,
+  data,
+  publish
+}: {
+  filePath: string
+  data: string | Buffer
+  publish: (tempPath: string) => Promise<void>
+}): Promise<void> {
+  const tempPath = tempPathFor(filePath)
+  try {
+    await writeAndSyncTemp({ tempPath, data })
+    await publish(tempPath)
+  } catch (err) {
+    // Only ever remove the temp file here, never `filePath`: on an EEXIST the
+    // pre-existing target must survive intact.
+    await unlink(tempPath).catch(() => {})
+    throw err
+  }
+  await fsyncDirectory(path.dirname(filePath))
+}
+
+/**
  * Atomically and durably writes `data` to `filePath` (full replacement):
  * write + fsync a temp file, `rename` it onto `filePath`, then fsync the
  * directory. The final path never observes a partially-written file. On any
@@ -213,15 +246,11 @@ export async function atomicWriteFile({
   filePath: string
   data: string | Buffer
 }): Promise<void> {
-  const tempPath = tempPathFor(filePath)
-  try {
-    await writeAndSyncTemp({ tempPath, data })
-    await rename(tempPath, filePath)
-  } catch (err) {
-    await unlink(tempPath).catch(() => {})
-    throw err
-  }
-  await fsyncDirectory(path.dirname(filePath))
+  await publishViaTemp({
+    filePath,
+    data,
+    publish: tempPath => rename(tempPath, filePath)
+  })
 }
 
 /**
@@ -243,18 +272,14 @@ export async function atomicCreateFile({
   filePath: string
   data: string | Buffer
 }): Promise<void> {
-  const tempPath = tempPathFor(filePath)
-  try {
-    await writeAndSyncTemp({ tempPath, data })
-    await link(tempPath, filePath)
-  } catch (err) {
-    // Only ever remove the temp file here, never `filePath`: on an EEXIST the
-    // pre-existing target must survive intact.
-    await unlink(tempPath).catch(() => {})
-    throw err
-  }
-  await unlink(tempPath).catch(() => {})
-  await fsyncDirectory(path.dirname(filePath))
+  await publishViaTemp({
+    filePath,
+    data,
+    publish: async tempPath => {
+      await link(tempPath, filePath)
+      await unlink(tempPath).catch(() => {})
+    }
+  })
 }
 
 /**
@@ -282,4 +307,52 @@ export async function commitTempFile({
   }
   await rename(tempPath, filePath)
   await fsyncDirectory(path.dirname(filePath))
+}
+
+/**
+ * Whether a filesystem error is `ENOENT`: the path, or a directory on it, is
+ * absent.
+ * @param err {unknown}
+ * @returns {boolean}
+ */
+export function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
+}
+
+/**
+ * Reads a file's bytes, or `undefined` when it is absent. Any other failure
+ * propagates.
+ * @param filePath {string}
+ * @returns {Promise<Buffer | undefined>}
+ */
+export async function readFileIfPresent(
+  filePath: string
+): Promise<Buffer | undefined> {
+  try {
+    return await readFile(filePath)
+  } catch (err) {
+    if (isEnoent(err)) {
+      return undefined
+    }
+    throw err
+  }
+}
+
+/**
+ * Removes a file, treating an absent one as already removed. Any other
+ * failure propagates.
+ * @param filePath {string}
+ * @returns {Promise<boolean>}   true when this call removed the file, false
+ *   when it was absent
+ */
+export async function unlinkIfPresent(filePath: string): Promise<boolean> {
+  try {
+    await unlink(filePath)
+    return true
+  } catch (err) {
+    if (isEnoent(err)) {
+      return false
+    }
+    throw err
+  }
 }

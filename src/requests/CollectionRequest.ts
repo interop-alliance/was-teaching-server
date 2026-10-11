@@ -14,8 +14,8 @@ import {
   fetchCollectionAndBackend,
   getCollectionOrThrow,
   governedDescriptorsOf,
-  writeOnceOptions,
-  projectCollectionMetadata
+  projectCollectionMetadata,
+  resourceWriteOptions
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import {
@@ -33,9 +33,7 @@ import {
 import type {
   CollectionDeleteOutcome,
   CollectionMetadata,
-  MetadataWriteResult,
   NormalizedIndexDeclaration,
-  ResourceWriteResult,
   StorageBackend
 } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
@@ -48,9 +46,7 @@ import {
 import { resolveBackendDescriptor } from '../lib/backends.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertRevisionsTransition } from '../lib/revisions.js'
-import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
-import { parseWriterIdHeader } from '../lib/writerAttribution.js'
-import { parsePageParams } from '../lib/pagination.js'
+import { coerceQueryLimit, parsePageParams } from '../lib/pagination.js'
 import {
   decodeChangesCheckpoint,
   encodeChangesCheckpoint
@@ -63,6 +59,7 @@ import {
   invalidateCollectionGovernedDescriptors
 } from '../lib/governedDescriptorsCache.js'
 import {
+  absoluteUrl,
   collectionPath,
   resourcePath,
   linksetPath,
@@ -91,7 +88,8 @@ import {
   UniqueAttributeConflictError,
   rethrowOrWrapStorageError
 } from '../errors.js'
-import { notModifiedReply } from './notModified.js'
+import { withStorageErrors } from '../lib/storageErrors.js'
+import { notModifiedReply, withEtag } from './notModified.js'
 
 /**
  * The normalized `unique: true` declarations a `plaintext.indexes` update ADDS
@@ -189,8 +187,6 @@ export class CollectionRequest {
 
     // zCap checks out, continue
     const resourceId = uuidv4()
-    let response: { id: string; 'content-type'?: string; url?: string }
-    let written: ResourceWriteResult
 
     // Route resource bytes to the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
@@ -200,62 +196,39 @@ export class CollectionRequest {
       collectionMetadata
     })
     const input = await resolveResourceInput(request, dataBackend)
-    // A content write into an encrypted Collection MAY declare the key epoch it
-    // encrypted under via the `Key-Epoch` header (the `key-epochs` feature);
-    // the server stores it opaquely and clears it when absent (the new
-    // ciphertext's epoch is unknown). Advisory, non-signature-covered metadata.
-    const { epoch } = parseKeyEpochHeader({
-      headers: request.headers,
+    // The key epoch, writer id, unique indexes, write-once rule and
+    // `createdBy` of the write (`resourceWriteOptions`).
+    const writeOptions = resourceWriteOptions({
+      request,
+      spaceId,
+      collectionId,
+      collectionMetadata,
       requestName
     })
-    // The writer-attribution label (spec "Writer attribution") MAY be
-    // declared the same way, via the `Writer-Id` header; the server stores it
-    // opaquely and clears it when absent (declare-or-clear).
-    const { writerId } = parseWriterIdHeader({
-      headers: request.headers,
-      requestName
-    })
-    // Any `unique: true` index entries the Collection declares ride along, so
-    // the backend enforces the uniqueness claim atomically with the write (409).
-    const uniqueIndexes = uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionMetadata })
-    })
-    try {
-      written = await dataBackend.writeResource({
+    const written = await withStorageErrors({ requestName }, () =>
+      dataBackend.writeResource({
         spaceId,
         collectionId,
         resourceId,
         input,
-        createdBy: invokerDid(request),
-        epoch,
-        writerId,
-        ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
-        ...writeOnceOptions({
-          request,
-          spaceId,
-          collectionId,
-          collectionMetadata
-        })
+        ...writeOptions
       })
-      response = {
-        id: resourceId,
-        'content-type': request.headers['content-type']
-      }
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
 
-    const createdUrl = new URL(
-      resourcePath({ spaceId, collectionId, resourceId }),
+    const createdUrl = absoluteUrl({
+      path: resourcePath({ spaceId, collectionId, resourceId }),
       serverUrl
-    ).toString()
+    })
     reply.header('Location', createdUrl)
     // Surface the created Resource's ETag so a client can chain a conditional
     // write (the conditional-writes feature).
     reply.header('etag', formatEtag(written.validator))
-    response.url = createdUrl
 
-    return reply.status(201).send(response)
+    return reply.status(201).send({
+      id: resourceId,
+      'content-type': request.headers['content-type'],
+      url: createdUrl
+    })
   }
 
   /**
@@ -430,11 +403,10 @@ export class CollectionRequest {
 
     // The served projection: the self `url`, the linkset, the default-filled
     // backend, and `type` sorted (`projectCollectionMetadata`).
-    const metaReply = reply.status(200).type('application/json')
-    if (metaEtag !== undefined) {
-      metaReply.header('etag', metaEtag)
-    }
-    return metaReply.send(
+    return withEtag({
+      reply: reply.status(200).type('application/json'),
+      etag: metaEtag
+    }).send(
       JSON.stringify(
         projectCollectionMetadata({
           spaceId,
@@ -579,16 +551,16 @@ export class CollectionRequest {
     // opt-in: an unconditional PUT still upserts. Evaluated atomically with
     // the write inside the backend; a stale validator or a present object
     // surfaces as 412 `precondition-failed` (rethrown unchanged).
-    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
-    let written: MetadataWriteResult<CollectionMetadata>
-    try {
-      written = await storage.writeCollection({
+    // Rethrow a typed ProblemError from the data-plane backend unchanged
+    // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
+    // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
+    const written = await withStorageErrors({ requestName }, () =>
+      storage.writeCollection({
         spaceId,
         collectionId,
         collectionMetadata,
         createdBy: invokerDid(request),
-        ...(ifMatch !== undefined && { ifMatch }),
-        ...(ifNoneMatch !== undefined && { ifNoneMatch }),
+        ...parseWritePreconditions(request.headers),
         // Re-evaluate the descriptor checks (`encryption`, `revisions`) and the
         // `plaintext` / `encryption` exclusion atomically with the write,
         // against the prior
@@ -618,12 +590,7 @@ export class CollectionRequest {
           })
         }
       })
-    } catch (err) {
-      // Rethrow a typed ProblemError from the data-plane backend unchanged
-      // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
-      // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
 
     // Surface the new `ETag` so a client can chain a conditional update
     // (read-modify-CAS on the object).
@@ -641,7 +608,7 @@ export class CollectionRequest {
       collectionId,
       trailingSlash: true
     })
-    reply.header('Location', new URL(collectionUrl, serverUrl).toString())
+    reply.header('Location', absoluteUrl({ path: collectionUrl, serverUrl }))
     // The stored object as the write left it, through the projection Read
     // Collection Metadata serves, so the create response and a subsequent
     // read agree. A created Collection has no governing log yet, so no
@@ -693,12 +660,9 @@ export class CollectionRequest {
 
     // authorized, continue
 
-    let log
-    try {
-      log = await storage.getCollectionLog({ spaceId, collectionId })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    const log = await withStorageErrors({ requestName }, () =>
+      storage.getCollectionLog({ spaceId, collectionId })
+    )
     if (!log) {
       throw new CollectionNotFoundError({ requestName })
     }
@@ -781,9 +745,8 @@ export class CollectionRequest {
         storage.maxUploadBytes === undefined ? undefined : storage.describe().id
     })
 
-    let written
-    try {
-      written = await storage.writeCollectionLog({
+    const written = await withStorageErrors({ requestName }, () =>
+      storage.writeCollectionLog({
         spaceId,
         collectionId,
         body,
@@ -828,9 +791,7 @@ export class CollectionRequest {
           }
         }
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
     if (!written) {
       throw new CollectionNotFoundError({ requestName })
     }
@@ -1218,11 +1179,7 @@ export class CollectionRequest {
     // Coerce `limit` (the requested batch size) to a positive integer, else
     // default; the backend clamps an oversized value to its own maximum.
     const DEFAULT_BATCH = 100
-    const parsedLimit = Number(body.limit)
-    const limit =
-      Number.isFinite(parsedLimit) && parsedLimit >= 1
-        ? parsedLimit
-        : DEFAULT_BATCH
+    const limit = coerceQueryLimit({ limit: body.limit }) ?? DEFAULT_BATCH
 
     const result = await dataBackend.changesSince!({
       spaceId,

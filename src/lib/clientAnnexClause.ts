@@ -206,11 +206,16 @@ import type { InspectCapabilityChain } from '@interop/zcap'
 import {
   actionsExactly,
   actionsWithin,
+  asList,
+  capabilityControllers,
   type ChainCapability
 } from './chainCapability.js'
 import type { DIDDoc } from '@interop/did-method-webvh'
-import { WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
-import { resolveWebvhController } from './webvhController.js'
+import { didOfMethodId, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import {
+  relationshipMethodIds,
+  resolveWebvhController
+} from './webvhController.js'
 import { locateWebvhLog } from './webvhLogLocation.js'
 import type { WebvhResolverContext } from './webvhController.js'
 import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
@@ -220,7 +225,7 @@ import {
   RESERVED_COLLECTION_IDS,
   RESERVED_RESOURCE_IDS
 } from './validateId.js'
-import { resourcePath, spaceMetaPath, spacePath } from './paths.js'
+import { absoluteUrl, resourcePath, spaceMetaPath, spacePath } from './paths.js'
 
 /**
  * The service-entry type IRI naming the account's current annex DID.
@@ -265,22 +270,6 @@ export function composeChainInspectors(
 }
 
 /**
- * Extracts the controller DIDs of one capability (`controller` may be a
- * single value or an array on a synthesized root).
- * @param capability {object}   a capability from a dereferenced chain
- * @returns {string[]}
- */
-export function capabilityControllers(capability: {
-  controller?: string | string[]
-}): string[] {
-  const { controller } = capability
-  if (controller === undefined) {
-    return []
-  }
-  return Array.isArray(controller) ? controller : [controller]
-}
-
-/**
  * The delegation-proof verification method of one chain link: the method the
  * verifier actually verified against when it recorded a result, else the
  * method the capability's own `capabilityDelegation` proof names.
@@ -303,9 +292,7 @@ function delegationVerificationMethod({
   if (verified) {
     return verified
   }
-  const proofs = Array.isArray(capability.proof)
-    ? capability.proof
-    : [capability.proof]
+  const proofs = asList(capability.proof)
   for (const proof of proofs as Array<
     { proofPurpose?: string; verificationMethod?: string } | undefined
   >) {
@@ -317,37 +304,6 @@ function delegationVerificationMethod({
     }
   }
   return undefined
-}
-
-/**
- * The absolute method ids one verification relationship names. The document
- * comes verbatim from a verified log, and DID Core lets a relationship entry
- * be an id-reference string (absolute or `#fragment`-relative) or an embedded
- * verification-method object, so entries are normalized to absolute ids
- * before any comparison -- an unnormalized match would misclassify a method
- * listed in a non-string form.
- * @param options {object}
- * @param options.entries {unknown}   the relationship value from the document
- * @param options.docId {string}   the document id, the base for relative refs
- * @returns {string[]}
- */
-function relationshipMethodIds({
-  entries,
-  docId
-}: {
-  entries: unknown
-  docId: string
-}): string[] {
-  const ids: string[] = []
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    const id =
-      typeof entry === 'string' ? entry : (entry as { id?: unknown })?.id
-    if (typeof id !== 'string') {
-      continue
-    }
-    ids.push(id.startsWith('#') ? `${docId}${id}` : id)
-  }
-  return ids
 }
 
 /**
@@ -401,7 +357,7 @@ function signerKindOf({
  */
 function clientAnnexDidOf(doc: DIDDoc): string | undefined {
   for (const entry of doc.service ?? []) {
-    const types = Array.isArray(entry.type) ? entry.type : [entry.type]
+    const types = asList(entry.type)
     if (
       types.includes(DELEGATED_CLIENTS_SERVICE_TYPE) &&
       typeof entry.serviceEndpoint === 'string'
@@ -469,14 +425,14 @@ function isOwnAccountLogTarget({
   logLocation: { spaceId: string; collectionId: string }
   serverUrl: string
 }): boolean {
-  const canonical = new URL(
-    resourcePath({
+  const canonical = absoluteUrl({
+    path: resourcePath({
       spaceId: logLocation.spaceId,
       collectionId: logLocation.collectionId,
       resourceId: WEBVH_LOG_RESOURCE_ID
     }),
     serverUrl
-  ).toString()
+  })
   return target === canonical
 }
 
@@ -520,7 +476,7 @@ function localSpaceTargetId({
   if (path === undefined) {
     return undefined
   }
-  const canonical = new URL(path, serverUrl).toString()
+  const canonical = absoluteUrl({ path, serverUrl })
   return target === canonical ? spaceId : undefined
 }
 
@@ -820,11 +776,10 @@ async function ladderDelegationAdmitted({
       capability: parent,
       meta: parentMeta
     })
-    const [parentSignerDid] = (parentSigner ?? '').split('#')
+    const parentSignerDid = didOfMethodId(parentSigner ?? '')
     if (
       parentControllers.length === 1 &&
       parentControllers[0] === doc.id &&
-      parentSignerDid !== undefined &&
       parentSignerDid !== ''
     ) {
       const spaceMetadata = await getCachedSpaceMetadata({ storage, spaceId })
@@ -845,10 +800,10 @@ async function ladderDelegationAdmitted({
   if (readSpaceId === undefined || parent.invocationTarget === undefined) {
     return false
   }
-  const parentSpaceUrl = new URL(
-    spacePath({ spaceId: readSpaceId, trailingSlash: true }),
+  const parentSpaceUrl = absoluteUrl({
+    path: spacePath({ spaceId: readSpaceId, trailingSlash: true }),
     serverUrl
-  ).toString()
+  })
   return (
     (parent.invocationTarget === target ||
       parent.invocationTarget === parentSpaceUrl) &&
@@ -986,6 +941,13 @@ export function clientAnnexChainInspector({
   invocation?: { target: string; action: string }
 }): InspectCapabilityChain {
   return async ({ capabilityChain, capabilityChainMeta }) => {
+    // Several links may be signed under one DID, so its log location and its
+    // document are looked up once for this chain.
+    const logLocations = new Map<
+      string,
+      Promise<Awaited<ReturnType<typeof locateWebvhLog>>>
+    >()
+    const docs = new Map<string, DIDDoc>()
     // The ladder-signed links themselves, not merely whether the chain has
     // one; for a transient annex VM one signed link is the whole statement.
     const ladderLinks: ChainCapability[] = []
@@ -1002,18 +964,26 @@ export function clientAnnexChainInspector({
       if (!verificationMethod?.startsWith('did:webvh:')) {
         continue
       }
-      const [did] = verificationMethod.split('#')
-      const logLocation = await locateWebvhLog({ storage, serverUrl, did })
+      const did = didOfMethodId(verificationMethod)
+      let located = logLocations.get(did)
+      if (located === undefined) {
+        located = locateWebvhLog({ storage, serverUrl, did })
+        logLocations.set(did, located)
+      }
+      const logLocation = await located
       if (logLocation === undefined) {
         continue
       }
       // A memoized read: the signature verification that just accepted this
       // proof resolved (and cached) the same document.
-      let doc: DIDDoc
-      try {
-        doc = await resolveWebvhController({ storage, serverUrl, did: did! })
-      } catch (err) {
-        return { valid: false, error: err as Error }
+      let doc = docs.get(did)
+      if (doc === undefined) {
+        try {
+          doc = await resolveWebvhController({ storage, serverUrl, did })
+        } catch (err) {
+          return { valid: false, error: err as Error }
+        }
+        docs.set(did, doc)
       }
       const signer = signerKindOf({ doc, verificationMethod })
       if (signer !== 'ladder') {

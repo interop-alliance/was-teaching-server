@@ -23,7 +23,7 @@ import { isUrlSafeSegment } from './lib/validateId.js'
  * The shape of the `onRequest` / `preValidation` hooks the provisioning gate
  * and `unlessProvisioningAuthorized` deal in.
  */
-type OnRequestHook = (
+export type OnRequestHook = (
   request: FastifyRequest,
   reply: FastifyReply
 ) => Promise<void>

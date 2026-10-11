@@ -6,17 +6,19 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
-import { handleZcapVerify } from '../zcap.js'
+import { verifyRequestZcap } from '../zcap.js'
 import { SPACE_METADATA_WRITE_ATTEMPTS } from '../config.default.js'
 import { buildLinkset } from '../policy.js'
-import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
+import {
+  fetchSpaceAndAuthorize,
+  fetchSpaceAndVerify,
+  invalidateSpaceCaches
+} from './spaceContext.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import {
   controllerChangeConflict,
   invalidateReplicaIndex
 } from '../lib/webvhLogLocation.js'
-import { invalidateSpacePolicies } from '../lib/policyCache.js'
-import { invalidateSpaceGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import {
   assertBodyController,
   verifyBodyControllerConsent
@@ -58,8 +60,9 @@ import {
   stripMetadataValidator
 } from '../lib/metadataValidator.js'
 import { projectCollectionMetadata } from './collectionContext.js'
-import { notModifiedReply } from './notModified.js'
+import { notModifiedReply, withEtag } from './notModified.js'
 import {
+  absoluteUrl,
   spacePath,
   spaceMetaPath,
   collectionPath,
@@ -86,7 +89,6 @@ import {
   ServiceUnavailableError,
   StaleSpaceMetadataError
 } from '../errors.js'
-import type { HeldValidators } from '../lib/etag.js'
 import type {
   IDID,
   CollectionsList,
@@ -184,11 +186,7 @@ export class SpaceRequest {
     // linkset (policy discovery) and its backends-available listing, stamped
     // by `projectSpaceMetadata` so every path that materializes the object
     // agrees.
-    const getReply = reply.status(200)
-    if (metaEtag !== undefined) {
-      getReply.header('etag', metaEtag)
-    }
-    return getReply.send(
+    return withEtag({ reply: reply.status(200), etag: metaEtag }).send(
       await projectSpaceMetadata({
         storage: request.server.storage,
         spaceId,
@@ -293,12 +291,12 @@ export class SpaceRequest {
       requestName: 'Update Space'
     })
 
-    const metaUrl = new URL(spaceMetaPath({ spaceId }), serverUrl).toString()
-    const spaceUrl = new URL(
-      spacePath({ spaceId, trailingSlash: true }),
+    const metaUrl = absoluteUrl({ path: spaceMetaPath({ spaceId }), serverUrl })
+    const spaceUrl = absoluteUrl({
+      path: spacePath({ spaceId, trailingSlash: true }),
       serverUrl
-    ).toString()
-    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
+    })
+    const preconditions = parseWritePreconditions(request.headers)
 
     // Check to see if space already exists (if yes, this will be an Update).
     // A Space that changes before the write is re-read and re-authorized.
@@ -312,8 +310,7 @@ export class SpaceRequest {
           requestedType,
           metaUrl,
           spaceUrl,
-          ifMatch,
-          ifNoneMatch
+          preconditions
         })
         break
       } catch (err) {
@@ -417,7 +414,7 @@ export class SpaceRequest {
     // create-or-replace by id is PUT's job. Checked after the capability
     // verification so an unauthorized caller cannot probe Collection ids --
     // like the backend allowlist check inside `composeCollectionMetadata`.
-    const collectionId = body.id !== undefined ? body.id : uuidv4()
+    const collectionId = body.id ?? uuidv4()
     if (
       body.id !== undefined &&
       (await storage.getCollectionMetadata({ spaceId, collectionId }))
@@ -454,10 +451,10 @@ export class SpaceRequest {
 
     // `Location` names the Collection in its canonical trailing-slash
     // (container) form.
-    const createdUrl = new URL(
-      collectionPath({ spaceId, collectionId, trailingSlash: true }),
+    const createdUrl = absoluteUrl({
+      path: collectionPath({ spaceId, collectionId, trailingSlash: true }),
       serverUrl
-    ).toString()
+    })
     reply.header('Location', createdUrl)
     // Surface the new Collection Metadata `ETag` so a client can chain a
     // conditional update (the `key-epochs` conditional-Collection-write feature).
@@ -526,8 +523,10 @@ export class SpaceRequest {
       // failure partway through has already removed some of what the caches
       // describe.
       // Bust the cached Metadata object so the next read sees the Space as
-      // gone (404).
-      invalidateSpaceMetadata({ storage, spaceId })
+      // gone (404). Every policy cached at the Space level or under any of
+      // its Collections/Resources is stale too, and so is every descriptor
+      // derived from a governing log in the Space.
+      invalidateSpaceCaches({ storage, spaceId })
       // Every Collection in the Space went with it, so any controller document
       // resolved out of a history log there is stale too.
       // A log re-created in the Space afterwards starts a history of its own,
@@ -535,11 +534,6 @@ export class SpaceRequest {
       // map a peer-hosted did:webvh onto its copy of a log.
       forgetDeletedWebvhLocation({ storage, spaceId })
       invalidateReplicaIndex({ storage })
-      // ...and so is every policy cached at the Space level or under any of
-      // its Collections/Resources, and every descriptor derived from a
-      // governing log in the Space.
-      invalidateSpacePolicies({ storage, spaceId })
-      invalidateSpaceGovernedDescriptors({ storage, spaceId })
     }
 
     return reply.status(204).send()
@@ -705,15 +699,13 @@ export class SpaceRequest {
       invalidateResolvedWebvhDid({ storage, spaceId })
       // An import can also add, replace, or fill in a policy at any level
       // (Space, Collection, or Resource); drop every policy cached under this
-      // Space rather than tracking which levels it touched.
-      invalidateSpacePolicies({ storage, spaceId })
-      // It installs an archived governing log with the archive's own
-      // validator, which could coincide with a cached derivation over
-      // different bytes; drop every descriptor derived under this Space.
-      invalidateSpaceGovernedDescriptors({ storage, spaceId })
-      // A root-invoked import restores the Space Metadata object's `type` and
-      // `name`, so the cached object is stale too.
-      invalidateSpaceMetadata({ storage, spaceId })
+      // Space rather than tracking which levels it touched. It installs an
+      // archived governing log with the archive's own validator, which could
+      // coincide with a cached derivation over different bytes; drop every
+      // descriptor derived under this Space. A root-invoked import restores
+      // the Space Metadata object's `type` and `name`, so the cached object
+      // is stale too.
+      invalidateSpaceCaches({ storage, spaceId })
     }
   }
 
@@ -921,8 +913,8 @@ export class SpaceRequest {
  * @param [options.requestedType] {string[]}   the body's shape-checked `type`
  * @param options.metaUrl {string}   the Space Metadata URL, the capability target
  * @param options.spaceUrl {string}   the Space's canonical container URL
- * @param [options.ifMatch] {string}   the client's `If-Match`
- * @param [options.ifNoneMatch] {HeldValidators}   the client's `If-None-Match`
+ * @param options.preconditions {object}   the client's `If-Match` /
+ *   `If-None-Match`, as `parseWritePreconditions` read them
  * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}   the new
  *   validator, whether the write created the Space, and the stored object
  */
@@ -932,22 +924,17 @@ async function authorizeAndWriteSpaceMetadata({
   requestedType,
   metaUrl,
   spaceUrl,
-  ifMatch,
-  ifNoneMatch
+  preconditions
 }: {
   request: PutSpaceMetaRequest
   existingSpaceMetadata?: StoredSpaceMetadata
   requestedType?: string[]
   metaUrl: string
   spaceUrl: string
-  ifMatch?: string
-  ifNoneMatch?: HeldValidators
+  preconditions: ReturnType<typeof parseWritePreconditions>
 }): Promise<MetadataWriteResult<SpaceMetadata>> {
   const {
     params: { spaceId },
-    url,
-    method,
-    headers,
     body
   } = request
   const { serverUrl, storage } = request.server
@@ -971,16 +958,11 @@ async function authorizeAndWriteSpaceMetadata({
       // other unauthorized write to an existing Space.
       throw new SpaceNotFoundError({ requestName: 'Update Space' })
     }
-    await handleZcapVerify({
-      url,
+    await verifyRequestZcap({
+      request,
       allowedTarget: metaUrl,
       allowedAction: 'PUT',
-      method,
-      headers,
-      serverUrl,
       spaceController: existingSpaceMetadata.controller,
-      webvh: { storage, serverUrl },
-      logger: request.log,
       attenuatedRootTarget: spaceUrl,
       revocation: { storage, scope: { spaceId } },
       // The container rule: Update Space Metadata on an existing Space is
@@ -1117,8 +1099,7 @@ async function authorizeAndWriteSpaceMetadata({
     spaceId,
     spaceMetadata,
     createdBy: invokerDid(request),
-    ...(ifMatch !== undefined && { ifMatch }),
-    ...(ifNoneMatch !== undefined && { ifNoneMatch }),
+    ...preconditions,
     // The authorization above holds only for the Space the pre-read saw:
     // absent on a create, or this exact validator on an update.
     assertTransition: prior => {

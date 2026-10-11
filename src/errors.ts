@@ -107,7 +107,7 @@ function maskedTitle({ requestName }: { requestName?: string }): string {
  * @param [options.requestName] {string}   request name used in the error title
  */
 class NotFoundError extends ProblemError {
-  constructor({ requestName }: { requestName?: string }) {
+  constructor({ requestName }: { requestName?: string } = {}) {
     super({
       type: ProblemTypes.NOT_FOUND,
       title: maskedTitle({ requestName }),
@@ -147,11 +147,7 @@ class InvalidIdError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class SpaceNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class SpaceNotFoundError extends NotFoundError {}
 
 /**
  * 400 -- the provided space id is not URL-safe / otherwise invalid.
@@ -875,22 +871,14 @@ export class MethodNotAllowedError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class CollectionNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class CollectionNotFoundError extends NotFoundError {}
 
 /**
  * 404 — the requested Resource does not exist, or the caller is not authorized.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class ResourceNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class ResourceNotFoundError extends NotFoundError {}
 
 /**
  * 404 — no replica registration is stored on the Space under the id. Only
@@ -898,11 +886,7 @@ export class ResourceNotFoundError extends NotFoundError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class ReplicaNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class ReplicaNotFoundError extends NotFoundError {}
 
 /**
  * 404 — no access-control policy document is set at the requested level
@@ -910,11 +894,7 @@ export class ReplicaNotFoundError extends NotFoundError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class PolicyNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class PolicyNotFoundError extends NotFoundError {}
 
 /**
  * 400 — the access-control policy document is missing or malformed (it must be
@@ -1556,11 +1536,7 @@ export class InvalidImportError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class KeystoreNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class KeystoreNotFoundError extends NotFoundError {}
 
 /**
  * 400 — the capability invocation on a Create Keystore request is not
@@ -1616,11 +1592,7 @@ export class KeystoreStateConflictError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class KeyNotFoundError extends NotFoundError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    super({ requestName })
-  }
-}
+export class KeyNotFoundError extends NotFoundError {}
 
 /**
  * 409 — a key record already exists at `(keystoreId, localId)`. Key local ids

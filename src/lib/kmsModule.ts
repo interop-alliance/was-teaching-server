@@ -275,8 +275,7 @@ function hmacDigest({
     field: 'verifyData',
     requestName
   })
-  const secret = Buffer.from(key.secret as string, 'base64url')
-  return createHmac('sha256', secret).update(data).digest()
+  return createHmac('sha256', secretBytes(key)).update(data).digest()
 }
 
 /** SignOperation on an HMAC key. */
@@ -346,6 +345,58 @@ function rethrowKeyLengthError({
 }
 
 /**
+ * The secret bytes of a symmetric key (an HMAC key or an AES-KW key
+ * encryption key), stored base64url-encoded.
+ * @param key {KmsStoredKey}
+ * @returns {Buffer}
+ */
+function secretBytes(key: KmsStoredKey): Buffer {
+  return Buffer.from(key.secret as string, 'base64url')
+}
+
+/**
+ * The setup an AES-KW operation shares: decodes the operation's input field,
+ * builds the key encryption key from the key's secret, and runs `run` with
+ * both. A key-length failure inside `run` is a 400 pointing at the field
+ * (`rethrowKeyLengthError`).
+ * @param options {object}
+ * @param options.key {KmsStoredKey}   the AES-KW key
+ * @param options.operation {Record<string, unknown>}   the operation envelope
+ * @param options.field {string}   the operation field carrying the input bytes
+ * @param options.requestName {string}   request name used in the error title
+ * @param options.run {Function}   the wrap or unwrap
+ * @returns {Promise<T>}
+ */
+async function withKek<T>({
+  key,
+  operation,
+  field,
+  requestName,
+  run
+}: {
+  key: KmsStoredKey
+  operation: Record<string, unknown>
+  field: string
+  requestName: string
+  run: (options: {
+    kek: Awaited<ReturnType<typeof createKek>>
+    bytes: Buffer
+  }) => Promise<T>
+}): Promise<T> {
+  const bytes = decodeBase64url({
+    value: operation[field],
+    field,
+    requestName
+  })
+  const kek = await createKek({ keyData: secretBytes(key) })
+  try {
+    return await run({ kek, bytes })
+  } catch (err) {
+    rethrowKeyLengthError({ err, field, requestName })
+  }
+}
+
+/**
  * WrapKeyOperation on an AES-KW key encryption key. Accepts every RFC 3394
  * length (a multiple of 8 bytes, at least 16); any other length is a 400.
  */
@@ -356,20 +407,14 @@ async function aesWrapKey({
   key: KmsStoredKey
   operation: Record<string, unknown>
 }): Promise<{ wrappedKey: string }> {
-  const requestName = 'Wrap Key Operation'
-  const unwrapped = decodeBase64url({
-    value: operation.unwrappedKey,
+  const wrappedKey = await withKek({
+    key,
+    operation,
     field: 'unwrappedKey',
-    requestName
+    requestName: 'Wrap Key Operation',
+    run: ({ kek, bytes }) => kek.wrapKey({ unwrappedKey: bytes })
   })
-  const kek = await createKek({
-    keyData: Buffer.from(key.secret as string, 'base64url')
-  })
-  try {
-    return { wrappedKey: await kek.wrapKey({ unwrappedKey: unwrapped }) }
-  } catch (err) {
-    rethrowKeyLengthError({ err, field: 'unwrappedKey', requestName })
-  }
+  return { wrappedKey }
 }
 
 /**
@@ -386,23 +431,14 @@ async function aesUnwrapKey({
   key: KmsStoredKey
   operation: Record<string, unknown>
 }): Promise<{ unwrappedKey: string | null }> {
-  const requestName = 'Unwrap Key Operation'
-  const wrapped = decodeBase64url({
-    value: operation.wrappedKey,
+  const unwrapped = await withKek({
+    key,
+    operation,
     field: 'wrappedKey',
-    requestName
+    requestName: 'Unwrap Key Operation',
+    run: ({ kek, bytes }) =>
+      kek.unwrapKey({ wrappedKey: bytes.toString('base64url') })
   })
-  const kek = await createKek({
-    keyData: Buffer.from(key.secret as string, 'base64url')
-  })
-  let unwrapped: Uint8Array | null
-  try {
-    unwrapped = await kek.unwrapKey({
-      wrappedKey: wrapped.toString('base64url')
-    })
-  } catch (err) {
-    rethrowKeyLengthError({ err, field: 'wrappedKey', requestName })
-  }
   return {
     unwrappedKey:
       unwrapped === null ? null : Buffer.from(unwrapped).toString('base64url')

@@ -5,9 +5,9 @@
  * revocation request handlers.
  */
 import type { FastifyRequest } from 'fastify'
-import { handleZcapVerify } from '../zcap.js'
+import { verifyRequestZcap } from '../zcap.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
-import { kmsKeystoresPath } from '../lib/paths.js'
+import { absoluteUrl, kmsKeystoresPath } from '../lib/paths.js'
 import {
   KMS_MAX_CHAIN_LENGTH,
   KMS_MAX_DELEGATION_TTL
@@ -101,26 +101,21 @@ export async function fetchKeystoreAndVerify({
 }): Promise<{ config: KeystoreConfig; dereferencedChainLength: number }> {
   const { serverUrl, storage } = request.server
   const config = await fetchKeystore({ request, keystoreId, requestName })
-  const { url, method, headers } = request
-  const allowedTarget = new URL(
-    kmsKeystoresPath({ keystoreId }),
+  const allowedTarget = absoluteUrl({
+    path: kmsKeystoresPath({ keystoreId }),
     serverUrl
-  ).toString()
-  const zcapVerifyResult = await handleZcapVerify({
-    url,
+  })
+  // A promoted keystore's controller is a self-hosted did:webvh; the local
+  // resolver context `verifyRequestZcap` supplies engages only for that shape
+  // (did:key keystores pay nothing).
+  const zcapVerifyResult = await verifyRequestZcap({
+    request,
     allowedTarget,
     allowedAction,
-    method,
-    headers,
-    serverUrl,
     spaceController: config.controller,
     requestName,
-    logger: request.log,
     allowTargetAttenuation,
     allowTargetQuery,
-    // A promoted keystore's controller is a self-hosted did:webvh; the
-    // context engages only for that shape (did:key keystores pay nothing).
-    webvh: { storage, serverUrl },
     revocation: { storage, scope: { keystoreId } },
     maxChainLength: KMS_MAX_CHAIN_LENGTH,
     maxDelegationTtl: KMS_MAX_DELEGATION_TTL,

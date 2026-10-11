@@ -24,7 +24,11 @@ import {
 } from '../lib/backends.js'
 import { invalidateResolvedBackend } from '../lib/backendRegistry.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
-import { backendsPath, registeredBackendPath } from '../lib/paths.js'
+import {
+  absoluteUrl,
+  backendsPath,
+  registeredBackendPath
+} from '../lib/paths.js'
 import { InvalidRequestBodyError, IdConflictError } from '../errors.js'
 
 export class BackendRequest {
@@ -85,10 +89,10 @@ export class BackendRequest {
     // its validator advanced with it, so the cached object is stale.
     invalidateSpaceMetadata({ storage, spaceId })
 
-    const createdUrl = new URL(
-      registeredBackendPath({ spaceId, backendId: record.id }),
+    const createdUrl = absoluteUrl({
+      path: registeredBackendPath({ spaceId, backendId: record.id }),
       serverUrl
-    ).toString()
+    })
     reply.header('Location', createdUrl)
     return reply.status(201).send(sanitizeBackendRecord(record))
   }
@@ -162,10 +166,10 @@ export class BackendRequest {
     if (existing) {
       return reply.status(204).send()
     }
-    const createdUrl = new URL(
-      registeredBackendPath({ spaceId, backendId }),
+    const createdUrl = absoluteUrl({
+      path: registeredBackendPath({ spaceId, backendId }),
       serverUrl
-    ).toString()
+    })
     reply.header('Location', createdUrl)
     return reply.status(201).send(sanitizeBackendRecord(record))
   }

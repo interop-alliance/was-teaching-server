@@ -8,16 +8,16 @@ import {
   fetchCollectionAndBackend,
   getCollectionOrThrow,
   getResourceMetadataOrThrow,
-  writeOnceOptions
+  isControlPlaneBackend,
+  resourceWriteOptions,
+  uniqueIndexOptions
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
-import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { assertJsonObjectBody } from '../lib/requestBody.js'
-import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import {
   etagOf,
@@ -26,23 +26,21 @@ import {
   resourceMetaEtag,
   resourceMetaEtagOf
 } from '../lib/etag.js'
-import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
+import { parseMetaEpoch } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
 import { invalidatePolicy } from '../lib/policyCache.js'
 import { guardWebvhLogWrite } from '../lib/webvhLogWrite.js'
 import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
+import { MethodNotAllowedError, ResourceNotFoundError } from '../errors.js'
+import { withStorageErrors } from '../lib/storageErrors.js'
 import {
-  MethodNotAllowedError,
-  ResourceNotFoundError,
-  rethrowOrWrapStorageError
-} from '../errors.js'
-import { notModifiedBeforeStream, notModifiedReply } from './notModified.js'
-import type {
-  ResourceMetadata,
-  ResourceWriteMembers,
-  ResourceWriteResult
-} from '../types.js'
+  notModifiedBeforeStream,
+  notModifiedReply,
+  sendHeadFromMetadata,
+  withEtag
+} from './notModified.js'
+import type { ResourceMetadata, ResourceWriteMembers } from '../types.js'
 
 /**
  * The body of a Resource write response: the server-managed members of the
@@ -146,6 +144,7 @@ export class ResourceRequest {
     // A `did.jsonl` in any Collection may be the history log a self-hosted
     // did:webvh controller resolves from, so its write must fast-forward the
     // stored log (412 otherwise), under preconditions pinned to the log read.
+    const clientPreconditions = parseWritePreconditions(request.headers)
     const { input, ...preconditions } =
       resourceId === WEBVH_LOG_RESOURCE_ID
         ? await guardWebvhLogWrite({
@@ -155,62 +154,32 @@ export class ResourceRequest {
             spaceId,
             collectionId,
             input: resolvedInput,
-            ...parseWritePreconditions(request.headers),
+            ...clientPreconditions,
             requestName
           })
-        : {
-            input: resolvedInput,
-            ...parseWritePreconditions(request.headers)
-          }
-    // A content write into an encrypted Collection MAY declare the key epoch it
-    // encrypted under via the `Key-Epoch` header (the `key-epochs` feature);
-    // the server stores it opaquely and clears it when absent (the new
-    // ciphertext's epoch is unknown -- a stale stamp is worse than none).
-    // Advisory, non-signature-covered metadata.
-    const { epoch } = parseKeyEpochHeader({
-      headers: request.headers,
+        : { input: resolvedInput, ...clientPreconditions }
+    // The key epoch, writer id, unique indexes, write-once rule and
+    // `createdBy` of the write (`resourceWriteOptions`).
+    const writeOptions = resourceWriteOptions({
+      request,
+      spaceId,
+      collectionId,
+      collectionMetadata,
       requestName
-    })
-    // The writer-attribution label (spec "Writer attribution") MAY be
-    // declared the same way, via the `Writer-Id` header; the server stores it
-    // opaquely and clears it when absent (declare-or-clear).
-    const { writerId } = parseWriterIdHeader({
-      headers: request.headers,
-      requestName
-    })
-    // Any `unique: true` index entries the Collection declares ride along, so
-    // the backend enforces the uniqueness claim atomically with the write (409).
-    const uniqueIndexes = uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionMetadata })
     })
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
-    let written: ResourceWriteResult
-    try {
-      written = await dataBackend.writeResource({
+    const written = await withStorageErrors({ requestName }, () =>
+      dataBackend.writeResource({
         spaceId,
         collectionId,
         resourceId,
         input,
-        createdBy: invokerDid(request),
-        epoch,
-        writerId,
-        ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
-        // A write-once Collection (`revisions.immutable`): the backend refuses
-        // a write that would change a live Resource's bytes and answers a
-        // repeat of them with the current `ETag`, atomically with the write.
-        ...writeOnceOptions({
-          request,
-          spaceId,
-          collectionId,
-          collectionMetadata
-        }),
+        ...writeOptions,
         ...preconditions
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
     // A write of `did.jsonl` into ANY Collection may replace the history log a
     // self-hosted did:webvh controller resolves from, so any document cached
     // from the previous log is stale as of this write.
@@ -302,29 +271,24 @@ export class ResourceRequest {
     }
 
     const contentType = request.headers['content-type']
-    let result
-    try {
-      result = await dataBackend.getResource({
+    // Rethrow a typed ProblemError unchanged -- `getResource`'s
+    // ResourceNotFoundError (404) for an absent resource, or a typed fault a
+    // data-plane backend raises -- and wrap anything unexpected as a 500.
+    const result = await withStorageErrors({ requestName }, () =>
+      dataBackend.getResource({
         spaceId,
         collectionId,
         resourceId,
         contentType
       })
-    } catch (err) {
-      // Rethrow a typed ProblemError unchanged -- `getResource`'s
-      // ResourceNotFoundError (404) for an absent resource, or a typed fault a
-      // data-plane backend raises -- and wrap anything unexpected as a 500.
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
 
-    const getReply = reply.status(200).type(result.storedResourceType)
     // Surface the ETag validator (the conditional-writes feature) when the
     // backend tracks one for this Resource.
-    const resultEtag = etagOf(result)
-    if (resultEtag !== undefined) {
-      getReply.header('etag', resultEtag)
-    }
-    return getReply.send(result.resourceStream)
+    return withEtag({
+      reply: reply.status(200).type(result.storedResourceType),
+      etag: etagOf(result)
+    }).send(result.resourceStream)
   }
 
   /**
@@ -388,24 +352,7 @@ export class ResourceRequest {
       requestName
     })
 
-    // A conditional read (spec "Caching"): the same 304 a GET would answer.
-    const contentEtag = etagOf(metadata)
-    const notModified = notModifiedReply({ request, reply, etag: contentEtag })
-    if (notModified) {
-      return notModified
-    }
-
-    // Set the payload headers a GET would send, but send no body. Fastify keeps
-    // a manually-set `Content-Length` on a bodyless send (it is not recomputed
-    // to 0).
-    const headReply = reply
-      .status(200)
-      .type(metadata.contentType)
-      .header('content-length', metadata.size)
-    if (contentEtag !== undefined) {
-      headReply.header('etag', contentEtag)
-    }
-    return headReply.send()
+    return sendHeadFromMetadata({ request, reply, metadata })
   }
 
   /**
@@ -484,11 +431,10 @@ export class ResourceRequest {
       return notModified
     }
 
-    const metaReply = reply.status(200).type('application/json')
-    if (metaEtag !== undefined) {
-      metaReply.header('etag', metaEtag)
-    }
-    return metaReply.send(JSON.stringify(metadataBody))
+    return withEtag({
+      reply: reply.status(200).type('application/json'),
+      etag: metaEtag
+    }).send(JSON.stringify(metadataBody))
   }
 
   /**
@@ -584,26 +530,20 @@ export class ResourceRequest {
       collectionId,
       collectionMetadata
     })
-    // Any `unique: true` index entries the Collection declares ride along, so
-    // the backend enforces the uniqueness claim for custom-sourced attributes
-    // atomically with this metadata write (409).
-    const uniqueIndexes = uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionMetadata })
-    })
-    let written
-    try {
-      written = await dataBackend.writeResourceMetadata({
+    const written = await withStorageErrors({ requestName }, () =>
+      dataBackend.writeResourceMetadata({
         spaceId,
         collectionId,
         resourceId,
         custom,
         epoch,
-        ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
+        // Any `unique: true` index entries the Collection declares ride
+        // along, so the backend enforces the uniqueness claim for
+        // custom-sourced attributes atomically with this metadata write (409).
+        ...uniqueIndexOptions({ collectionMetadata }),
         ...parseWritePreconditions(request.headers)
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    )
     // A Metadata object cannot exist apart from its Resource: a PUT to the
     // `/meta` of a nonexistent Resource is a 404 (this operation does not create).
     if (!written) {
@@ -619,11 +559,7 @@ export class ResourceRequest {
       content: written.contentValidator,
       meta: written.validator
     })
-    const metaReply = reply.status(200)
-    if (metaEtag !== undefined) {
-      metaReply.header('etag', metaEtag)
-    }
-    return metaReply
+    return withEtag({ reply: reply.status(200), etag: metaEtag })
       .type('application/json')
       .send(
         JSON.stringify(
@@ -701,7 +637,7 @@ export class ResourceRequest {
       headers: request.headers,
       requestName
     })
-    try {
+    await withStorageErrors({ requestName }, async () => {
       await dataBackend.deleteResource({
         spaceId,
         collectionId,
@@ -713,12 +649,10 @@ export class ResourceRequest {
       // policy is tombstoned in the control-plane store here. The two stores
       // make this non-atomic: a fault between the two writes leaves the
       // policy live over a deleted Resource, and a retried delete removes it.
-      if (dataBackend !== storage) {
+      if (!isControlPlaneBackend({ request, dataBackend })) {
         await storage.deletePolicy({ spaceId, collectionId, resourceId })
       }
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
+    })
     // The delete tombstoned the Resource's policy, so drop its cached grant.
     invalidatePolicy({ storage, spaceId, collectionId, resourceId })
     return reply.status(204).send()

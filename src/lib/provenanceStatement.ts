@@ -17,6 +17,8 @@ import {
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import { isMetaStamp } from '@interop/storage-core'
 import type { ResourceMetaStamp } from '../types.js'
+import { isEnoent } from './atomicFile.js'
+import { isPlainObject } from './isPlainObject.js'
 
 /**
  * The statement `type` every provenance statement carries.
@@ -103,26 +105,25 @@ export function serverFieldsOf({ bytes }: { bytes: Uint8Array }): Claims {
   } catch {
     return {}
   }
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+  if (!isPlainObject(body)) {
     return {}
   }
-  const record = body as Record<string, unknown>
-  const { meta } = record
+  const { meta } = body
   return {
-    ...(typeof record.createdBy === 'string' && {
-      createdBy: record.createdBy
+    ...(typeof body.createdBy === 'string' && {
+      createdBy: body.createdBy
     }),
-    ...(typeof record.createdAt === 'string' && {
-      createdAt: record.createdAt
+    ...(typeof body.createdAt === 'string' && {
+      createdAt: body.createdAt
     }),
-    ...(typeof record.updatedAt === 'string' && {
-      updatedAt: record.updatedAt
+    ...(typeof body.updatedAt === 'string' && {
+      updatedAt: body.updatedAt
     }),
-    ...(Number.isSafeInteger(record.updatedAtCounter) && {
-      updatedAtCounter: record.updatedAtCounter as number
+    ...(Number.isSafeInteger(body.updatedAtCounter) && {
+      updatedAtCounter: body.updatedAtCounter as number
     }),
-    ...(typeof record.originId === 'string' && {
-      originId: record.originId
+    ...(typeof body.originId === 'string' && {
+      originId: body.originId
     }),
     ...(isMetaStamp(meta) && {
       meta: {
@@ -151,7 +152,7 @@ export async function fileBytes(
   try {
     return await file.read()
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (isEnoent(err)) {
       return undefined
     }
     throw err
