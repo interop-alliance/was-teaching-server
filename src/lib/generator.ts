@@ -21,6 +21,8 @@
  */
 import type { CollectionMetadata } from '../types.js'
 import { InvalidRequestBodyError } from '../errors.js'
+import { isPlainObject } from './isPlainObject.js'
+import { escapePointerToken } from './requestBody.js'
 
 /**
  * The members a `generator` object may carry. Any other member is rejected.
@@ -172,26 +174,6 @@ function assertValidGeneratorUrl({
   if (parsed.origin !== origin) {
     return reject('Collection "generator.url" must share "generator.origin".')
   }
-}
-
-/**
- * Tests whether a value is a plain JSON object (not `null`, not an array).
- *
- * @param value {unknown}
- * @returns {boolean}
- */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/**
- * Escapes a member name as a JSON Pointer reference token (RFC 6901).
- *
- * @param token {string}
- * @returns {string}
- */
-function escapePointerToken(token: string): string {
-  return token.replace(/~/g, '~0').replace(/\//g, '~1')
 }
 
 /**

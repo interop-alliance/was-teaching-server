@@ -17,6 +17,7 @@ import {
   REPLICATION_REQUEST_TIMEOUT_MS
 } from '../config.default.js'
 import { PeerRequestError } from '../errors.js'
+import { isPlainObject } from '../lib/isPlainObject.js'
 import { readBodyBounded } from '../lib/outboundAddress.js'
 import type { IDelegatedZcap } from '../types.js'
 import type { PeerFetch, PeerResponse } from './peerFetch.js'
@@ -185,13 +186,13 @@ export class PeerClient {
         cause: err
       })
     }
-    if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+    if (!isPlainObject(json)) {
       throw new PeerRequestError({
         url: options.url,
         detail: 'the body is not a JSON object.'
       })
     }
-    return { ...document, json: json as Record<string, unknown> }
+    return { ...document, json }
   }
 
   /**

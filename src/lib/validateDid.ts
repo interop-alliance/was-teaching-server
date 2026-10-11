@@ -53,6 +53,27 @@ const WEBVH_SPACE_SEGMENT = 'space'
 export const WEBVH_LOG_RESOURCE_ID = 'did.jsonl'
 
 /**
+ * A parsed `did:webvh` address: its SCID, its host, its path segments, and
+ * the URL its history log is published at.
+ */
+type WebvhAddress = {
+  scid: string
+  host: string
+  path: string[]
+  logUrl: string
+}
+
+/**
+ * The DID a verification method id belongs to: the part before its `#`
+ * fragment, or the whole id when it carries none.
+ * @param id {string}   a method id (`did#fragment`) or a bare DID
+ * @returns {string}
+ */
+export function didOfMethodId(id: string): string {
+  return id.split('#')[0]!
+}
+
+/**
  * Returns true when `value` is a syntactically valid Ed25519 `did:key` DID.
  * @param value {unknown}
  * @returns {boolean}
@@ -192,9 +213,7 @@ function isOwnHost({
  * @returns {{ scid: string, host: string, path: string[], logUrl: string } |
  *   undefined}
  */
-export function parseWebvhAddress(
-  value: unknown
-): { scid: string; host: string; path: string[]; logUrl: string } | undefined {
+export function parseWebvhAddress(value: unknown): WebvhAddress | undefined {
   if (typeof value !== 'string') {
     return undefined
   }
@@ -260,7 +279,7 @@ export function parseWebvhAddress(
 export function parseCrossHostWebvh(
   value: unknown,
   { serverUrl }: { serverUrl: string }
-): { scid: string; host: string; path: string[]; logUrl: string } | undefined {
+): WebvhAddress | undefined {
   const parsed = parseWebvhAddress(value)
   if (parsed === undefined || isOwnHost({ host: parsed.host, serverUrl })) {
     return undefined

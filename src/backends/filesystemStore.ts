@@ -24,6 +24,7 @@ import {
   unlink,
   utimes
 } from 'node:fs/promises'
+import fs from 'node:fs'
 import type { Dirent } from 'node:fs'
 import type { FastifyBaseLogger } from 'fastify'
 import {
@@ -36,8 +37,11 @@ import {
 import {
   TEMP_FILE_PREFIX,
   atomicCreateFile,
-  atomicWriteFile
+  atomicWriteFile,
+  isEnoent,
+  readFileIfPresent
 } from '../lib/atomicFile.js'
+import { isPlainObject } from '../lib/isPlainObject.js'
 import { mapInBatches } from '../lib/mapInBatches.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { parseSidecarBytes } from '../lib/metaSidecar.js'
@@ -132,16 +136,9 @@ async function refuseUnstampedSpaces({
   dataDir: string
 }): Promise<void> {
   const spacesDir = path.join(dataDir, 'spaces')
-  let entries: string[]
-  try {
-    entries = await readdir(spacesDir)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return
-    }
-    throw err
-  }
-  const spaces = entries.filter(name => !name.startsWith(TEMP_FILE_PREFIX))
+  const spaces = (await readDirEntries(spacesDir)).filter(
+    entry => !entry.name.startsWith(TEMP_FILE_PREFIX)
+  )
   if (spaces.length > 0) {
     throw new StoreVersionError({
       detail:
@@ -322,16 +319,8 @@ async function refuseTombstonesUnderLiveName({
  * @returns {Promise<boolean>}
  */
 async function holdsTombstone(filePath: string): Promise<boolean> {
-  let bytes: Buffer
-  try {
-    bytes = await readFile(filePath)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return false
-    }
-    throw err
-  }
-  return parseSidecarBytes(bytes)?.deleted === true
+  const bytes = await readFileIfPresent(filePath)
+  return bytes !== undefined && parseSidecarBytes(bytes)?.deleted === true
 }
 
 /**
@@ -371,15 +360,21 @@ async function* collectionDirs(spacesDir: string): AsyncGenerator<{
 }
 
 /**
- * A directory's entries, or none when the directory is absent.
+ * Reads a directory's entries (as `Dirent`s), treating an absent directory as
+ * an empty one: `ENOENT` resolves `[]` rather than rejecting, since a
+ * directory that was never created simply holds nothing. Any other error is
+ * rethrown. Shared by the layout steps here and by the `FileSystemBackend`
+ * enumeration paths whose target may legitimately not exist yet (a Collection
+ * dir, a chunk dir). It calls `fs.promises.readdir`, looked up at call
+ * time, so a test that wraps that method sees every listing made here.
  * @param dir {string}
  * @returns {Promise<import('node:fs').Dirent[]>}
  */
-async function readDirEntries(dir: string): Promise<Dirent[]> {
+export async function readDirEntries(dir: string): Promise<Dirent[]> {
   try {
-    return await readdir(dir, { withFileTypes: true })
+    return await fs.promises.readdir(dir, { withFileTypes: true })
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (isEnoent(err)) {
       return []
     }
     throw err
@@ -575,25 +570,17 @@ async function readStoreRecord({
   dataDir: string
 }): Promise<StoreRecord | undefined> {
   const storePath = path.join(dataDir, STORE_FILE_NAME)
-  let text: string
-  try {
-    text = await readFile(storePath, 'utf8')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return undefined
-    }
-    throw err
+  const bytes = await readFileIfPresent(storePath)
+  if (bytes === undefined) {
+    return undefined
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(text)
+    parsed = JSON.parse(bytes.toString('utf8'))
   } catch {
     // Reported below with the other malformed shapes.
   }
-  const record =
-    parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {}
+  const record = isPlainObject(parsed) ? parsed : {}
   const { version, originId, clockHighWater } = record
   if (!Number.isInteger(version) || (version as number) < 0) {
     throw new StoreVersionError({
@@ -832,7 +819,7 @@ async function judgeLockFile({
     mtimeMs = (await stat(lockPath)).mtimeMs
     text = await readFile(lockPath, 'utf8')
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (isEnoent(err)) {
       return 'gone'
     }
     throw err

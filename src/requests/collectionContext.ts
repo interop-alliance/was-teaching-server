@@ -8,22 +8,24 @@
  * Resource- and chunk-level handlers share.
  */
 import type { FastifyRequest } from 'fastify'
+import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
+import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
+import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { stripMetadataValidator } from '../lib/metadataValidator.js'
+import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { getCachedGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import type { GovernedDescriptors } from '../lib/governedLog.js'
 import { collectionPath, linksetPath } from '../lib/paths.js'
 import { isImmutableCollection } from '../lib/revisions.js'
-import {
-  CollectionNotFoundError,
-  ResourceNotFoundError,
-  rethrowOrWrapStorageError
-} from '../errors.js'
+import { CollectionNotFoundError, ResourceNotFoundError } from '../errors.js'
+import { withStorageErrors } from '../lib/storageErrors.js'
 import type {
   ChunkMetadata,
   CollectionMetadata,
   ImmutableUnder,
+  NormalizedIndexDeclaration,
   ResourceMetadata,
   StorageBackend,
   StoredCollectionMetadata
@@ -214,6 +216,120 @@ export function writeOnceOptions({
 }
 
 /**
+ * The `uniqueIndexes` write option: any `unique: true` index entries the
+ * Collection declares ride along, so the backend enforces the uniqueness
+ * claim atomically with the write (409). Empty when the Collection declares
+ * none, so the backend receives no option at all.
+ * @param options {object}
+ * @param options.collectionMetadata {CollectionMetadata}   the Collection
+ *   Metadata object as served
+ * @returns {{ uniqueIndexes?: NormalizedIndexDeclaration[] }}
+ */
+export function uniqueIndexOptions({
+  collectionMetadata
+}: {
+  collectionMetadata: Pick<CollectionMetadata, 'plaintext'>
+}): { uniqueIndexes?: NormalizedIndexDeclaration[] } {
+  const uniqueIndexes = uniqueIndexesOf({
+    indexes: declaredIndexesOf({ collectionMetadata })
+  })
+  return uniqueIndexes.length > 0 ? { uniqueIndexes } : {}
+}
+
+/**
+ * The write options a Resource content write (Create Resource, Put Resource)
+ * derives from the request and its Collection, beside the id, the input and
+ * any precondition:
+ *
+ * - `epoch`: a content write into an encrypted Collection MAY declare the
+ *   key epoch it encrypted under via the `Key-Epoch` header (the
+ *   `key-epochs` feature); the server stores it opaquely and clears it when
+ *   absent (the new ciphertext's epoch is unknown -- a stale stamp is worse
+ *   than none). Advisory, non-signature-covered metadata.
+ * - `writerId`: the writer-attribution label (spec "Writer attribution") MAY
+ *   be declared the same way, via the `Writer-Id` header; the server stores
+ *   it opaquely and clears it when absent (declare-or-clear).
+ * - `uniqueIndexes`: see {@link uniqueIndexOptions}.
+ * - `immutable`: a write-once Collection (`revisions.immutable`): the backend
+ *   refuses a write that would change a live Resource's bytes and answers a
+ *   repeat of them with the current `ETag`, atomically with the write (see
+ *   {@link writeOnceOptions}).
+ * - `createdBy`: the invoker's DID (`invokerDid`).
+ *
+ * A malformed `Key-Epoch` or `Writer-Id` header is a 400, thrown here.
+ * @param options {object}
+ * @param options.request {FastifyRequest}   the write request
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.collectionMetadata {CollectionMetadata}   the Collection
+ *   Metadata object as served, read before the lock
+ * @param options.requestName {string}   human-readable request name, used in
+ *   error titles
+ * @returns {object}   the options, to spread into `writeResource`
+ */
+export function resourceWriteOptions({
+  request,
+  spaceId,
+  collectionId,
+  collectionMetadata,
+  requestName
+}: {
+  request: FastifyRequest
+  spaceId: string
+  collectionId: string
+  collectionMetadata: Pick<CollectionMetadata, 'plaintext' | 'revisions'>
+  requestName: string
+}): Pick<
+  Parameters<StorageBackend['writeResource']>[0],
+  'createdBy' | 'epoch' | 'writerId' | 'uniqueIndexes' | 'immutable'
+> {
+  const { epoch } = parseKeyEpochHeader({
+    headers: request.headers,
+    requestName
+  })
+  const { writerId } = parseWriterIdHeader({
+    headers: request.headers,
+    requestName
+  })
+  return {
+    createdBy: invokerDid(request),
+    epoch,
+    writerId,
+    ...uniqueIndexOptions({ collectionMetadata }),
+    ...writeOnceOptions({
+      request,
+      spaceId,
+      collectionId,
+      collectionMetadata
+    })
+  }
+}
+
+/**
+ * Whether a Collection's data-plane backend is the control-plane store
+ * (`request.server.storage`), the one store that keeps access-control
+ * policies. A Collection on a registered external backend keeps its
+ * Resources there and no policies. The rules that tie a Resource-level policy
+ * to its Resource read this. Put Policy requires a live Resource only when it
+ * holds, and Delete Resource tombstones the policy in a second write only
+ * when it does not.
+ * @param options {object}
+ * @param options.request {FastifyRequest}   supplies `request.server.storage`
+ * @param options.dataBackend {StorageBackend}   the Collection's resolved
+ *   data-plane backend
+ * @returns {boolean}
+ */
+export function isControlPlaneBackend({
+  request,
+  dataBackend
+}: {
+  request: FastifyRequest
+  dataBackend: StorageBackend
+}): boolean {
+  return dataBackend === request.server.storage
+}
+
+/**
  * The pair every Collection-scoped handler needs before it can touch Resource
  * bytes: the Collection Metadata object (404 when absent) plus the Collection's
  * selected (data-plane) backend, resolved from it. Only for handlers that run
@@ -291,16 +407,13 @@ export async function getResourceMetadataOrThrow({
   resourceId: string
   requestName: string
 }): Promise<ResourceMetadata & { generation?: string }> {
-  let metadata
-  try {
-    metadata = await dataBackend.getResourceMetadata({
+  const metadata = await withStorageErrors({ requestName }, () =>
+    dataBackend.getResourceMetadata({
       spaceId,
       collectionId,
       resourceId
     })
-  } catch (err) {
-    rethrowOrWrapStorageError({ err, requestName })
-  }
+  )
   if (!metadata) {
     throw new ResourceNotFoundError({ requestName })
   }
@@ -339,9 +452,8 @@ export async function readChunkMetadataOrThrow({
   chunkIndex: number
   requestName: string
 }): Promise<ChunkMetadata> {
-  let metadata
-  try {
-    metadata = await readGatedOnParentResource({
+  const metadata = await withStorageErrors({ requestName }, () =>
+    readGatedOnParentResource({
       dataBackend,
       spaceId,
       collectionId,
@@ -354,9 +466,7 @@ export async function readChunkMetadataOrThrow({
       }),
       requestName
     })
-  } catch (err) {
-    rethrowOrWrapStorageError({ err, requestName })
-  }
+  )
   if (!metadata) {
     throw new ResourceNotFoundError({ requestName })
   }

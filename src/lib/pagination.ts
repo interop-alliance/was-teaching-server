@@ -37,7 +37,10 @@ export function clampPageSize(limit: number): number {
  * @returns {number}
  */
 export function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0
+  if (left === right) {
+    return 0
+  }
+  return left < right ? -1 : 1
 }
 
 /**
@@ -149,6 +152,19 @@ export function nextPageUrl({
 }
 
 /**
+ * The `cursor` parameter of a listing page's `next` URL, the inverse of
+ * `nextPageUrl`, or `undefined` on the last page.
+ * @param [next] {string}   the page's `next` URL, relative or absolute
+ * @returns {string | undefined}
+ */
+export function cursorOfNextUrl(next?: string): string | undefined {
+  if (next === undefined) {
+    return undefined
+  }
+  return new URL(next, 'http://local').searchParams.get('cursor') ?? undefined
+}
+
+/**
  * Reads the `include` query parameter: a comma-separated list of optional
  * sections a read opts into (`?include=collections` on the quota report,
  * `?include=deleted` on the Space listing). A repeated `?include=` makes
@@ -185,11 +201,32 @@ export function parsePageParams({
 }): { limit?: number; cursor?: string } {
   const rawLimit = query.limit
   const rawCursor = query.cursor
-  const parsedLimit = typeof rawLimit === 'string' ? Number(rawLimit) : NaN
+  const limit =
+    typeof rawLimit === 'string'
+      ? coerceQueryLimit({ limit: rawLimit })
+      : undefined
   return {
-    ...(Number.isFinite(parsedLimit) && parsedLimit >= 1
-      ? { limit: parsedLimit }
-      : {}),
+    ...(limit !== undefined && { limit }),
     ...(typeof rawCursor === 'string' && { cursor: rawCursor })
   }
+}
+
+/**
+ * Lenient `limit` coercion, the same rule as the `changes` profile: a
+ * non-numeric or `< 1` value resolves to `undefined` so the backend applies its
+ * own default, and an oversized one is left for the backend to clamp.
+ *
+ * @param options {object}
+ * @param [options.limit] {unknown}   the body's `limit` value
+ * @returns {number | undefined}
+ */
+export function coerceQueryLimit({
+  limit
+}: {
+  limit?: unknown
+}): number | undefined {
+  const parsedLimit = Number(limit)
+  return Number.isFinite(parsedLimit) && parsedLimit >= 1
+    ? parsedLimit
+    : undefined
 }

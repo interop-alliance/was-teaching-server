@@ -20,6 +20,8 @@ import type {
   FastifyRequest
 } from 'fastify'
 import { LruCache } from '@interop/lru-memoize'
+import { isPlainObject } from './lib/isPlainObject.js'
+import { absoluteUrl } from './lib/paths.js'
 
 /**
  * How long an exchange stays live, measured from creation. It must comfortably
@@ -64,11 +66,7 @@ function isBeginBody(body: unknown): boolean {
   if (body === undefined || body === null) {
     return true
   }
-  return (
-    typeof body === 'object' &&
-    !Array.isArray(body) &&
-    Object.keys(body as object).length === 0
-  )
+  return isPlainObject(body) && Object.keys(body).length === 0
 }
 
 /**
@@ -154,10 +152,10 @@ export async function initExchangeRoutes(
     serverUrl: string
     exchangeId: string
   }): string {
-    return new URL(
-      `/workflows/ephemeral/exchanges/${exchangeId}`,
+    return absoluteUrl({
+      path: `/workflows/ephemeral/exchanges/${exchangeId}`,
       serverUrl
-    ).toString()
+    })
   }
 
   app.post<{ Body: { request?: unknown } | null }>(

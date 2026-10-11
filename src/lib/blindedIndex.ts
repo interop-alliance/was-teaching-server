@@ -23,15 +23,19 @@
  * protocol gap: `cursor` names the keyset position (ascending `resourceId`)
  * to resume from.
  */
-import { encodeCursor } from './cursor.js'
-import { compareCodeUnits, resolvePageSize, seekPage } from './pagination.js'
+import type { ResourceInput } from '../types.js'
+import type {
+  EqualityCandidate,
+  NormalizedIndexDeclaration
+} from './equalityIndex.js'
+import { isPlainObject } from './isPlainObject.js'
 import {
-  assertCountIsBoolean,
   assertEqualsIsNonEmptyArray,
   assertExactlyOneOfEqualsOrHas,
   assertHasIsNonEmptyStringArray,
-  coerceQueryLimit,
-  parseOptionalCursor
+  assertNoTermOverlap,
+  pageMatches,
+  parseQueryPaging
 } from './queryProfile.js'
 import {
   InvalidRequestBodyError,
@@ -125,9 +129,7 @@ export function parseBlindedIndexQueryBody({
     const elements = assertEqualsIsNonEmptyArray({ equals, requestName })
     for (const element of elements) {
       if (
-        typeof element !== 'object' ||
-        element === null ||
-        Array.isArray(element) ||
+        !isPlainObject(element) ||
         Object.values(element).some(value => typeof value !== 'string')
       ) {
         throw new InvalidRequestBodyError({
@@ -148,17 +150,9 @@ export function parseBlindedIndexQueryBody({
     })
   }
 
-  assertCountIsBoolean({ count, requestName })
-
-  const resolvedCursor = parseOptionalCursor({ cursor, requestName })
-
-  const resolvedLimit = coerceQueryLimit({ limit })
-
   return {
     query,
-    count: count === true,
-    ...(resolvedLimit !== undefined && { limit: resolvedLimit }),
-    ...(resolvedCursor !== undefined && { cursor: resolvedCursor })
+    ...parseQueryPaging({ count, limit, cursor, requestName })
   }
 }
 
@@ -312,32 +306,15 @@ export function runBlindedIndexQuery({
   limit?: number
   cursor?: string
 }): { count: number } | BlindedIndexQueryPage {
-  const matches = candidates
-    .filter(candidate =>
-      matchesBlindedIndexQuery({ document: candidate.document, query })
-    )
-    // Ascending `resourceId` in code-unit order -- the SAME ordering the
-    // cursor seek (`resourceId > after`) uses, so the keyset is stable.
-    .sort((left, right) => compareCodeUnits(left.resourceId, right.resourceId))
-
-  if (count === true) {
-    return { count: matches.length }
-  }
-
-  const { page, hasMore } = seekPage({
-    items: matches,
-    cursor,
-    pageSize: resolvePageSize(limit),
-    keyOf: ({ resourceId }) => resourceId
+  return pageMatches({
+    candidates,
+    isMatch: candidate =>
+      matchesBlindedIndexQuery({ document: candidate.document, query }),
+    project: ({ document }) => document,
+    count,
+    limit,
+    cursor
   })
-
-  return {
-    documents: page.map(({ document }) => document),
-    hasMore,
-    ...(hasMore && {
-      cursor: encodeCursor(page[page.length - 1]!.resourceId)
-    })
-  }
 }
 
 /**
@@ -419,21 +396,72 @@ export function assertNoUniqueBlindedConflict({
   document: unknown
   candidates: Array<{ resourceId: string; document: unknown }>
 }): void {
-  const incoming = collectUniqueBlindedTerms({ document })
-  if (incoming.length === 0) {
-    return
-  }
-  // Key the triples unambiguously (hmac ids may themselves contain any
-  // delimiter, so a joined string could collide across segment boundaries).
-  const claimed = new Set(
-    incoming.map(term => JSON.stringify([term.hmacId, term.name, term.value]))
+  assertNoTermOverlap({
+    incoming: uniqueBlindedKeys(document),
+    candidates,
+    termsOf: candidate => uniqueBlindedKeys(candidate.document),
+    onConflict: () => new UniqueAttributeConflictError()
+  })
+}
+
+/**
+ * The claim keys of a document's `unique: true` blinded triples. Each triple
+ * is keyed unambiguously (hmac ids may themselves contain any delimiter, so a
+ * joined string could collide across segment boundaries).
+ * @param document {unknown}   the (parsed) document JSON
+ * @returns {string[]}
+ */
+function uniqueBlindedKeys(document: unknown): string[] {
+  return collectUniqueBlindedTerms({ document }).map(term =>
+    JSON.stringify([term.hmacId, term.name, term.value])
   )
-  for (const candidate of candidates) {
-    const held = collectUniqueBlindedTerms({ document: candidate.document })
-    for (const term of held) {
-      if (claimed.has(JSON.stringify([term.hmacId, term.name, term.value]))) {
-        throw new UniqueAttributeConflictError()
-      }
-    }
+}
+
+/**
+ * Which unique-claim checks a Resource write needs: the EDV unique-attribute
+ * one when its JSON document carries a `unique: true` blinded attribute, and
+ * the plaintext equality one when its Collection declares `unique` indexes.
+ * Only a JSON write can make either claim. A backend serializes a write that
+ * needs either check per Collection before it scans.
+ * @param options {object}
+ * @param options.input {ResourceInput}   the write's representation
+ * @param [options.uniqueIndexes] {NormalizedIndexDeclaration[]}   the
+ *   Collection's `unique`-declared `plaintext.indexes`
+ * @returns {{ blindedUnique: boolean, equalityUnique: boolean }}
+ */
+export function uniqueClaimsOf({
+  input,
+  uniqueIndexes
+}: {
+  input: ResourceInput
+  uniqueIndexes?: NormalizedIndexDeclaration[]
+}): { blindedUnique: boolean; equalityUnique: boolean } {
+  return {
+    blindedUnique:
+      input.kind === 'json' &&
+      collectUniqueBlindedTerms({ document: input.data }).length > 0,
+    equalityUnique:
+      input.kind === 'json' &&
+      uniqueIndexes !== undefined &&
+      uniqueIndexes.length > 0
   }
+}
+
+/**
+ * Narrows an equality candidate set to the live, parsable JSON documents --
+ * the candidate shape the blinded-index query and the unique-blinded conflict
+ * scan consume. A blob or unparsable JSON Resource carries no `content` and is
+ * dropped.
+ * @param candidates {EqualityCandidate[]}
+ * @returns {Array<{ resourceId: string, document: unknown }>}
+ */
+export function jsonCandidatesFrom(
+  candidates: EqualityCandidate[]
+): Array<{ resourceId: string; document: unknown }> {
+  return candidates
+    .filter(candidate => candidate.content !== undefined)
+    .map(candidate => ({
+      resourceId: candidate.resourceId,
+      document: candidate.content
+    }))
 }

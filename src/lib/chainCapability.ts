@@ -4,7 +4,8 @@
  * `inspectCapabilityChain` hook the dereferenced chain as plain objects;
  * the client-annex clause (`lib/clientAnnexClause.ts`) and the container rule
  * (`lib/containerRule.ts`) both read a link's `allowedAction` the same way, so
- * the predicates live here rather than in either.
+ * the predicates live here rather than in either, beside the `controller`
+ * reader the inspectors and the verifier share.
  */
 
 /**
@@ -15,6 +16,32 @@ export interface ChainCapability {
   controller?: string | string[]
   invocationTarget?: string
   allowedAction?: string | string[]
+}
+
+/**
+ * A member that may be a single value or an array (a capability's
+ * `controller` or `allowedAction`, a service entry's `type`), as an array. An
+ * absent member is the empty array.
+ * @param value {T | T[] | undefined}
+ * @returns {T[]}
+ */
+export function asList<T>(value?: T | T[]): T[] {
+  if (value === undefined) {
+    return []
+  }
+  return Array.isArray(value) ? value : [value]
+}
+
+/**
+ * Extracts the controller DIDs of one capability (`controller` may be a
+ * single value or an array on a synthesized root).
+ * @param capability {object}   a capability from a dereferenced chain
+ * @returns {string[]}
+ */
+export function capabilityControllers(capability: {
+  controller?: string | string[]
+}): string[] {
+  return asList(capability.controller)
 }
 
 /**
@@ -33,11 +60,10 @@ export function actionsWithin({
   capability: ChainCapability
   allowed: string[]
 }): boolean {
-  const { allowedAction } = capability
-  if (allowedAction === undefined) {
+  if (capability.allowedAction === undefined) {
     return false
   }
-  const actions = Array.isArray(allowedAction) ? allowedAction : [allowedAction]
+  const actions = asList(capability.allowedAction)
   return actions.length > 0 && actions.every(action => allowed.includes(action))
 }
 
@@ -58,10 +84,9 @@ export function actionsExactly({
   capability: ChainCapability
   action: string
 }): boolean {
-  const { allowedAction } = capability
-  if (allowedAction === undefined) {
+  if (capability.allowedAction === undefined) {
     return false
   }
-  const actions = Array.isArray(allowedAction) ? allowedAction : [allowedAction]
+  const actions = asList(capability.allowedAction)
   return actions.length === 1 && actions[0] === action
 }

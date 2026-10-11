@@ -5,10 +5,29 @@
  * private, loopback, link-local or otherwise non-public address (SSRF), and
  * both pin the connection to the addresses they checked, so a DNS answer that
  * changes between the check and the connection cannot reach an internal host.
- * Both also read the response through one size-bounded reader.
+ * Both also read the response through one size-bounded reader. Each caller
+ * maps a refusal to its own error, and owns its agent's lifecycle.
  */
+import { lookup as dnsLookup } from 'node:dns/promises'
 import type { LookupFunction } from 'node:net'
 import net from 'node:net'
+import { Agent } from 'undici'
+
+/**
+ * One address a hostname resolved to, as `dns.lookup` with `all: true`
+ * returns it.
+ */
+export type ResolvedAddress = { address: string; family: number }
+
+/**
+ * Why a host's addresses were refused: its lookup failed (`cause` is the
+ * lookup's own error), it resolved to no address, or one of its addresses is
+ * non-public (`address` is the first such address).
+ */
+export type AddressRefusal =
+  | { refusal: 'unresolved'; cause: unknown }
+  | { refusal: 'no-address' }
+  | { refusal: 'blocked'; address: string }
 
 /**
  * True for an IPv4 address in a private, loopback, link-local, or otherwise
@@ -103,25 +122,20 @@ function isBlockedIpv6(ip: string): boolean {
   if (zeroThrough(12)) {
     return embeddedIpv4(12) // ::/96 IPv4-compatible, incl. :: and ::1
   }
-  if (
+  // The 64:ff9b prefix both NAT64 ranges share.
+  const nat64 =
     bytes[0] === 0x00 &&
     bytes[1] === 0x64 &&
     bytes[2] === 0xff &&
-    bytes[3] === 0x9b &&
-    bytes.slice(4, 12).every(byte => byte === 0)
-  ) {
+    bytes[3] === 0x9b
+  if (nat64 && bytes.slice(4, 12).every(byte => byte === 0)) {
     return embeddedIpv4(12) // 64:ff9b::/96 NAT64
   }
   if (bytes[0] === 0x20 && bytes[1] === 0x02) {
     return embeddedIpv4(2) // 2002::/16 6to4
   }
   return (
-    (bytes[0] === 0x00 &&
-      bytes[1] === 0x64 &&
-      bytes[2] === 0xff &&
-      bytes[3] === 0x9b &&
-      bytes[4] === 0x00 &&
-      bytes[5] === 0x01) || // 64:ff9b:1::/48 local-use NAT64
+    (nat64 && bytes[4] === 0x00 && bytes[5] === 0x01) || // 64:ff9b:1::/48 local-use NAT64
     (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) || // fe80::/10 link-local
     (bytes[0]! & 0xfe) === 0xfc || // fc00::/7 unique-local
     bytes[0] === 0xff // ff00::/8 multicast
@@ -146,6 +160,87 @@ export function isBlockedIp(ip: string): boolean {
 }
 
 /**
+ * The hostname of a URL as every lookup, cache and pin map keys it: brackets
+ * off an IPv6 literal, so the lookup and the pin see the address, and
+ * lower-cased.
+ * @param url {URL}
+ * @returns {string}
+ */
+export function normalizeHostname(url: URL): string {
+  return url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+}
+
+/**
+ * Checks addresses a host resolved to: there must be at least one, and none
+ * may be blocked by {@link isBlockedIp}. A host with one blocked address is
+ * refused whole.
+ * @param addresses {ResolvedAddress[]}
+ * @returns {AddressRefusal | undefined}   the refusal, or `undefined` when
+ *   every address is public
+ */
+export function vetAddresses(
+  addresses: ResolvedAddress[]
+): Exclude<AddressRefusal, { refusal: 'unresolved' }> | undefined {
+  if (addresses.length === 0) {
+    return { refusal: 'no-address' }
+  }
+  const blocked = addresses.find(({ address }) => isBlockedIp(address))
+  if (blocked !== undefined) {
+    return { refusal: 'blocked', address: blocked.address }
+  }
+  return undefined
+}
+
+/**
+ * Resolves a URL's host and vets every address it resolved to (see
+ * {@link vetAddresses}). `dns.lookup` returns the literal itself for an IP
+ * host, so an IP-literal URL is covered too. Never throws: a failed lookup is
+ * the `unresolved` refusal.
+ * @param options {object}
+ * @param options.url {URL}
+ * @returns {Promise<{hostname: string, addresses: ResolvedAddress[]} | AddressRefusal>}
+ *   the normalized hostname (see {@link normalizeHostname}) plus the addresses
+ *   it was checked against, or the refusal
+ */
+export async function resolvePublicHost({
+  url
+}: {
+  url: URL
+}): Promise<
+  { hostname: string; addresses: ResolvedAddress[] } | AddressRefusal
+> {
+  const hostname = normalizeHostname(url)
+  let addresses: ResolvedAddress[]
+  try {
+    addresses = await dnsLookup(hostname, { all: true })
+  } catch (err) {
+    return { refusal: 'unresolved', cause: err }
+  }
+  return vetAddresses(addresses) ?? { hostname, addresses }
+}
+
+/**
+ * Builds an undici Agent that connects to `hostname` only through the given,
+ * already vetted addresses (see {@link createPinnedLookup}). The caller owns
+ * the Agent and destroys it.
+ * @param options {object}
+ * @param options.hostname {string}   normalized, per {@link normalizeHostname}
+ * @param options.addresses {ResolvedAddress[]}
+ * @returns {Agent}
+ */
+export function pinnedAgentFor({
+  hostname,
+  addresses
+}: {
+  hostname: string
+  addresses: ResolvedAddress[]
+}): Agent {
+  return new Agent({
+    connect: { lookup: createPinnedLookup(new Map([[hostname, addresses]])) }
+  })
+}
+
+/**
  * Builds the undici `connect.lookup` function that pins each upstream socket to
  * the exact addresses a caller already validated, keyed by hostname.
  * The `fetch` still connects using the original hostname (so TLS certificate
@@ -153,19 +248,19 @@ export function isBlockedIp(ip: string): boolean {
  * rebinding attacker cannot swap in a fresh, private address between validation
  * and connection. A hostname absent from the map is refused (defense in depth:
  * the agent must never resolve an unpinned host).
- * @param pins {Map<string, {address: string, family: number}[]>} validated
+ * @param pins {Map<string, ResolvedAddress[]>} validated
  *   addresses keyed by lower-cased hostname.
  * @returns {LookupFunction} an undici/`net`-compatible lookup callback.
  */
 export function createPinnedLookup(
-  pins: Map<string, { address: string; family: number }[]>
+  pins: Map<string, ResolvedAddress[]>
 ): LookupFunction {
   return function pinnedLookup(
     hostname: string,
     options: { all?: boolean },
     callback: (
       err: NodeJS.ErrnoException | null,
-      addressOrAddresses?: string | { address: string; family: number }[],
+      addressOrAddresses?: string | ResolvedAddress[],
       family?: number
     ) => void
   ): void {

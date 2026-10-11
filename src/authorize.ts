@@ -8,7 +8,8 @@
  * deny a valid capability holder.
  */
 import type { FastifyRequest } from 'fastify'
-import { handleZcapVerify } from './zcap.js'
+import { verifyRequestZcap } from './zcap.js'
+import { hasAuthHeaders, isSafeMethod } from './auth-header-hooks.js'
 import {
   resolveEffectivePolicy,
   policyGrants,
@@ -63,10 +64,9 @@ export async function authorize({
   allowTargetQuery?: boolean
   attenuatedRootTarget?: string
 }): Promise<'capability' | 'policy'> {
-  const { url, method, headers } = request
-  const { serverUrl, storage } = request.server
-  const action: AccessAction =
-    method === 'GET' || method === 'HEAD' ? 'read' : 'write'
+  const { method } = request
+  const { storage } = request.server
+  const action: AccessAction = isSafeMethod(method) ? 'read' : 'write'
 
   // 1. If the caller presented a capability invocation, try it first. Success
   // authorizes the request; failure -- a revoked capability included -- falls
@@ -75,23 +75,18 @@ export async function authorize({
   // only what the capability granted: access a policy already grants everyone
   // (a public-readable Space) survives, which is the permissive-policy model.
   let zcapError: Error | undefined
-  if (headers.authorization && headers['capability-invocation']) {
+  if (hasAuthHeaders(request)) {
     try {
-      await handleZcapVerify({
-        url,
+      await verifyRequestZcap({
+        request,
+        peerWebvh: true,
         allowedTarget,
         allowedAction: method,
-        method,
-        headers,
-        serverUrl,
         spaceController,
-        webvh: { storage, serverUrl },
         requestName,
-        logger: request.log,
         allowTargetQuery,
         attenuatedRootTarget,
-        revocation: { storage, scope: { spaceId } },
-        peerWebvh: request.server.peerWebvh
+        revocation: { storage, scope: { spaceId } }
       })
       return 'capability'
     } catch (err) {

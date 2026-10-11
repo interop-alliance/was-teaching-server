@@ -6,7 +6,8 @@
  * per-Resource item projection (including the encrypted-Collection name
  * suppression rule), the listing envelope and its defaults, and the `next`
  * continuation link. Backends map their entries/rows through these builders so
- * the two can not drift.
+ * the two can not drift. The List Space envelope (`collectionsList`) is built
+ * here for the same reason.
  *
  * The name-suppression rule deliberately lives HERE, at the backend layer,
  * rather than in the request layer: a direct backend caller must get the
@@ -15,10 +16,11 @@
 import type {
   CollectionMetadata,
   CollectionResourcesList,
+  CollectionsList,
   ResourceMetadataCustom,
   ResourceSummary
 } from '../types.js'
-import { collectionPath, resourcePath } from './paths.js'
+import { collectionPath, resourcePath, spacePath } from './paths.js'
 import { nextPageUrl } from './pagination.js'
 
 /**
@@ -149,6 +151,59 @@ export function collectionResourcesList({
     url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
     name: collectionMetadata?.name ?? collectionId,
     type: collectionMetadata?.type || ['Collection'],
+    totalItems,
+    items,
+    ...(next !== undefined && { next })
+  }
+}
+
+/**
+ * Wraps a page of Space listing items (the List Space operation's Collection
+ * summaries and, under `?include=deleted`, tombstones) in its envelope. The
+ * listing is the Space container itself, `/space/:spaceId/`. `totalItems` is
+ * the count of the whole Space, not of the page.
+ *
+ * `next` is present iff a further page may follow; its absence marks the last
+ * page (the authoritative end-of-list signal). It resumes from the last item
+ * on this page and carries an honored `include=deleted` forward.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.totalItems {number}   the Space's full count
+ * @param options.items {CollectionsList['items']}   this page's items
+ * @param options.hasMore {boolean}   whether a further page may follow
+ * @param options.pageSize {number}   the resolved page size, baked into `next`
+ * @param options.includeDeleted {boolean}   whether the listing honored
+ *   `?include=deleted`
+ * @returns {CollectionsList}
+ */
+export function collectionsList({
+  spaceId,
+  totalItems,
+  items,
+  hasMore,
+  pageSize,
+  includeDeleted
+}: {
+  spaceId: string
+  totalItems: number
+  items: CollectionsList['items']
+  hasMore: boolean
+  pageSize: number
+  includeDeleted: boolean
+}): CollectionsList {
+  const url = spacePath({ spaceId, trailingSlash: true })
+  const lastItem = items[items.length - 1]
+  let next: string | undefined
+  if (hasMore && lastItem !== undefined) {
+    next = nextPageUrl({
+      path: url,
+      limit: pageSize,
+      after: lastItem.id,
+      ...(includeDeleted && { include: 'deleted' })
+    })
+  }
+  return {
+    url,
     totalItems,
     items,
     ...(next !== undefined && { next })

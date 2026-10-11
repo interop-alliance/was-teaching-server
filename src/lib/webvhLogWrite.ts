@@ -20,7 +20,6 @@ import { readLogFromString } from '@interop/did-method-webvh'
 import type { DIDLog } from '@interop/did-method-webvh'
 import {
   InvalidRequestBodyError,
-  ProblemError,
   PreconditionFailedError,
   StorageError
 } from '../errors.js'
@@ -29,8 +28,9 @@ import type { HeldValidators } from './etag.js'
 import { etagOf } from './etag.js'
 import { isFastForward } from './governedLog.js'
 import { assertWritePrecondition } from './preconditions.js'
-import { verifyWebvhLog } from './webvhController.js'
+import { logDid, verifyWebvhLog } from './webvhController.js'
 import { WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import { readWebvhLogResource } from './webvhLogLocation.js'
 import type { ResourceInput, StorageBackend } from '../types.js'
 
 /**
@@ -87,18 +87,11 @@ export async function guardWebvhLogWrite({
   ifMatch?: string
   ifNoneMatch?: HeldValidators
 }> {
-  let stored
-  try {
-    stored = await dataBackend.getResource({
-      spaceId,
-      collectionId,
-      resourceId: WEBVH_LOG_RESOURCE_ID
-    })
-  } catch (err) {
-    if (!(err instanceof ProblemError) || err.statusCode !== 404) {
-      throw err
-    }
-  }
+  const stored = await readWebvhLogResource({
+    storage: dataBackend,
+    spaceId,
+    collectionId
+  })
   if (!stored) {
     // A create: guard it against a concurrent create, which would otherwise
     // be overwritten by this one.
@@ -209,9 +202,9 @@ async function assertAppendVerifies({
 }): Promise<void> {
   const refuse = (detail: string) =>
     new InvalidRequestBodyError({ requestName, detail })
-  let did: unknown
+  let did: string | undefined
   try {
-    did = readLogFromString(prior.toString('utf8')).at(-1)?.state?.id
+    did = logDid(readLogFromString(prior.toString('utf8')))
   } catch {
     throw refuse('The stored did.jsonl is not a did:webvh history log.')
   }

@@ -20,6 +20,7 @@ import type {
   ReplicaStallReason,
   WriteStamp
 } from '../types.js'
+import { isFastForward } from './governedLog.js'
 import {
   type HybridLogicalClock,
   compareStamps,
@@ -391,15 +392,13 @@ export function decideLogApply({
   if (held === undefined) {
     return 'apply'
   }
-  const heldBytes = Buffer.from(held)
-  const incomingBytes = Buffer.from(incoming)
-  const shorter = Math.min(heldBytes.length, incomingBytes.length)
-  if (
-    !heldBytes.subarray(0, shorter).equals(incomingBytes.subarray(0, shorter))
-  ) {
-    return 'fork'
+  const extendsHeld = isFastForward({ prior: held, body: incoming })
+  const extendsIncoming = isFastForward({ prior: incoming, body: held })
+  if (extendsHeld) {
+    // Each fast-forwards to the other only when the two are equal.
+    return extendsIncoming ? 'skip' : 'apply'
   }
-  return incomingBytes.length > heldBytes.length ? 'apply' : 'skip'
+  return extendsIncoming ? 'skip' : 'fork'
 }
 
 /**

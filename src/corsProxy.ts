@@ -3,9 +3,8 @@ import type {
   FastifyInstance,
   FastifyPluginOptions
 } from 'fastify'
-import { lookup as dnsLookup } from 'node:dns/promises'
-import { fetch, Agent } from 'undici'
-import type { Response } from 'undici'
+import { fetch } from 'undici'
+import type { Agent, Response } from 'undici'
 import { LRUCache } from 'lru-cache'
 import { LruCache } from '@interop/lru-memoize'
 
@@ -21,10 +20,13 @@ import {
   CORS_PROXY_RESPONSE_CACHE_TTL
 } from './config.default.js'
 import {
-  createPinnedLookup,
-  isBlockedIp,
-  readBodyBounded
+  normalizeHostname,
+  pinnedAgentFor,
+  readBodyBounded,
+  resolvePublicHost,
+  vetAddresses
 } from './lib/outboundAddress.js'
+import type { ResolvedAddress } from './lib/outboundAddress.js'
 
 const PROXY_TIMEOUT_MS = 10_000
 const MAX_REDIRECTS = 5
@@ -171,7 +173,7 @@ function parseProxyUrl(
   } catch {
     return { status: 400, error: 'Invalid url query parameter' }
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (!isHttpUrl(parsed)) {
     return {
       status: 400,
       error: 'Only http and https URLs may be proxied.'
@@ -185,6 +187,39 @@ function parseProxyUrl(
   }
   parsed.hash = ''
   return { url: parsed }
+}
+
+/**
+ * True for an `http:` or `https:` URL, the only schemes the proxy fetches.
+ * @param url {URL}
+ * @returns {boolean}
+ */
+function isHttpUrl(url: URL): boolean {
+  return url.protocol === 'http:' || url.protocol === 'https:'
+}
+
+/**
+ * Resolves a redirect's `Location` against the URL that answered it.
+ * @param options {object}
+ * @param options.location {string}
+ * @param options.current {URL}
+ * @returns {URL | undefined}   the next hop, or `undefined` when `location`
+ *   does not parse or is not an `http`/`https` URL
+ */
+function resolveRedirect({
+  location,
+  current
+}: {
+  location: string
+  current: URL
+}): URL | undefined {
+  let next: URL
+  try {
+    next = new URL(location, current)
+  } catch {
+    return undefined
+  }
+  return isHttpUrl(next) ? next : undefined
 }
 
 /**
@@ -203,8 +238,8 @@ function parseProxyUrl(
  * blocked host is re-checked on every request.
  * @param options {object}
  * @param options.url {URL}   an `http`/`https` URL (see {@link parseProxyUrl})
- * @param options.hostCheckCache {LRUCache<string, {address: string, family: number}[]>}
- * @returns {Promise<{hostname: string, addresses: {address: string, family: number}[]} | {status: number, error: string}>}
+ * @param options.hostCheckCache {LRUCache<string, ResolvedAddress[]>}
+ * @returns {Promise<{hostname: string, addresses: ResolvedAddress[]} | {status: number, error: string}>}
  *   the normalized hostname plus its validated addresses when allowed, or the
  *   HTTP status + message to reject with.
  */
@@ -213,38 +248,31 @@ async function checkProxyTarget({
   hostCheckCache
 }: {
   url: URL
-  hostCheckCache: LRUCache<string, { address: string; family: number }[]>
+  hostCheckCache: LRUCache<string, ResolvedAddress[]>
 }): Promise<
-  | { hostname: string; addresses: { address: string; family: number }[] }
+  | { hostname: string; addresses: ResolvedAddress[] }
   | { status: number; error: string }
 > {
   // Resolve the host and refuse private / loopback / link-local destinations
-  // (SSRF). `dns.lookup` returns the literal itself for an IP host, so
-  // IP-literal targets are covered too.
-  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  // (SSRF).
+  const hostname = normalizeHostname(url)
 
   const cachedAddresses = hostCheckCache.get(hostname)
   if (cachedAddresses) {
-    if (cachedAddresses.some(({ address }) => isBlockedIp(address))) {
+    if (vetAddresses(cachedAddresses) !== undefined) {
       return { status: 403, error: 'Proxying to this host is not allowed.' }
     }
     return { hostname, addresses: cachedAddresses }
   }
 
-  let addresses: { address: string; family: number }[]
-  try {
-    addresses = await dnsLookup(hostname, { all: true })
-  } catch {
-    return { status: 502, error: 'Unable to resolve proxied host.' }
+  const resolved = await resolvePublicHost({ url })
+  if ('refusal' in resolved) {
+    return resolved.refusal === 'unresolved'
+      ? { status: 502, error: 'Unable to resolve proxied host.' }
+      : { status: 403, error: 'Proxying to this host is not allowed.' }
   }
-  if (
-    addresses.length === 0 ||
-    addresses.some(({ address }) => isBlockedIp(address))
-  ) {
-    return { status: 403, error: 'Proxying to this host is not allowed.' }
-  }
-  hostCheckCache.set(hostname, addresses)
-  return { hostname, addresses }
+  hostCheckCache.set(resolved.hostname, resolved.addresses)
+  return resolved
 }
 
 /**
@@ -343,7 +371,7 @@ function destroyAgent(agent: Agent): void {
  * count is possible.
  * @param options {object}
  * @param options.hostname {string}   normalized, per `checkProxyTarget`
- * @param options.addresses {{address: string, family: number}[]}
+ * @param options.addresses {ResolvedAddress[]}
  * @param options.agentCache {LRUCache<string, PinnedAgent>}
  * @returns {{agent: Agent, release: () => void}}
  */
@@ -353,7 +381,7 @@ function acquireAgent({
   agentCache
 }: {
   hostname: string
-  addresses: { address: string; family: number }[]
+  addresses: ResolvedAddress[]
   agentCache: LRUCache<string, PinnedAgent>
 }): { agent: Agent; release: () => void } {
   const key = `${hostname}=${addresses
@@ -363,11 +391,7 @@ function acquireAgent({
   let entry = agentCache.get(key)
   if (!entry) {
     entry = {
-      agent: new Agent({
-        connect: {
-          lookup: createPinnedLookup(new Map([[hostname, addresses]]))
-        }
-      }),
+      agent: pinnedAgentFor({ hostname, addresses }),
       inFlight: 0,
       evicted: false
     }
@@ -544,7 +568,7 @@ function storeCachedResponse({
  * @param options {object}
  * @param options.url {URL}   the client-supplied target, already scheme-checked
  * @param [options.acceptHeader] {string}   the client's normalized `Accept`
- * @param options.hostCheckCache {LRUCache<string, {address: string, family: number}[]>}
+ * @param options.hostCheckCache {LRUCache<string, ResolvedAddress[]>}
  * @param options.agentCache {LRUCache<string, PinnedAgent>}
  * @param options.log {FastifyBaseLogger}
  * @returns {Promise<ProxyOutcome>}
@@ -558,7 +582,7 @@ async function fetchProxied({
 }: {
   url: URL
   acceptHeader?: string
-  hostCheckCache: LRUCache<string, { address: string; family: number }[]>
+  hostCheckCache: LRUCache<string, ResolvedAddress[]>
   agentCache: LRUCache<string, PinnedAgent>
   log: FastifyBaseLogger
 }): Promise<ProxyOutcome> {
@@ -594,17 +618,8 @@ async function fetchProxied({
             error: 'Too many proxied redirects.'
           })
         }
-        let next: URL
-        try {
-          next = new URL(location, current)
-        } catch {
-          return await refuseUpstream({
-            upstream,
-            status: 502,
-            error: 'Invalid redirect from proxied URL.'
-          })
-        }
-        if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+        const next = resolveRedirect({ location, current })
+        if (next === undefined) {
           return await refuseUpstream({
             upstream,
             status: 502,
@@ -736,10 +751,7 @@ export async function initCorsProxyRoutes(
     max: CORS_PROXY_RESPONSE_CACHE_MAX,
     disposeOnSettle: true
   })
-  const hostCheckCache = new LRUCache<
-    string,
-    { address: string; family: number }[]
-  >({
+  const hostCheckCache = new LRUCache<string, ResolvedAddress[]>({
     max: CORS_PROXY_HOST_CHECK_CACHE_MAX,
     ttl: CORS_PROXY_HOST_CHECK_CACHE_TTL,
     ttlResolution: 0

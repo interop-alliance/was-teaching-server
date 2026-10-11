@@ -41,10 +41,19 @@ import {
   selectedCollectionIds,
   selectionsOverlap
 } from '../sync/collectionSelection.js'
-import type { ReplicaRegistration, StorageBackend } from '../types.js'
+import { ProblemError } from '../errors.js'
+import type {
+  ReplicaRegistration,
+  ResourceResult,
+  StorageBackend
+} from '../types.js'
 import { backendScoped } from './backendCache.js'
 import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
-import { parsePeerHostedWebvh, parseSelfHostedWebvh } from './validateDid.js'
+import {
+  parsePeerHostedWebvh,
+  parseSelfHostedWebvh,
+  WEBVH_LOG_RESOURCE_ID
+} from './validateDid.js'
 
 /**
  * One stored registration with the local Space that holds it.
@@ -242,10 +251,41 @@ export function selfHostedLogLocation({
   if (native === undefined) {
     return undefined
   }
-  return {
-    spaceId: native.spaceId,
-    collectionId: native.collectionId,
-    selfHosted: true
+  const { spaceId, collectionId } = native
+  return { spaceId, collectionId, selfHosted: true }
+}
+
+/**
+ * Reads the `did.jsonl` Resource of one located log: its stream and validator
+ * parts, or `undefined` when no Resource is stored there (a 404). Any other
+ * failure rejects as it is, so each caller decides what an absent log means
+ * and how a storage fault surfaces.
+ * @param options {object}
+ * @param options.storage {StorageBackend}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {Promise<ResourceResult | undefined>}
+ */
+export async function readWebvhLogResource({
+  storage,
+  spaceId,
+  collectionId
+}: {
+  storage: StorageBackend
+  spaceId: string
+  collectionId: string
+}): Promise<ResourceResult | undefined> {
+  try {
+    return await storage.getResource({
+      spaceId,
+      collectionId,
+      resourceId: WEBVH_LOG_RESOURCE_ID
+    })
+  } catch (err) {
+    if (err instanceof ProblemError && err.statusCode === 404) {
+      return undefined
+    }
+    throw err
   }
 }
 
@@ -350,7 +390,7 @@ export async function replicaMappingConflict({
  * `holder` already keeps, or the local Space `spaceId`'s controller `did`
  * would be left with no copy.
  */
-export type MappingConflict =
+type MappingConflict =
   | {
       kind: 'second-holder'
       fromSpace: string

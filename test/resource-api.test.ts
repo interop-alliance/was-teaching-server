@@ -335,7 +335,7 @@ describe('Resource API', () => {
       assert.match(response.headers.get('content-type')!, /application\/json/)
       const meta = response.data as { contentType: string; size: number }
       assert.equal(meta.contentType, 'application/json')
-      // fs-json-store's serialization decides the stored bytes; just assert it
+      // The server's serialization decides the stored bytes; just assert it
       // is a sensible positive integer (the public-read case below checks the
       // size against the exact bytes returned by a GET of the resource).
       assert.ok(Number.isInteger(meta.size) && meta.size > 0)

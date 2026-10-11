@@ -9,28 +9,16 @@
  * an unrelated, non-consenting DID as controller.
  */
 import type { FastifyRequest } from 'fastify'
-import { parseSignatureHeader } from '@interop/http-signature-header'
-import { decodeEmbeddedCapability } from '@interop/http-signature-zcap-verify'
 import {
   baseDelegationSigner,
-  handleZcapVerify,
-  isRootInvocation
+  embeddedDelegations,
+  isRootInvocation,
+  rootTargetOf,
+  verifyRequestZcap
 } from '../zcap.js'
 import { InvalidRequestBodyError, type ProblemError } from '../errors.js'
+import { didOfMethodId } from '../lib/validateDid.js'
 import type { IDID } from '../types.js'
-
-/**
- * The subset of an embedded delegated capability (and of the embedded entries
- * of its `proof.capabilityChain`) that the static triage inspects.
- */
-interface SubmittedCapability {
-  parentCapability?: string
-  expires?: string
-  proof?: {
-    verificationMethod?: string
-    capabilityChain?: Array<string | SubmittedCapability>
-  }
-}
 
 /**
  * Static pre-triage of a *failed* delegated consent verification, naming the
@@ -79,40 +67,29 @@ function triageDelegatedConsentFailure({
   allowedTarget: string
   attenuatedRootTarget?: string
 }): string | undefined {
-  const rootIdPrefix = 'urn:zcap:root:'
-  let capability: SubmittedCapability
-  try {
-    const { params } = parseSignatureHeader(invocation)
-    const encoded = params.capability
-    if (typeof encoded !== 'string') {
-      return undefined
-    }
-    capability = decodeEmbeddedCapability({ encoded }) as SubmittedCapability
-  } catch {
-    return undefined
-  }
   // The submitted chain, in delegation order: the `capabilityChain` entries
   // (root id first, intermediate delegations embedded whole) plus the invoked
   // capability itself, which is not listed in its own chain.
-  const chain = [...(capability.proof?.capabilityChain ?? []), capability]
-  const delegations = chain.filter(
-    (entry): entry is SubmittedCapability =>
-      typeof entry === 'object' && entry !== null
-  )
-  const rootId =
-    typeof chain[0] === 'string' ? chain[0] : capability.parentCapability
+  const embedded = embeddedDelegations({ invocation })
+  if (embedded === undefined) {
+    return undefined
+  }
+  const { delegations, rootId } = embedded
   // Chain rooted elsewhere (a): the root capability at the base of the chain
   // targets neither accepted root (another endpoint, or another server
   // entirely). The verifier accepts the attenuated root as well as the target
   // itself, so a chain rooted at either is not the cause.
-  if (typeof rootId === 'string' && rootId.startsWith(rootIdPrefix)) {
-    const rootTarget = decodeURIComponent(rootId.slice(rootIdPrefix.length))
-    if (rootTarget !== allowedTarget && rootTarget !== attenuatedRootTarget) {
-      return (
-        `the delegation chain is rooted at "${rootTarget}",` +
-        ` not at "${attenuatedRootTarget ?? allowedTarget}"`
-      )
-    }
+  const rootTarget =
+    typeof rootId === 'string' ? rootTargetOf(rootId) : undefined
+  if (
+    rootTarget !== undefined &&
+    rootTarget !== allowedTarget &&
+    rootTarget !== attenuatedRootTarget
+  ) {
+    return (
+      `the delegation chain is rooted at "${rootTarget}",` +
+      ` not at "${attenuatedRootTarget ?? allowedTarget}"`
+    )
   }
   // Chain rooted elsewhere (b): the base delegation (the one hanging directly
   // off the root capability) is signed by a DID other than the body's
@@ -200,34 +177,27 @@ export async function verifyBodyControllerConsent({
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<void> {
-  const { url, method, headers } = request
-  const { serverUrl, storage } = request.server
   // The strict `requireAuthHeaders` hook guarantees auth headers were present
   // and `parseAuthHeaders` set `request.zcap` before any calling handler.
   const { keyId, invocation } = request.zcap!
-  const [zcapSigningDid] = keyId.split('#')
+  const zcapSigningDid = didOfMethodId(keyId)
   const rootInvocation = isRootInvocation({ invocation })
   if (rootInvocation && zcapSigningDid !== controller) {
-    throw new MismatchError({ zcapSigningDid: zcapSigningDid!, controller })
+    throw new MismatchError({ zcapSigningDid, controller })
   }
 
   try {
-    await handleZcapVerify({
-      url,
+    // The local did:webvh resolver `verifyRequestZcap` supplies is engaged
+    // here as on every other verification path: a delegated provisioning
+    // chain may carry a link signed by a self-hosted `did:webvh` method, even
+    // though the body's controller (the chain's root) is a `did:key`.
+    await verifyRequestZcap({
+      request,
       allowedTarget,
       allowedAction,
-      method,
-      headers,
-      serverUrl,
       spaceController: controller,
-      // The resolver is engaged here as on every other verification path: a
-      // delegated provisioning chain may carry a link signed by a
-      // self-hosted `did:webvh` method, even though the body's controller
-      // (the chain's root) is a `did:key`.
-      webvh: { storage, serverUrl },
       requestName,
-      logger: request.log,
-      ...(attenuatedRootTarget !== undefined && { attenuatedRootTarget }),
+      attenuatedRootTarget,
       // Consent verifies a chain rooted in the BODY's controller for a
       // resource that does not exist yet, so there is no keystore or Space
       // scope a revocation could have been stored under.
@@ -238,7 +208,7 @@ export async function verifyBodyControllerConsent({
   } catch (err) {
     if (!rootInvocation) {
       throw new MismatchError({
-        zcapSigningDid: zcapSigningDid!,
+        zcapSigningDid,
         controller,
         causeDetail: triageDelegatedConsentFailure({
           invocation,

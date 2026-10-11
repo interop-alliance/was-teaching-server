@@ -2,12 +2,13 @@
  * Backend-agnostic normalization of a Space or Collection Metadata object
  * about to be persisted. Both storage backends run the same rules through
  * {@link normalizeMetadataWrite}, {@link stampSpaceMetadata},
- * {@link stampCollectionMetadata} and {@link restampImportedMetadata} so their
- * stored bodies cannot drift; only the storage of the generation and the
- * local validator segment differs downstream (`_generation` / `_local`
- * members in the filesystem metadata file vs Postgres columns). The write
- * stamp (`updatedAt`, `updatedAtCounter`, `originId`) is part of the stored
- * body on both: it is a wire member.
+ * {@link stampSpaceWrite}, {@link stampCollectionMetadata} and
+ * {@link restampImportedMetadata} so their stored bodies cannot drift; only
+ * the storage of the generation and the local validator segment differs
+ * downstream (`_generation` / `_local` members in the filesystem metadata
+ * file vs Postgres columns). The write stamp (`updatedAt`,
+ * `updatedAtCounter`, `originId`) is part of the stored body on both: it is a
+ * wire member.
  */
 import type {
   CollectionMetadata,
@@ -18,9 +19,19 @@ import type {
   StoredSpaceMetadata,
   WriteStamp
 } from '../types.js'
-import { importedGeneration } from './etag.js'
-import type { EmbeddedMetadataValidator } from './metadataValidator.js'
-import { withoutStampMembers } from './hlc.js'
+import { CountQuotaExceededError } from '../errors.js'
+import {
+  type EtagValidator,
+  type HeldValidators,
+  importedGeneration,
+  mintValidator
+} from './etag.js'
+import {
+  metadataEtagOf,
+  type EmbeddedMetadataValidator
+} from './metadataValidator.js'
+import { type HybridLogicalClock, stampOf, withoutStampMembers } from './hlc.js'
+import { assertSpaceWritePrecondition } from './preconditions.js'
 
 /**
  * Whether a `custom` member holds anything to store. An absent or empty
@@ -146,6 +157,97 @@ export function stampSpaceMetadata({
     ...(creator !== undefined && { createdBy: creator }),
     ...stamp
   }
+}
+
+/**
+ * The backend-agnostic body of `writeSpace`, run inside the backend's
+ * critical section against the prior stored object it read there: the
+ * precondition, the caller's transition check, the count quota, the validator
+ * mint and {@link stampSpaceMetadata}. Persisting the stamped object is left
+ * to the backend.
+ *
+ * The count quota applies on the create path only: a brand-new Space must not
+ * push its controller past `maxSpacesPerController`, and overwriting an
+ * existing Space's Metadata never trips it. `countOwnedSpaces` is called only
+ * then, so a backend counts only when the result can matter.
+ *
+ * `createdBy`, the stamp members, and the validator-bearing members the wire
+ * input may carry are resolved by the shared rules above, so the stored body
+ * never holds a client-supplied `createdBy`, stamp or `_generation` on either
+ * backend. The object keeps its generation for the Space's whole life; a
+ * Space deleted and re-created under the same id mints a new one, so the two
+ * lives' validators can never coincide. The stamp is minted over the prior
+ * one, and resets the local segment.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.spaceMetadata {SpaceMetadata}   the supplied object
+ * @param [options.prior] {StoredSpaceMetadata}   the stored object, if any
+ * @param [options.createdBy] {IDID}   this write's invoker
+ * @param [options.ifMatch] {string}
+ * @param [options.ifNoneMatch] {HeldValidators}
+ * @param [options.assertTransition] {Function}   run against `prior`;
+ *   throwing aborts the write
+ * @param [options.maxSpacesPerController] {number}   the count quota, if set
+ * @param options.countOwnedSpaces {Function}   counts the Spaces stored under
+ *   the supplied object's `controller`
+ * @param options.clock {HybridLogicalClock}   the store's clock
+ * @returns {Promise<{ validator: EtagValidator, stamped: SpaceMetadata }>}
+ */
+export async function stampSpaceWrite({
+  spaceId,
+  spaceMetadata,
+  prior,
+  createdBy,
+  ifMatch,
+  ifNoneMatch,
+  assertTransition,
+  maxSpacesPerController,
+  countOwnedSpaces,
+  clock
+}: {
+  spaceId: string
+  spaceMetadata: SpaceMetadata
+  prior?: StoredSpaceMetadata
+  createdBy?: IDID
+  ifMatch?: string
+  ifNoneMatch?: HeldValidators
+  assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
+  maxSpacesPerController?: number
+  countOwnedSpaces: () => Promise<number>
+  clock: HybridLogicalClock
+}): Promise<{ validator: EtagValidator; stamped: SpaceMetadata }> {
+  assertSpaceWritePrecondition({
+    spaceId,
+    exists: prior !== undefined,
+    currentEtag: metadataEtagOf(prior),
+    ifMatch,
+    ifNoneMatch
+  })
+
+  await assertTransition?.(prior)
+
+  if (maxSpacesPerController !== undefined && prior === undefined) {
+    if ((await countOwnedSpaces()) >= maxSpacesPerController) {
+      throw new CountQuotaExceededError({
+        scope: 'Spaces per controller',
+        limit: maxSpacesPerController
+      })
+    }
+  }
+
+  const validator = await mintValidator({
+    clock,
+    prior: prior && { generation: prior.metaGeneration, ...stampOf(prior) },
+    local: 0
+  })
+  const stamped = stampSpaceMetadata({
+    spaceMetadata,
+    prior,
+    createdBy,
+    stamp: validator.stamp
+  })
+  return { validator, stamped }
 }
 
 /**

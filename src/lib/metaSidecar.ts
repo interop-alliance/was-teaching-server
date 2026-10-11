@@ -12,7 +12,7 @@ import { JSON_FILE_SUFFIX } from '@interop/space-archive'
 import { isMetaStamp } from '@interop/storage-core'
 import { importedGeneration } from './etag.js'
 import { withoutStampMembers } from './hlc.js'
-import { isPlainObject } from './isPlainObject.js'
+import { parseJsonObjectBytes, withoutJsonMembers } from './jsonBytes.js'
 import type {
   IDID,
   ResourceMetaStamp,
@@ -218,15 +218,9 @@ function positionOf(sidecar: MetaSidecar): number {
  * @returns {MetaSidecar | undefined}
  */
 export function parseSidecarBytes(bytes: Buffer): MetaSidecar | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'))
-  } catch {
-    return undefined
-  }
   // The member types are not checked here: a reader takes each member it
   // uses on its own terms, as it does for a sidecar read off the disk.
-  return isPlainObject(parsed) ? (parsed as unknown as MetaSidecar) : undefined
+  return parseJsonObjectBytes(bytes) as MetaSidecar | undefined
 }
 
 /**
@@ -246,11 +240,7 @@ export function withoutSidecarMembers({
   bytes: Buffer
   members: ReadonlyArray<keyof MetaSidecar>
 }): Buffer {
-  const sidecar = parseSidecarBytes(bytes)
-  if (sidecar === undefined || !members.some(member => member in sidecar)) {
-    return bytes
-  }
-  return serializeSidecarWithout({ sidecar, members })
+  return withoutJsonMembers({ bytes, members })
 }
 
 /**

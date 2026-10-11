@@ -22,9 +22,12 @@
  * otherwise); the server never checks it against the Collection descriptor's epochs.
  */
 import { InvalidRequestBodyError } from '../errors.js'
+import { parseOptionalStringHeader } from './requestBody.js'
 
-/** The request header carrying the client-declared key-epoch on a content write. */
-export const KEY_EPOCH_HEADER = 'key-epoch'
+/**
+ * The request header carrying the client-declared key-epoch on a content write.
+ */
+const KEY_EPOCH_HEADER = 'key-epoch'
 
 /**
  * Parses the OPTIONAL `Key-Epoch` request header into the epoch stamp for a
@@ -44,17 +47,13 @@ export function parseKeyEpochHeader({
   headers: Record<string, string | string[] | undefined>
   requestName?: string
 }): { epoch?: string } {
-  const value = headers[KEY_EPOCH_HEADER]
-  if (value === undefined) {
-    return {}
-  }
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'The "Key-Epoch" header must be a non-empty string.'
-    })
-  }
-  return { epoch: value }
+  return parseOptionalStringHeader({
+    headers,
+    header: KEY_EPOCH_HEADER,
+    member: 'epoch',
+    label: 'Key-Epoch',
+    requestName
+  })
 }
 
 /**

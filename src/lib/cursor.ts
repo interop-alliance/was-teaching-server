@@ -11,6 +11,7 @@
  * rejected as `invalid-cursor` rather than trusted.
  */
 import { InvalidCursorError } from '../errors.js'
+import { isPlainObject } from './isPlainObject.js'
 
 /**
  * Encodes a keyset position into an opaque cursor token.
@@ -41,12 +42,8 @@ export function decodeCursor(cursor: string): { after: string } {
   } catch (err) {
     throw new InvalidCursorError({ cause: err as Error })
   }
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    typeof (parsed as { after?: unknown }).after !== 'string'
-  ) {
+  if (!isPlainObject(parsed) || typeof parsed.after !== 'string') {
     throw new InvalidCursorError()
   }
-  return { after: (parsed as { after: string }).after }
+  return { after: parsed.after }
 }

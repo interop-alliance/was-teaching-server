@@ -23,8 +23,10 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import {
   handleRevocationInvocationVerify,
+  ROOT_PREFIX,
   verifyRevocationChain
 } from '../zcap.js'
+import { isPlainObject } from '../lib/isPlainObject.js'
 import {
   revocationChainInspector,
   revocationRecordFor
@@ -33,7 +35,7 @@ import {
   clientAnnexChainInspector,
   composeChainInspectors
 } from '../lib/clientAnnexClause.js'
-import { spacePath } from '../lib/paths.js'
+import { absoluteUrl, spacePath } from '../lib/paths.js'
 import {
   KMS_MAX_CHAIN_LENGTH,
   KMS_MAX_DELEGATION_TTL
@@ -89,39 +91,33 @@ async function validateSubmittedCapability({
   maxChainLength?: number
   maxDelegationTtl?: number
 }) {
-  if (
-    typeof body !== 'object' ||
-    body === null ||
-    Array.isArray(body) ||
-    typeof (body as Record<string, unknown>).id !== 'string'
-  ) {
+  if (!isPlainObject(body) || typeof body.id !== 'string') {
     throw new InvalidRevocationError({
       detail: 'The revocation body must be a capability with a string "id".'
     })
   }
-  const capabilityBody = body as Record<string, unknown> & { id: string }
-  if (capabilityBody.id.startsWith('urn:zcap:root:')) {
+  if (body.id.startsWith(ROOT_PREFIX)) {
     throw new InvalidRevocationError({
       detail: 'A root capability cannot be revoked.'
     })
   }
   // The submitted capability must be the one the URL names (the client
   // frames the id with `encodeURIComponent` into the final path segment).
-  if (capabilityBody.id !== revocationId) {
+  if (body.id !== revocationId) {
     throw new InvalidRevocationError({
       detail: 'The capability "id" does not match the revocation URL.'
     })
   }
 
   const verified = await verifyRevocationChain({
-    capability: capabilityBody,
+    capability: body,
     rootTarget,
     rootController,
     webvh,
     maxChainLength,
     maxDelegationTtl
   })
-  return { capabilityBody, ...verified }
+  return { capabilityBody: body, ...verified }
 }
 
 /**
@@ -350,10 +346,10 @@ export class RevocationRequest {
       scope: { spaceId },
       // The Space's root capability target is its canonical (trailing-slash)
       // container URL, the same root every space-family route accepts.
-      rootTarget: new URL(
-        spacePath({ spaceId, trailingSlash: true }),
+      rootTarget: absoluteUrl({
+        path: spacePath({ spaceId, trailingSlash: true }),
         serverUrl
-      ).toString(),
+      }),
       rootController: spaceMetadata.controller,
       expectedAction: request.method,
       requestName

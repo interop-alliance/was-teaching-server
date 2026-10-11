@@ -16,7 +16,7 @@
  * The only validation is that a present value is a non-empty string (400
  * otherwise); the server never verifies it against anything.
  */
-import { InvalidRequestBodyError } from '../errors.js'
+import { parseOptionalStringHeader } from './requestBody.js'
 
 /**
  * The request header carrying the client-declared writer-attribution label on
@@ -24,7 +24,7 @@ import { InvalidRequestBodyError } from '../errors.js'
  * request header keys (the wire header name is `Writer-Id`; HTTP header names
  * are case-insensitive).
  */
-export const WRITER_ID_HEADER = 'writer-id'
+const WRITER_ID_HEADER = 'writer-id'
 
 /**
  * Parses the OPTIONAL `Writer-Id` request header into the writer-attribution
@@ -44,15 +44,11 @@ export function parseWriterIdHeader({
   headers: Record<string, string | string[] | undefined>
   requestName?: string
 }): { writerId?: string } {
-  const value = headers[WRITER_ID_HEADER]
-  if (value === undefined) {
-    return {}
-  }
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'The "Writer-Id" header must be a non-empty string.'
-    })
-  }
-  return { writerId: value }
+  return parseOptionalStringHeader({
+    headers,
+    header: WRITER_ID_HEADER,
+    member: 'writerId',
+    label: 'Writer-Id',
+    requestName
+  })
 }

@@ -55,7 +55,7 @@ import {
   restoredSpaceMetadata
 } from '../lib/importTar.js'
 import type { ImportPlan, ImportPlanCollection } from '../lib/importTar.js'
-import { collectionPath, spacePath } from '../lib/paths.js'
+import { collectionPath } from '../lib/paths.js'
 import {
   fileNameFor,
   parseResourceFileName,
@@ -76,6 +76,7 @@ import {
   restampImportedSidecar
 } from '../lib/metaSidecar.js'
 import { HybridLogicalClock, stampOf, withoutStampMembers } from '../lib/hlc.js'
+import { parseJsonOrUndefined } from '../lib/jsonBytes.js'
 import {
   type ApplyResult,
   assertReceivableStamps,
@@ -103,6 +104,7 @@ import { resolveWriteOnce } from '../lib/revisions.js'
 import {
   collectionListingItem,
   collectionResourcesList,
+  collectionsList,
   suppressesItemNames
 } from '../lib/collectionListing.js'
 import { decodeCursor } from '../lib/cursor.js'
@@ -117,7 +119,7 @@ import {
   normalizeMetadataWrite,
   restampImportedMetadata,
   stampCollectionMetadata,
-  stampSpaceMetadata
+  stampSpaceWrite
 } from '../lib/metadataWrite.js'
 import {
   type EtagValidator,
@@ -136,15 +138,12 @@ import {
   metadataEtagOf,
   stripMetadataValidator
 } from '../lib/metadataValidator.js'
-import {
-  clampPageSize,
-  nextPageUrl,
-  resolvePageSize
-} from '../lib/pagination.js'
+import { clampPageSize, resolvePageSize } from '../lib/pagination.js'
 import {
   runBlindedIndexQuery,
-  collectUniqueBlindedTerms,
-  assertNoUniqueBlindedConflict
+  assertNoUniqueBlindedConflict,
+  jsonCandidatesFrom,
+  uniqueClaimsOf
 } from '../lib/blindedIndex.js'
 import type {
   BlindedIndexQuery,
@@ -172,9 +171,7 @@ import {
 import {
   assertWritePrecondition,
   assertMetaWritePrecondition,
-  assertCollectionWritePrecondition,
-  assertSpaceWritePrecondition,
-  assertCollectionLogWritePrecondition
+  assertCollectionWritePrecondition
 } from '../lib/preconditions.js'
 import {
   type ImportedPolicy,
@@ -188,7 +185,7 @@ import {
 } from '../lib/policyRecord.js'
 import {
   collectionLogResultOf,
-  unchangedLogValidator
+  mintCollectionLogWrite
 } from '../lib/governedLog.js'
 import type {
   SpaceMetadata,
@@ -242,11 +239,6 @@ import type {
 const POOL_MAX = 10
 const STATEMENT_TIMEOUT_MS = 30_000
 const CONNECTION_TIMEOUT_MS = 30_000
-// The per-Space advisory lock `writeSpace` and `deleteSpace` serialize on
-// (a Space Metadata precondition check and stamp, or a delete, are
-// atomic against each other; disjoint from the `spaces` row lock the
-// Collection and Resource writes hold as the usage counter).
-const SPACE_META_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtext('space-meta:' || $1))`
 
 /**
  * Silent logger used when no logger is injected into the backend (`createApp`
@@ -276,15 +268,28 @@ type SpaceMetadataWrite = {
 }
 
 /**
- * The `SET` assignments by which a governing history log write takes the
- * Collection's next changes-feed position and records it as the log's own,
- * minting the feed generation when the Collection has none yet. The right-hand
- * sides read the row as it was before the statement, so both positions are
- * the same new value. `$8` is a fresh generation.
+ * The SQLSTATE codes this backend maps to a `ProblemError`.
  */
-const TAKE_LOG_FEED_POSITION_SQL = `feed_position          = feed_position + 1,
-           log_feed_position      = feed_position + 1,
-           feed_generation        = COALESCE(feed_generation, $8)`
+const UNIQUE_VIOLATION = '23505'
+const FOREIGN_KEY_VIOLATION = '23503'
+
+/**
+ * The SQLSTATE code of an error pg raised, if it carries one.
+ * @param err {unknown}
+ * @returns {string | undefined}
+ */
+function pgErrorCode(err: unknown): string | undefined {
+  return (err as { code?: string } | undefined)?.code
+}
+
+/**
+ * The refusal of a Collection create past `maxCollectionsPerSpace`.
+ * @param limit {number}
+ * @returns {CountQuotaExceededError}
+ */
+function collectionQuotaExceeded(limit: number): CountQuotaExceededError {
+  return new CountQuotaExceededError({ scope: 'Collections per Space', limit })
+}
 
 /**
  * A record's write stamp as its three columns (see `lib/hlc.ts`).
@@ -691,14 +696,8 @@ function resourceFeedDocument(
     // `meta`.
     return { ...common, deleted: true }
   }
-  let data: unknown
-  if (row.is_json && row.content) {
-    try {
-      data = JSON.parse(row.content.toString('utf8'))
-    } catch {
-      data = undefined
-    }
-  }
+  const data =
+    row.is_json && row.content ? parseJsonOrUndefined(row.content) : undefined
   const meta = metaStampOfRow(row)
   // The `/meta` validator rides beside `meta`, so the request layer can
   // format the wire `metaEtag` without a fetch per Resource.
@@ -1153,6 +1152,33 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Takes the per-Space advisory lock that Space Metadata writes, Delete Space
+   * and the writes that advance the Space Metadata object's local segment
+   * (backend and replica registrations) serialize on. A Space Metadata
+   * precondition check and stamp, or a delete, are then atomic against each
+   * other. It is disjoint from the `spaces` row lock the Collection and
+   * Resource writes hold as the usage counter, and is taken ahead of that row
+   * lock, as the lock order requires (`#lockSpaceRow`). Reentrant: a caller
+   * that took it already holds it once more.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @returns {Promise<void>}
+   */
+  async #lockSpaceMetadata({
+    client,
+    spaceId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+  }): Promise<void> {
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext('space-meta:' || $1))`,
+      [spaceId]
+    )
+  }
+
+  /**
    * Takes the Space's `spaces` row lock -- the ONE lock every mutating
    * transaction in this backend acquires first.
    *
@@ -1170,7 +1196,7 @@ export class PostgresBackend implements StorageBackend {
    * whole apply loop) and the Resource and chunk write paths.
    *
    * The per-Space advisory locks are ordered against this the same way
-   * throughout: `SPACE_META_LOCK_SQL` is taken BEFORE this row lock (the
+   * throughout: `#lockSpaceMetadata` is taken BEFORE this row lock (the
    * Space Metadata paths take no other), and `#lockSameKeyCreate` /
    * `#lockCollectionUniqueness` are taken AFTER it.
    *
@@ -1206,12 +1232,43 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Refuses a Collection create that would push the Space past
+   * `maxCollectionsPerSpace` (spec "Quotas"). A tombstone does not count.
+   * Does nothing when no limit is configured.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @returns {Promise<void>}
+   * @throws {CountQuotaExceededError}
+   */
+  async #assertCollectionQuota({
+    client,
+    spaceId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+  }): Promise<void> {
+    if (this.maxCollectionsPerSpace === undefined) {
+      return
+    }
+    const { rows } = await client.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM collections
+        WHERE space_id = $1 AND NOT deleted`,
+      [spaceId]
+    )
+    if (rows[0]!.count >= this.maxCollectionsPerSpace) {
+      throw collectionQuotaExceeded(this.maxCollectionsPerSpace)
+    }
+  }
+
+  /**
    * Applies a usage delta to the Space's transactional quota counter,
    * enforcing the configured capacity in the same statement (the hard-limit
    * departure from the filesystem's `du`-sampled soft check). Zero rows
    * updated with the row present means the write would not fit:
    * `QuotaExceededError` (507), rolling back the enclosing transaction.
-   * MUST run inside the same transaction as the content mutation.
+   * MUST run inside the same transaction as the content mutation. A zero
+   * delta writes nothing.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -1227,6 +1284,9 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     delta: number
   }): Promise<void> {
+    if (delta === 0) {
+      return
+    }
     // Only a growing write can exhaust the quota; shrinking writes and deletes
     // always apply (and clamp at zero so drift can never go negative).
     const cap = delta > 0 ? (this.capacityBytes ?? null) : null
@@ -1407,34 +1467,34 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<Buffer>}
    */
   async #bufferInputCapped(input: ResourceInput): Promise<Buffer> {
-    const { maxUploadBytes } = this
-    const backendId = this.describe().id
     if (input.kind === 'json') {
       const content = Buffer.from(JSON.stringify(input.data))
-      if (content.length > maxUploadBytes) {
-        throw new PayloadTooLargeError({
-          maxUploadBytes,
-          backendId,
-          uploadBytes: content.length
-        })
-      }
+      this.#assertUploadSize(content.length)
       return content
     }
-    if (
-      input.declaredBytes !== undefined &&
-      input.declaredBytes > maxUploadBytes
-    ) {
-      throw new PayloadTooLargeError({
-        maxUploadBytes,
-        backendId,
-        uploadBytes: input.declaredBytes
-      })
+    if (input.declaredBytes !== undefined) {
+      this.#assertUploadSize(input.declaredBytes)
     }
     return bufferStreamCapped({
       stream: input.stream,
-      maxUploadBytes,
-      backendId
+      maxUploadBytes: this.maxUploadBytes,
+      backendId: this.describe().id
     })
+  }
+
+  /**
+   * Refuses a body over the per-upload cap (413 `PayloadTooLargeError`).
+   * @param uploadBytes {number}   the body's size
+   * @returns {void}
+   */
+  #assertUploadSize(uploadBytes: number): void {
+    if (uploadBytes > this.maxUploadBytes) {
+      throw new PayloadTooLargeError({
+        maxUploadBytes: this.maxUploadBytes,
+        backendId: this.describe().id,
+        uploadBytes
+      })
+    }
   }
 
   // Quotas
@@ -1580,7 +1640,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.assertTransition] {Function}   run against the current
    *   row before the write; throwing aborts it
    * @param [options.prior] {StoredSpaceMetadata}   the current row as the
-   *   caller already read it under `SPACE_META_LOCK_SQL`, so the write does
+   *   caller already read it under `#lockSpaceMetadata`, so the write does
    *   not read it again; read here otherwise
    * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}
    */
@@ -1608,7 +1668,7 @@ export class PostgresBackend implements StorageBackend {
     // Holding the lock across the quota COUNT below also serializes creates
     // for the same controller. Reentrant: a caller that took it already
     // (an import, ahead of its row lock) holds it once more.
-    await client.query(SPACE_META_LOCK_SQL, [spaceId])
+    await this.#lockSpaceMetadata({ client, spaceId })
     if (this.maxSpacesPerController !== undefined) {
       await client.query(
         `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
@@ -1622,52 +1682,30 @@ export class PostgresBackend implements StorageBackend {
     const prior =
       priorRead ?? (await this.#readSpaceRow({ queryable: client, spaceId }))
 
-    assertSpaceWritePrecondition({
+    // The shared write rules (lib/metadataWrite.ts) run the precondition,
+    // the transition check, the count quota, and the stamp, the same the
+    // filesystem backend applies. The count quota is enforced as a HARD
+    // limit under the controller-scoped advisory lock taken above: COUNT
+    // this controller's Spaces and reject at the limit.
+    const { validator, stamped } = await stampSpaceWrite({
       spaceId,
-      exists: prior !== undefined,
-      currentEtag: metadataEtagOf(prior),
-      ifMatch,
-      ifNoneMatch
-    })
-
-    await assertTransition?.(prior)
-
-    // Count quota (create path only), enforced as a HARD limit under the
-    // controller-scoped advisory lock taken above: COUNT this controller's
-    // Spaces and reject at the limit.
-    if (this.maxSpacesPerController !== undefined && prior === undefined) {
-      const { rows: countRows } = await client.query<{ count: number }>(
-        'SELECT COUNT(*)::int AS count FROM spaces WHERE controller = $1',
-        [controller]
-      )
-      if (countRows[0]!.count >= this.maxSpacesPerController) {
-        throw new CountQuotaExceededError({
-          scope: 'Spaces per controller',
-          limit: this.maxSpacesPerController
-        })
-      }
-    }
-
-    // `createdBy`, the stamp members, and the validator-bearing members the
-    // wire input may carry are resolved by the shared rules
-    // (lib/metadataWrite.ts), the same the filesystem backend applies, so a
-    // client-supplied `createdBy`, stamp or `_generation` never lands in the
-    // stored row. The object keeps its generation for the Space's whole life;
-    // a Space deleted and re-created under the same id mints a new one, so
-    // the two lives' validators can never coincide. The stamp is minted over
-    // the prior one, and resets the local segment.
-    const validator = await mintValidator({
-      clock: this.#clock,
-      prior: prior && { generation: prior.metaGeneration, ...stampOf(prior) },
-      local: 0
-    })
-    const { generation, stamp } = validator
-    const stamped = stampSpaceMetadata({
       spaceMetadata,
       prior,
       createdBy,
-      stamp
+      ifMatch,
+      ifNoneMatch,
+      assertTransition,
+      maxSpacesPerController: this.maxSpacesPerController,
+      countOwnedSpaces: async () => {
+        const { rows: countRows } = await client.query<{ count: number }>(
+          'SELECT COUNT(*)::int AS count FROM spaces WHERE controller = $1',
+          [controller]
+        )
+        return countRows[0]!.count
+      },
+      clock: this.#clock
     })
+    const { generation, stamp } = validator
     // The upsert maintains the denormalized `controller` column on both
     // insert and update -- the controller can change on update, and the
     // Spaces count quota reads this column (spec "Quotas"). The generation,
@@ -1751,7 +1789,7 @@ export class PostgresBackend implements StorageBackend {
       // cannot land between that write's prior read and its upsert: the
       // upsert would recreate the row carrying the deleted life's generation,
       // where a re-create must mint a fresh one.
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       await client.query('DELETE FROM spaces WHERE space_id = $1', [spaceId])
     })
   }
@@ -1866,18 +1904,8 @@ export class PostgresBackend implements StorageBackend {
       // Count quota (create path only): a create is no row or a tombstoned
       // row; writing one must not push the Space past
       // `maxCollectionsPerSpace` (spec "Quotas"). A tombstone does not count.
-      if (this.maxCollectionsPerSpace !== undefined && prior === undefined) {
-        const { rows: countRows } = await client.query<{ count: number }>(
-          `SELECT COUNT(*)::int AS count FROM collections
-            WHERE space_id = $1 AND NOT deleted`,
-          [spaceId]
-        )
-        if (countRows[0]!.count >= this.maxCollectionsPerSpace) {
-          throw new CountQuotaExceededError({
-            scope: 'Collections per Space',
-            limit: this.maxCollectionsPerSpace
-          })
-        }
+      if (prior === undefined) {
+        await this.#assertCollectionQuota({ client, spaceId })
       }
       // The server-managed members are the backend's, never the body's;
       // both backends resolve them through the same shared rule
@@ -2114,21 +2142,19 @@ export class PostgresBackend implements StorageBackend {
         return undefined
       }
       const prior = storedLogFromRow(row)
-      assertCollectionLogWritePrecondition({
+      const { validator, changed } = await mintCollectionLogWrite({
         collectionId,
-        currentEtag: prior && etagOf(prior),
+        collectionMetadata,
+        prior,
+        body,
         ifMatch,
-        ifNoneMatch
+        ifNoneMatch,
+        assertTransition,
+        clock: this.#clock
       })
-      const unchanged = unchangedLogValidator({ prior, body })
-      if (unchanged !== undefined) {
-        return unchanged
+      if (!changed) {
+        return validator
       }
-      await assertTransition?.({
-        prior: prior && collectionLogResultOf(prior),
-        collectionMetadata
-      })
-      const validator = await mintValidator({ clock: this.#clock, prior })
       const { generation, stamp } = validator
       // The served Collection Metadata object changed with its derived
       // member, so its local validator segment advances; its generation and
@@ -2136,27 +2162,74 @@ export class PostgresBackend implements StorageBackend {
       // position, recorded as the log's own; the Metadata object keeps its
       // position, since its local segment is not a write of the object. The
       // row is already locked above, so this takes no new lock.
-      await client.query(
-        `UPDATE collections SET
-           log_body               = $3,
-           log_generation         = $4,
-           log_updated_at         = $5,
-           log_updated_at_counter = $6,
-           log_origin_id          = $7,
-           meta_local             = meta_local + 1,
-           ${TAKE_LOG_FEED_POSITION_SQL}
-         WHERE space_id = $1 AND collection_id = $2`,
-        [
-          spaceId,
-          collectionId,
-          body,
-          generation,
-          ...stampValues(stamp),
-          newGeneration()
-        ]
-      )
+      await this.#storeLog({
+        client,
+        spaceId,
+        collectionId,
+        body,
+        generation,
+        stamp,
+        advanceLocal: true
+      })
       return validator
     })
+  }
+
+  /**
+   * Stores a Collection's governing history log in its `log_*` columns. The
+   * write takes the Collection's next changes-feed position and records it as
+   * the log's own, minting the feed generation when the Collection has none
+   * yet. The right-hand sides read the row as it was before the statement, so
+   * both positions are the same new value. With `advanceLocal`, the Collection
+   * Metadata object's local validator segment advances in the same statement.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.body {string}   the JSON Lines body
+   * @param options.generation {string}   the log's generation
+   * @param options.stamp {WriteStamp}   the log's write stamp
+   * @param options.advanceLocal {boolean}   whether `meta_local` advances
+   * @returns {Promise<void>}
+   */
+  async #storeLog({
+    client,
+    spaceId,
+    collectionId,
+    body,
+    generation,
+    stamp,
+    advanceLocal
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    body: string
+    generation: string
+    stamp: WriteStamp
+    advanceLocal: boolean
+  }): Promise<void> {
+    await client.query(
+      `UPDATE collections SET
+         log_body               = $3,
+         log_generation         = $4,
+         log_updated_at         = $5,
+         log_updated_at_counter = $6,
+         log_origin_id          = $7,
+         ${advanceLocal ? 'meta_local             = meta_local + 1,' : ''}
+         feed_position          = feed_position + 1,
+         log_feed_position      = feed_position + 1,
+         feed_generation        = COALESCE(feed_generation, $8)
+       WHERE space_id = $1 AND collection_id = $2`,
+      [
+        spaceId,
+        collectionId,
+        body,
+        generation,
+        ...stampValues(stamp),
+        newGeneration()
+      ]
+    )
   }
 
   /**
@@ -2230,6 +2303,43 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Removes the chunk rows (the `chunked-streams` feature) of one Resource, or
+   * of a whole Collection when no `resourceId` is given, inside the caller's
+   * transaction. `DELETE ... RETURNING size` removes and totals in one query
+   * (the freed bytes summed in JS), so the total is exactly the rows removed.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<number>}   the freed chunk bytes
+   */
+  async #deleteChunks({
+    client,
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    resourceId?: string
+  }): Promise<number> {
+    const { rows } = await client.query<{ size: string }>(
+      resourceId === undefined
+        ? `DELETE FROM chunks WHERE space_id = $1 AND collection_id = $2
+            RETURNING size`
+        : `DELETE FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            RETURNING size`,
+      resourceId === undefined
+        ? [spaceId, collectionId]
+        : [spaceId, collectionId, resourceId]
+    )
+    return rows.reduce((total, row) => total + Number(row.size), 0)
+  }
+
+  /**
    * Removes a Collection's member rows inside the caller's transaction: its
    * chunks and Resources, then its policies. The freed bytes are subtracted
    * from the Space usage counter. The `collections` row is left to the
@@ -2262,11 +2372,11 @@ export class PostgresBackend implements StorageBackend {
     // permanently, with no recompute path. `chunks` cascades from
     // `resources`, so the chunks go first or their rows would be gone
     // (and unmeasured) by the time we asked.
-    const { rows: deletedChunkRows } = await client.query<{ size: string }>(
-      `DELETE FROM chunks WHERE space_id = $1 AND collection_id = $2
-        RETURNING size`,
-      [spaceId, collectionId]
-    )
+    const freedChunkBytes = await this.#deleteChunks({
+      client,
+      spaceId,
+      collectionId
+    })
     const { rows: deletedResourceRows } = await client.query<{
       size_bytes: string
     }>(
@@ -2275,7 +2385,7 @@ export class PostgresBackend implements StorageBackend {
       [spaceId, collectionId]
     )
     const freedBytes =
-      deletedChunkRows.reduce((total, row) => total + Number(row.size), 0) +
+      freedChunkBytes +
       deletedResourceRows.reduce(
         (total, row) => total + Number(row.size_bytes),
         0
@@ -2286,9 +2396,7 @@ export class PostgresBackend implements StorageBackend {
       `DELETE FROM policies WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
-    if (freedBytes > 0) {
-      await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
-    }
+    await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
   }
 
   /**
@@ -2468,23 +2576,14 @@ export class PostgresBackend implements StorageBackend {
       } satisfies CollectionSummary
     })
 
-    const spaceUrl = spacePath({ spaceId, trailingSlash: true })
-    let next: string | undefined
-    if (hasMore) {
-      next = nextPageUrl({
-        path: spaceUrl,
-        limit: pageSize,
-        after: pageRows[pageRows.length - 1]!.collection_id,
-        ...(includeDeleted && { include: 'deleted' })
-      })
-    }
-
-    return {
-      url: spaceUrl,
+    return collectionsList({
+      spaceId,
       totalItems,
       items,
-      ...(next !== undefined && { next })
-    }
+      hasMore,
+      pageSize,
+      includeDeleted
+    })
   }
 
   /**
@@ -2666,15 +2765,13 @@ export class PostgresBackend implements StorageBackend {
             immutable
           }))
         ) {
-          if (ifMatch !== undefined || ifNoneMatch !== undefined) {
-            assertWritePrecondition({
-              resourceId,
-              exists: true,
-              currentEtag: etagOfRow(stored),
-              ifMatch,
-              ifNoneMatch
-            })
-          }
+          assertWritePrecondition({
+            resourceId,
+            exists: true,
+            currentEtag: etagOfRow(stored),
+            ifMatch,
+            ifNoneMatch
+          })
           const { rows: byteRows } = await client.query<{ same: boolean }>(
             `SELECT (content = $4) AS same
                FROM resources
@@ -2709,24 +2806,24 @@ export class PostgresBackend implements StorageBackend {
       // serializes the claimants (held to commit, so the loser's scan sees the
       // winner's committed row) without entering the row-lock ordering of plain
       // writes; it is taken once and shared by both checks.
-      const blindedUnique =
-        input.kind === 'json' &&
-        collectUniqueBlindedTerms({ document: input.data }).length > 0
-      const equalityUnique =
-        input.kind === 'json' &&
-        uniqueIndexes !== undefined &&
-        uniqueIndexes.length > 0
+      const { blindedUnique, equalityUnique } = uniqueClaimsOf({
+        input,
+        uniqueIndexes
+      })
+      const jsonDocument = input.kind === 'json' ? input.data : undefined
       if (blindedUnique || equalityUnique) {
         await this.#lockCollectionUniqueness({ client, spaceId, collectionId })
       }
       if (blindedUnique) {
         assertNoUniqueBlindedConflict({
-          document: input.kind === 'json' ? input.data : undefined,
-          candidates: await this.#readBlindedCandidates(client, {
-            spaceId,
-            collectionId,
-            excludeResourceId: resourceId
-          })
+          document: jsonDocument,
+          candidates: jsonCandidatesFrom(
+            await this.#readEqualityCandidates(client, {
+              spaceId,
+              collectionId,
+              excludeResourceId: resourceId
+            })
+          )
         })
       }
       if (equalityUnique) {
@@ -2742,7 +2839,7 @@ export class PostgresBackend implements StorageBackend {
         )
         assertNoUniqueEqualityConflict({
           indexes: uniqueIndexes!,
-          content: input.kind === 'json' ? input.data : undefined,
+          content: jsonDocument,
           custom: selfRows[0]?.custom ?? undefined,
           candidates: await this.#readEqualityCandidates(client, {
             spaceId,
@@ -2784,17 +2881,15 @@ export class PostgresBackend implements StorageBackend {
         lockingSelect: selectPrior
       })
       const exists = prior !== undefined && !prior.deleted
-      if (ifMatch !== undefined || ifNoneMatch !== undefined) {
-        assertWritePrecondition({
-          resourceId,
-          exists,
-          // A tombstone has no live representation to validate, so it offers
-          // no `ETag` for `If-Match` to match.
-          currentEtag: prior && !prior.deleted ? etagOfRow(prior) : undefined,
-          ifMatch,
-          ifNoneMatch
-        })
-      }
+      assertWritePrecondition({
+        resourceId,
+        exists,
+        // A tombstone has no live representation to validate, so it offers
+        // no `ETag` for `If-Match` to match.
+        currentEtag: exists ? etagOfRow(prior!) : undefined,
+        ifMatch,
+        ifNoneMatch
+      })
 
       // The row keeps its generation for its whole life -- a soft delete keeps
       // it and this write continues it across a re-create. Only a row that
@@ -2909,9 +3004,7 @@ export class PostgresBackend implements StorageBackend {
       // replaced: a `QuotaExceededError` here still rolls the whole
       // transaction back, so the row never outlives the refusal.
       const delta = content.length - written.priorSizeBytes
-      if (delta !== 0) {
-        await this.#applyUsageDelta({ client, spaceId, delta })
-      }
+      await this.#applyUsageDelta({ client, spaceId, delta })
       return {
         validator: stampedValidator({ generation: written.generation, stamp }),
         created: written.created,
@@ -2996,7 +3089,7 @@ export class PostgresBackend implements StorageBackend {
           values
         ))
       } catch (err) {
-        if ((err as { code?: string }).code === '23505') {
+        if (pgErrorCode(err) === UNIQUE_VIOLATION) {
           throw new PreconditionFailedError({ detail: conflictDetail })
         }
         throw err
@@ -3140,14 +3233,12 @@ export class PostgresBackend implements StorageBackend {
       )
       const prior = rows[0]
       const exists = prior !== undefined && !prior.deleted
-      if (ifMatch !== undefined) {
-        assertWritePrecondition({
-          resourceId,
-          exists,
-          currentEtag: prior && !prior.deleted ? etagOfRow(prior) : undefined,
-          ifMatch
-        })
-      }
+      assertWritePrecondition({
+        resourceId,
+        exists,
+        currentEtag: exists ? etagOfRow(prior!) : undefined,
+        ifMatch
+      })
       if (!exists) {
         // Already absent (never existed, or already a tombstone): idempotent
         // no-op, keeping an existing tombstone's change-feed entry stable.
@@ -3157,22 +3248,15 @@ export class PostgresBackend implements StorageBackend {
       // key's ON DELETE CASCADE does not fire -- remove the Resource's chunks
       // (the `chunked-streams` feature) explicitly in this same transaction so
       // they never outlive their parent, and return their bytes to the quota
-      // counter alongside the Resource's content bytes. `DELETE ... RETURNING
-      // size` removes and totals in one query (the freed bytes summed in JS).
-      const { rows: deletedChunkRows } = await client.query<{ size: string }>(
-        `DELETE FROM chunks
-          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
-          RETURNING size`,
-        [spaceId, collectionId, resourceId]
-      )
-      const freedChunkBytes = deletedChunkRows.reduce(
-        (total, row) => total + Number(row.size),
-        0
-      )
+      // counter alongside the Resource's content bytes.
+      const freedChunkBytes = await this.#deleteChunks({
+        client,
+        spaceId,
+        collectionId,
+        resourceId
+      })
       const freedBytes = Number(prior.size_bytes) + freedChunkBytes
-      if (freedBytes > 0) {
-        await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
-      }
+      await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       // The deletion is a revision of the content record, so it mints a new
       // stamp over the prior one (a later re-create reads this row and mints
       // above it). `generation` is deliberately NOT touched: a tombstone
@@ -3341,6 +3425,9 @@ export class PostgresBackend implements StorageBackend {
       if (feedPosition === undefined) {
         return undefined
       }
+      // Content is the Resource's stored JSON content (unchanged by a
+      // metadata write), read for the uniqueness scan below. The (possibly
+      // multi-MB) content is fetched only on that uniqueness path (`$4`).
       const { rows } = await client.query<
         Pick<
           ResourceRow,
@@ -3353,15 +3440,16 @@ export class PostgresBackend implements StorageBackend {
           | 'meta_updated_at_counter'
           | 'meta_origin_id'
           | 'deleted'
-        >
+        > & { content: Buffer | null }
       >(
         `SELECT generation, updated_at, updated_at_counter, origin_id,
                 meta_generation, meta_updated_at, meta_updated_at_counter,
-                meta_origin_id, deleted
+                meta_origin_id, deleted,
+                CASE WHEN $4::boolean AND is_json THEN content END AS content
            FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           FOR UPDATE`,
-        [spaceId, collectionId, resourceId]
+        [spaceId, collectionId, resourceId, equalityUnique]
       )
       const prior = rows[0]
       if (!prior || prior.deleted) {
@@ -3385,30 +3473,12 @@ export class PostgresBackend implements StorageBackend {
         ifNoneMatch
       })
       if (equalityUnique) {
-        // Content is the Resource's stored JSON content (unchanged by a
-        // metadata write); custom is the incoming value this write sets. Fetch
-        // the (possibly multi-MB) content only on this uniqueness path -- the
-        // row is already `FOR UPDATE`-locked above.
-        const { rows: selfRows } = await client.query<{
-          content: Buffer | null
-          is_json: boolean
-        }>(
-          `SELECT content, is_json FROM resources
-            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-          [spaceId, collectionId, resourceId]
-        )
-        let content: unknown
-        const selfRow = selfRows[0]
-        if (selfRow?.is_json && selfRow.content) {
-          try {
-            content = JSON.parse(selfRow.content.toString('utf8')) as unknown
-          } catch {
-            content = undefined
-          }
-        }
+        // Custom is the incoming value this write sets.
         assertNoUniqueEqualityConflict({
           indexes: uniqueIndexes!,
-          content,
+          content: prior.content
+            ? parseJsonOrUndefined(prior.content)
+            : undefined,
           custom,
           candidates: await this.#readEqualityCandidates(client, {
             spaceId,
@@ -3426,7 +3496,7 @@ export class PostgresBackend implements StorageBackend {
         prior: priorMeta
       })
       const { generation: metaGeneration, stamp: metaStamp } = metaValidator
-      const hasCustom = Object.keys(custom).length > 0
+      const hasCustom = hasCustomMembers(custom)
       // The key-epoch stamp describes the CONTENT write, so a supplied `epoch`
       // replaces it but an OMITTED one PRESERVES the stored value (unlike
       // `custom`, full-replace): `COALESCE($6, epoch)` keeps the current value
@@ -3548,15 +3618,13 @@ export class PostgresBackend implements StorageBackend {
         lockingSelect: selectPrior
       })
       const exists = prior !== undefined
-      if (ifMatch !== undefined || ifNoneMatch !== undefined) {
-        assertWritePrecondition({
-          resourceId: chunkLabel,
-          exists,
-          currentEtag: prior ? etagOfRow(prior) : undefined,
-          ifMatch,
-          ifNoneMatch
-        })
-      }
+      assertWritePrecondition({
+        resourceId: chunkLabel,
+        exists,
+        currentEtag: exists ? etagOfRow(prior!) : undefined,
+        ifMatch,
+        ifNoneMatch
+      })
 
       // A write-once Collection: a stored chunk takes only a repeat of its
       // media type and bytes, which writes nothing.
@@ -3649,9 +3717,7 @@ export class PostgresBackend implements StorageBackend {
       // Usage delta AFTER the write, from the size the write actually
       // replaced (see `writeResource`).
       const delta = bytes.length - written.priorSizeBytes
-      if (delta !== 0) {
-        await this.#applyUsageDelta({ client, spaceId, delta })
-      }
+      await this.#applyUsageDelta({ client, spaceId, delta })
       return stampedValidator({ generation: written.generation, stamp })
     })
   }
@@ -3794,14 +3860,12 @@ export class PostgresBackend implements StorageBackend {
       if (prior === undefined) {
         return false
       }
-      if (ifMatch !== undefined) {
-        assertWritePrecondition({
-          resourceId: `${resourceId}/chunks/${chunkIndex}`,
-          exists: true,
-          currentEtag: etagOfRow(prior),
-          ifMatch
-        })
-      }
+      assertWritePrecondition({
+        resourceId: `${resourceId}/chunks/${chunkIndex}`,
+        exists: true,
+        currentEtag: etagOfRow(prior),
+        ifMatch
+      })
       await client.query(
         `DELETE FROM chunks
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
@@ -3809,9 +3873,7 @@ export class PostgresBackend implements StorageBackend {
         [spaceId, collectionId, resourceId, chunkIndex]
       )
       const freedBytes = Number(prior.size)
-      if (freedBytes > 0) {
-        await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
-      }
+      await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       return true
     })
   }
@@ -4082,67 +4144,13 @@ export class PostgresBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage> {
-    const candidates = await this.#readBlindedCandidates(this.#reader(), {
-      spaceId,
-      collectionId
-    })
-    return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
-  }
-
-  /**
-   * Reads every live JSON Resource of a Collection as a blinded-index
-   * candidate -- the candidate set for the blinded-index query and the
-   * unique-blinded-attribute conflict scan. Each row resolves
-   * `{ resourceId, document }`, where `document` is the parsed JSON body; blob
-   * rows are excluded in SQL (`is_json`) and an unparsable body is skipped.
-   * Tombstones are excluded (`NOT deleted`); an optional excluded Resource is
-   * skipped. Runs on the given executor -- the pool for a read-only query, or
-   * the write transaction's client for a uniqueness scan (so the scan shares
-   * the advisory lock and sees a consistent snapshot).
-   * @param executor {pg.Pool | pg.PoolClient}
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @param [options.excludeResourceId] {string}
-   * @returns {Promise<Array<{ resourceId: string, document: unknown }>>}
-   */
-  async #readBlindedCandidates(
-    executor: pg.Pool | pg.PoolClient,
-    {
-      spaceId,
-      collectionId,
-      excludeResourceId
-    }: {
-      spaceId: string
-      collectionId: string
-      excludeResourceId?: string
-    }
-  ): Promise<Array<{ resourceId: string; document: unknown }>> {
-    const { rows } = await executor.query<{
-      resource_id: string
-      content: Buffer | null
-    }>(
-      `SELECT resource_id, content FROM resources
-        WHERE space_id = $1 AND collection_id = $2 AND is_json AND NOT deleted
-          AND ($3::text IS NULL OR resource_id <> $3)
-        ORDER BY resource_id`,
-      [spaceId, collectionId, excludeResourceId ?? null]
+    const candidates = jsonCandidatesFrom(
+      await this.#readEqualityCandidates(this.#reader(), {
+        spaceId,
+        collectionId
+      })
     )
-    const candidates: Array<{ resourceId: string; document: unknown }> = []
-    for (const row of rows) {
-      if (!row.content) {
-        continue
-      }
-      try {
-        candidates.push({
-          resourceId: row.resource_id,
-          document: JSON.parse(row.content.toString('utf8')) as unknown
-        })
-      } catch {
-        // skip an unparsable body
-      }
-    }
-    return candidates
+    return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
   }
 
   /**
@@ -4226,7 +4234,8 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Reads every live Resource of a Collection as an equality candidate -- the
    * candidate set for the equality query and the plaintext unique-attribute
-   * conflict scans. Includes blob Resources (queryable through their
+   * conflict scans, and, narrowed by `jsonCandidatesFrom`, for the
+   * blinded-index query and the unique-blinded conflict scan. Includes blob Resources (queryable through their
    * `custom`-sourced attributes): each row resolves `{ resourceId, content?,
    * custom? }`, where `content` is the parsed JSON of a JSON row (a blob and
    * unparsable JSON contribute none) and `custom` is the row's jsonb `custom`
@@ -4259,7 +4268,9 @@ export class PostgresBackend implements StorageBackend {
       is_json: boolean
       custom: ResourceMetadataCustom | Record<string, unknown> | null
     }>(
-      `SELECT resource_id, content, is_json, custom FROM resources
+      `SELECT resource_id, is_json, custom,
+              CASE WHEN is_json THEN content END AS content
+         FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND NOT deleted
           AND ($3::text IS NULL OR resource_id <> $3)
         ORDER BY resource_id`,
@@ -4267,14 +4278,11 @@ export class PostgresBackend implements StorageBackend {
     )
     const candidates: EqualityCandidate[] = []
     for (const row of rows) {
-      let content: unknown
-      if (row.is_json && row.content) {
-        try {
-          content = JSON.parse(row.content.toString('utf8')) as unknown
-        } catch {
-          // skip an unparsable body -- it contributes no content attributes
-        }
-      }
+      // An unparsable body contributes no content attributes.
+      const content =
+        row.is_json && row.content
+          ? parseJsonOrUndefined(row.content)
+          : undefined
       candidates.push({
         resourceId: row.resource_id,
         ...(content !== undefined && { content }),
@@ -4739,10 +4747,7 @@ export class PostgresBackend implements StorageBackend {
     record: StoredBackendRecord
   }): Promise<void> {
     await this.#withTransaction(async client => {
-      // The Space Metadata advisory lock ahead of the row lock, as the lock
-      // order requires: the local-segment advance below writes the Space's
-      // Metadata row.
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       await this.#lockLiveContainers({ client, spaceId })
       await client.query(
         `INSERT INTO backend_records (space_id, backend_id, record)
@@ -4763,7 +4768,7 @@ export class PostgresBackend implements StorageBackend {
    * would replicate as a write of the object; the local segment is this
    * server's own. The generation and stamp are kept, so a client's cached
    * `ETag` for the object stops matching through the local segment alone, as
-   * it must for a strong validator. The caller holds `SPACE_META_LOCK_SQL`,
+   * it must for a strong validator. The caller holds `#lockSpaceMetadata`,
    * so the advance cannot land between a concurrent `writeSpace`'s plain read
    * and its upsert and be overwritten. A Space with no Metadata object has no
    * validator to advance.
@@ -4851,7 +4856,7 @@ export class PostgresBackend implements StorageBackend {
     backendId: string
   }): Promise<void> {
     await this.#withTransaction(async client => {
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       const { rowCount } = await client.query(
         `DELETE FROM backend_records WHERE space_id = $1 AND backend_id = $2`,
         [spaceId, backendId]
@@ -4887,10 +4892,7 @@ export class PostgresBackend implements StorageBackend {
     record: ReplicaRegistration
   }): Promise<StoredReplica> {
     return this.#withTransaction(async client => {
-      // The Space Metadata advisory lock ahead of the row lock, as the lock
-      // order requires: the local-segment advance below writes the Space's
-      // Metadata row.
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       const { rows } = await client.query<{ meta_generation: string | null }>(
         `SELECT meta_generation FROM spaces
           WHERE space_id = $1 AND metadata IS NOT NULL FOR UPDATE`,
@@ -4998,7 +5000,7 @@ export class PostgresBackend implements StorageBackend {
     replicaId: string
   }): Promise<boolean> {
     return this.#withTransaction(async client => {
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       const { rowCount } = await client.query(
         `DELETE FROM replicas WHERE space_id = $1 AND replica_id = $2`,
         [spaceId, replicaId]
@@ -5105,22 +5107,23 @@ export class PostgresBackend implements StorageBackend {
     stamps: unknown[]
   }): Promise<ApplyResult | undefined> {
     assertReceivableStamps(stamps)
+    // The registration is read with the Space row: a Space with no Metadata
+    // object yields no row, which `guardApply` answers `unregistered` with
+    // or without a registration.
     const { rows: spaceRows } = await client.query<{
       meta_generation: string | null
+      space_generation: string | null
     }>(
-      `SELECT meta_generation FROM spaces
-        WHERE space_id = $1 AND metadata IS NOT NULL FOR UPDATE`,
-      [spaceId]
-    )
-    const { rows: replicaRows } = await client.query<{
-      space_generation: string
-    }>(
-      `SELECT space_generation FROM replicas
-        WHERE space_id = $1 AND replica_id = $2`,
+      `SELECT s.meta_generation, r.space_generation
+         FROM spaces s
+         LEFT JOIN replicas r
+           ON r.space_id = s.space_id AND r.replica_id = $2
+        WHERE s.space_id = $1 AND s.metadata IS NOT NULL
+          FOR UPDATE OF s`,
       [spaceId, replicaId]
     )
     const stopped = guardApply({
-      registeredUnder: replicaRows[0]?.space_generation,
+      registeredUnder: spaceRows[0]?.space_generation ?? undefined,
       spaceGeneration: spaceRows[0]?.meta_generation,
       clock: this.#clock,
       stamps
@@ -5162,8 +5165,7 @@ export class PostgresBackend implements StorageBackend {
     stamp: WriteStamp
   }): Promise<ApplyResult> {
     return this.#withTransaction(async client => {
-      // The lock a Space Metadata write serializes on, ahead of the row lock.
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       const ended = await this.#beginApply({
         client,
         spaceId,
@@ -5327,19 +5329,7 @@ export class PostgresBackend implements StorageBackend {
         }
         // Count quota, as on a request-layer create. A replace has just
         // freed the place it takes.
-        if (this.maxCollectionsPerSpace !== undefined) {
-          const { rows: countRows } = await client.query<{ count: number }>(
-            `SELECT COUNT(*)::int AS count FROM collections
-              WHERE space_id = $1 AND NOT deleted`,
-            [spaceId]
-          )
-          if (countRows[0]!.count >= this.maxCollectionsPerSpace) {
-            throw new CountQuotaExceededError({
-              scope: 'Collections per Space',
-              limit: this.maxCollectionsPerSpace
-            })
-          }
-        }
+        await this.#assertCollectionQuota({ client, spaceId })
       }
       await this.#upsertCollection({
         queryable: client,
@@ -5469,18 +5459,12 @@ export class PostgresBackend implements StorageBackend {
       // soft delete is an UPDATE, so the foreign key's cascade does not fire.
       let freedChunkBytes = 0
       if (content === null && prior !== undefined) {
-        const { rows: deletedChunkRows } = await client.query<{
-          size: string
-        }>(
-          `DELETE FROM chunks
-            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
-            RETURNING size`,
-          [spaceId, collectionId, resourceId]
-        )
-        freedChunkBytes = deletedChunkRows.reduce(
-          (total, row) => total + Number(row.size),
-          0
-        )
+        freedChunkBytes = await this.#deleteChunks({
+          client,
+          spaceId,
+          collectionId,
+          resourceId
+        })
       }
 
       // The Collection row is locked already (`#beginApply`), so the
@@ -5567,9 +5551,7 @@ export class PostgresBackend implements StorageBackend {
       // Usage delta after the write, from the size the write replaced, so a
       // `QuotaExceededError` rolls the whole apply back.
       const delta = size - written.priorSizeBytes - freedChunkBytes
-      if (delta !== 0) {
-        await this.#applyUsageDelta({ client, spaceId, delta })
-      }
+      await this.#applyUsageDelta({ client, spaceId, delta })
       return { outcome: 'applied' }
     })
   }
@@ -5793,25 +5775,15 @@ export class PostgresBackend implements StorageBackend {
       if (decision === 'skip') {
         return { outcome: 'skipped' }
       }
-      await client.query(
-        `UPDATE collections SET
-           log_body               = $3,
-           log_generation         = $4,
-           log_updated_at         = $5,
-           log_updated_at_counter = $6,
-           log_origin_id          = $7,
-           meta_local             = meta_local + 1,
-           ${TAKE_LOG_FEED_POSITION_SQL}
-         WHERE space_id = $1 AND collection_id = $2`,
-        [
-          spaceId,
-          collectionId,
-          body,
-          generation,
-          ...stampValues(stamp),
-          newGeneration()
-        ]
-      )
+      await this.#storeLog({
+        client,
+        spaceId,
+        collectionId,
+        body,
+        generation,
+        stamp,
+        advanceLocal: true
+      })
       return { outcome: 'applied' }
     })
   }
@@ -5954,7 +5926,7 @@ export class PostgresBackend implements StorageBackend {
         [keystoreId, localId, JSON.stringify(record)]
       )
     } catch (err) {
-      if ((err as { code?: string }).code === '23505') {
+      if (pgErrorCode(err) === UNIQUE_VIOLATION) {
         throw new KeyIdConflictError()
       }
       throw new StorageError({ cause: err as Error })
@@ -6096,11 +6068,11 @@ export class PostgresBackend implements StorageBackend {
       if (err instanceof SpaceNotFoundError) {
         throw err
       }
-      const code = (err as { code?: string }).code
-      if (code === '23505') {
+      const code = pgErrorCode(err)
+      if (code === UNIQUE_VIOLATION) {
         throw new DuplicateRevocationError()
       }
-      if (code === '23503' && 'spaceId' in scope) {
+      if (code === FOREIGN_KEY_VIOLATION && 'spaceId' in scope) {
         throw new SpaceNotFoundError({ requestName })
       }
       throw new StorageError({ cause: err as Error })
@@ -6156,12 +6128,16 @@ export class PostgresBackend implements StorageBackend {
    * @returns {MetaSidecar}
    */
   #sidecarFor(row: Omit<ResourceRow, 'content'>): MetaSidecar {
+    // The members both shapes lead with, in the filesystem writer's order.
+    const common = {
+      createdAt: row.created_at,
+      ...stampOfRow(row),
+      ...(row.created_by !== null && { createdBy: row.created_by }),
+      generation: row.generation
+    }
     if (row.deleted) {
       return {
-        createdAt: row.created_at,
-        ...stampOfRow(row),
-        ...(row.created_by !== null && { createdBy: row.created_by }),
-        generation: row.generation,
+        ...common,
         deleted: true,
         contentType: row.content_type,
         // A tombstone's writer-attribution label survives the round trip too
@@ -6171,10 +6147,7 @@ export class PostgresBackend implements StorageBackend {
     }
     const meta = metaStampOfRow(row)
     return {
-      createdAt: row.created_at,
-      ...stampOfRow(row),
-      ...(row.created_by !== null && { createdBy: row.created_by }),
-      generation: row.generation,
+      ...common,
       ...(meta !== undefined && { meta }),
       ...(row.custom !== null && { custom: row.custom }),
       // The client-declared key epoch (the `key-epochs` feature) rides the
@@ -6212,18 +6185,15 @@ export class PostgresBackend implements StorageBackend {
     service?: ServiceDescription
     attestor?: ExportAttestor
   }): Promise<Readable> {
-    const spaceMetadata = await this.getSpaceMetadata({ spaceId })
-    if (!spaceMetadata) {
-      throw new SpaceNotFoundError({ requestName: 'Export Space' })
-    }
-
     const [
+      spaceMetadata,
       { rows: policyRows },
       { rows: collectionRows },
       { rows: resourceRows },
       { rows: revocationRows },
       { rows: chunkRows }
     ] = await Promise.all([
+      this.getSpaceMetadata({ spaceId }),
       // Live policies only: a tombstone does not travel.
       this.#reader().query<
         PolicyRow & { collection_id: string; resource_id: string }
@@ -6283,6 +6253,9 @@ export class PostgresBackend implements StorageBackend {
         [spaceId]
       )
     ])
+    if (!spaceMetadata) {
+      throw new SpaceNotFoundError({ requestName: 'Export Space' })
+    }
 
     // Assemble the per-entry file lists in the filesystem's shapes: files are
     // named by the shared codecs and sorted with localeCompare, matching the
@@ -6627,7 +6600,7 @@ export class PostgresBackend implements StorageBackend {
     // fields; the `chunks` table stores a chunk as one row, so merge the two
     // files of each chunk into a single row here.
     const chunkEntries = this.#mergeChunkEntries(collections)
-    const { capacityBytes, maxUploadBytes, maxCollectionsPerSpace } = this
+    const { capacityBytes, maxCollectionsPerSpace } = this
 
     return this.#withTransaction(async client => {
       // The Space Metadata advisory lock first, ahead of the row lock as the
@@ -6636,7 +6609,7 @@ export class PostgresBackend implements StorageBackend {
       // it waits on the row this import is about to take. Without it the two
       // could deadlock, or the restore could land between that write's read
       // and its upsert and be overwritten.
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      await this.#lockSpaceMetadata({ client, spaceId })
       // The destination Space must still have its Metadata object.
       await this.#lockLiveContainers({
         client,
@@ -6713,15 +6686,7 @@ export class PostgresBackend implements StorageBackend {
           )
           return rows[0]?.log_body ?? undefined
         },
-        assertUploadSize: uploadBytes => {
-          if (uploadBytes > maxUploadBytes) {
-            throw new PayloadTooLargeError({
-              maxUploadBytes,
-              backendId: this.describe().id,
-              uploadBytes
-            })
-          }
-        },
+        assertUploadSize: uploadBytes => this.#assertUploadSize(uploadBytes),
         trailingChunkBodies: chunkEntries
       })
       // The cumulative quota (507) stays here: the headroom check is this
@@ -6744,6 +6709,13 @@ export class PostgresBackend implements StorageBackend {
         policiesSkipped: 0,
         spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent',
         provenance
+      }
+      const tallyPolicy = (created: boolean): void => {
+        if (created) {
+          stats.policiesCreated++
+        } else {
+          stats.policiesSkipped++
+        }
       }
 
       // The archived Space Metadata object's user-writable members, applied
@@ -6775,13 +6747,9 @@ export class PostgresBackend implements StorageBackend {
       // deleted policy's tombstone counts as one, so an import does not undo
       // the delete.
       if (spacePolicy) {
-        if (
+        tallyPolicy(
           await this.#importPolicy({ client, spaceId, imported: spacePolicy })
-        ) {
-          stats.policiesCreated++
-        } else {
-          stats.policiesSkipped++
-        }
+        )
       }
 
       let createdBytes = 0
@@ -6808,10 +6776,7 @@ export class PostgresBackend implements StorageBackend {
             isNewRow &&
             collectionRowCount >= maxCollectionsPerSpace
           ) {
-            throw new CountQuotaExceededError({
-              scope: 'Collections per Space',
-              limit: maxCollectionsPerSpace
-            })
+            throw collectionQuotaExceeded(maxCollectionsPerSpace)
           }
           // Import restores the archived Collection Metadata object,
           // server-managed members (`createdBy`, `createdAt`) and annotations
@@ -6857,19 +6822,15 @@ export class PostgresBackend implements StorageBackend {
         // A collection-level policy travels with a newly-created collection;
         // for an existing (skipped) collection, leave its policy untouched.
         if (collectionPolicy) {
-          if (
+          tallyPolicy(
             !collectionExisted &&
-            (await this.#importPolicy({
-              client,
-              spaceId,
-              collectionId,
-              imported: collectionPolicy
-            }))
-          ) {
-            stats.policiesCreated++
-          } else {
-            stats.policiesSkipped++
-          }
+              (await this.#importPolicy({
+                client,
+                spaceId,
+                collectionId,
+                imported: collectionPolicy
+              }))
+          )
         }
 
         // All ids the destination already holds for this Collection -- live
@@ -6916,7 +6877,7 @@ export class PostgresBackend implements StorageBackend {
           // tombstone included, is kept.
           const resourcePolicy = resourcePolicies.get(resourceId)
           if (resourcePolicy) {
-            if (
+            tallyPolicy(
               await this.#importPolicy({
                 client,
                 spaceId,
@@ -6924,11 +6885,7 @@ export class PostgresBackend implements StorageBackend {
                 resourceId,
                 imported: resourcePolicy
               })
-            ) {
-              stats.policiesCreated++
-            } else {
-              stats.policiesSkipped++
-            }
+            )
           }
         }
 
@@ -7028,15 +6985,13 @@ export class PostgresBackend implements StorageBackend {
       }
 
       const createdTotalBytes = createdBytes + createdChunkBytes
-      if (createdTotalBytes > 0) {
-        // The pre-flight was conservative (it counted skips too), so the
-        // actual created total always fits; apply it unguarded.
-        await this.#applyUsageDelta({
-          client,
-          spaceId,
-          delta: createdTotalBytes
-        })
-      }
+      // The pre-flight was conservative (it counted skips too), so the
+      // actual created total always fits; apply it unguarded.
+      await this.#applyUsageDelta({
+        client,
+        spaceId,
+        delta: createdTotalBytes
+      })
 
       // The archive's Collection tombstones, each written only when this
       // Space holds no row under its id, live or tombstoned: a tombstone
@@ -7097,24 +7052,15 @@ export class PostgresBackend implements StorageBackend {
     })
     // The imported log takes this Collection's next feed position, as a log
     // write does: an archive carries no positions.
-    await client.query(
-      `UPDATE collections SET
-         log_body               = $3,
-         log_generation         = $4,
-         log_updated_at         = $5,
-         log_updated_at_counter = $6,
-         log_origin_id          = $7,
-         ${TAKE_LOG_FEED_POSITION_SQL}
-       WHERE space_id = $1 AND collection_id = $2`,
-      [
-        spaceId,
-        collectionId,
-        body,
-        generation,
-        ...stampValues(stamp),
-        newGeneration()
-      ]
-    )
+    await this.#storeLog({
+      client,
+      spaceId,
+      collectionId,
+      body,
+      generation,
+      stamp,
+      advanceLocal: false
+    })
   }
 
   /**

@@ -11,6 +11,7 @@
 import type { MetadataValidatorParts, WriteStamp } from '../types.js'
 import { etagOf } from './etag.js'
 import { stampOf } from './hlc.js'
+import { withoutJsonMembers } from './jsonBytes.js'
 
 /**
  * The five-segment `ETag` of a stored Space or Collection Metadata object:
@@ -115,20 +116,5 @@ export function stripMetadataValidator<T extends object>(
  * @returns {Buffer}
  */
 export function withoutLocalSegment(bytes: Buffer): Buffer {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'))
-  } catch {
-    return bytes
-  }
-  if (
-    parsed === null ||
-    typeof parsed !== 'object' ||
-    Array.isArray(parsed) ||
-    !('_local' in parsed)
-  ) {
-    return bytes
-  }
-  const { _local: _dropped, ...rest } = parsed as Record<string, unknown>
-  return Buffer.from(JSON.stringify(rest))
+  return withoutJsonMembers({ bytes, members: ['_local'] })
 }

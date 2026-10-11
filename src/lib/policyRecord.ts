@@ -35,8 +35,13 @@ import {
   importedGeneration,
   validatorOf
 } from './etag.js'
-import { stampOf, withoutStampMembers } from './hlc.js'
+import { pickStamp, stampOf, withoutStampMembers } from './hlc.js'
 import { isPlainObject } from './isPlainObject.js'
+import {
+  parseJsonObjectBytes,
+  parseJsonOrUndefined,
+  withoutJsonMembers
+} from './jsonBytes.js'
 import { policyPath } from './paths.js'
 import { assertPolicyWritePrecondition } from './preconditions.js'
 import { InvalidImportError } from '../errors.js'
@@ -74,8 +79,7 @@ export function stampedPolicy({
   body: PolicyDocument
   stamp: WriteStamp
 }): PolicyDocument {
-  const { updatedAt, updatedAtCounter, originId } = stamp
-  return { ...body, updatedAt, updatedAtCounter, originId }
+  return { ...body, ...pickStamp(stamp) }
 }
 
 /**
@@ -85,8 +89,7 @@ export function stampedPolicy({
  * @returns {PolicyTombstone}
  */
 export function policyTombstoneBody(stamp: WriteStamp): PolicyTombstone {
-  const { updatedAt, updatedAtCounter, originId } = stamp
-  return { deleted: true, updatedAt, updatedAtCounter, originId }
+  return { deleted: true, ...pickStamp(stamp) }
 }
 
 /**
@@ -168,20 +171,10 @@ export function storedPolicyFromFile(raw: unknown): StoredPolicy | undefined {
  * @returns {Buffer | undefined}
  */
 export function archivedPolicyFile(bytes: Buffer): Buffer | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'))
-  } catch {
-    return bytes
-  }
-  if (storedPolicyFromFile(parsed)?.deleted) {
+  if (storedPolicyFromFile(parseJsonOrUndefined(bytes))?.deleted) {
     return undefined
   }
-  if (!isPlainObject(parsed) || !('_feedPosition' in parsed)) {
-    return bytes
-  }
-  const { _feedPosition: _dropped, ...archived } = parsed
-  return Buffer.from(JSON.stringify(archived))
+  return withoutJsonMembers({ bytes, members: ['_feedPosition'] })
 }
 
 /**
@@ -250,10 +243,10 @@ export interface ImportedPolicy {
  * @returns {boolean}
  */
 export function hasPolicyType(body: unknown): boolean {
-  if (typeof body !== 'object' || body === null) {
+  if (!isPlainObject(body)) {
     return false
   }
-  const { type } = body as Record<string, unknown>
+  const { type } = body
   return typeof type === 'string' && type.trim() !== ''
 }
 
@@ -264,13 +257,8 @@ export function importedPolicy({
   bytes: Buffer
   fileName: string
 }): ImportedPolicy {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'))
-  } catch {
-    parsed = undefined
-  }
-  if (!isPlainObject(parsed) || parsed.deleted === true) {
+  const parsed = parseJsonObjectBytes(bytes)
+  if (parsed === undefined || parsed.deleted === true) {
     throw new InvalidImportError({
       message:
         `The archive's policy file "${fileName}" is not a live policy ` +

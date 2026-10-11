@@ -40,7 +40,7 @@ import type {
   RecordValidatorParts,
   WriteStamp
 } from '../types.js'
-import { type HybridLogicalClock, stampOf } from './hlc.js'
+import { type HybridLogicalClock, pickStamp, stampOf } from './hlc.js'
 
 /**
  * The parts of a strong `ETag` validator: the record's `generation`, the
@@ -241,16 +241,12 @@ export function generationOfEtag(etag: string | undefined): string | undefined {
  */
 export function stampedValidator({
   generation,
-  stamp: { updatedAt, updatedAtCounter, originId },
+  stamp,
   local
-}: {
-  generation: string
-  stamp: WriteStamp
-  local?: number
-}): EtagValidator {
+}: EtagValidator): EtagValidator {
   return {
     generation,
-    stamp: { updatedAt, updatedAtCounter, originId },
+    stamp: pickStamp(stamp),
     ...(local !== undefined && { local })
   }
 }

@@ -14,12 +14,18 @@
 import type { FastifyBaseLogger } from 'fastify'
 import type { ISigner } from '@interop/data-integrity-core'
 import type { DIDDoc } from '@interop/did-method-webvh'
-import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { isServerFault } from '../errors.js'
 import type { StorageBackend } from '../types.js'
-import { resolveServerDid } from './serverIdentity.js'
+import {
+  resolveServerDid,
+  serverKeyPair,
+  serverMethodId
+} from './serverIdentity.js'
 import type { ServerSigningKey } from './serverIdentity.js'
-import { resolveWebvhController } from './webvhController.js'
+import {
+  relationshipMethodIds,
+  resolveWebvhController
+} from './webvhController.js'
 
 /**
  * Loads the signer for sync invocations, or says why the server has none.
@@ -96,8 +102,8 @@ export async function loadSyncSigner({
       reason: `The server history log does not verify: ${(err as Error).message}`
     }
   }
-  const { publicKeyMultibase, privateKeyMultibase } = signingKey.keyPair
-  const methodId = `${serverDid}#${publicKeyMultibase}`
+  const { publicKeyMultibase } = signingKey.keyPair
+  const methodId = serverMethodId({ serverDid, signingKey })
   if (!listsInvocationMethod({ doc, methodId, publicKeyMultibase })) {
     return {
       refusal: 'no-capability-invocation',
@@ -106,13 +112,10 @@ export async function loadSyncSigner({
         `"capabilityInvocation" as "${methodId}".`
     }
   }
-  const keyPair = new Ed25519VerificationKey({
-    id: methodId,
-    controller: serverDid,
-    publicKeyMultibase,
-    privateKeyMultibase
-  })
-  return { serverDid, signer: keyPair.signer() }
+  return {
+    serverDid,
+    signer: serverKeyPair({ serverDid, signingKey }).signer()
+  }
 }
 
 /**
@@ -135,21 +138,18 @@ function listsInvocationMethod({
   methodId: string
   publicKeyMultibase: string
 }): boolean {
+  const docId = doc.id ?? ''
   const absolute = (id: string): string =>
-    id.startsWith('#') ? `${doc.id ?? ''}${id}` : id
+    id.startsWith('#') ? `${docId}${id}` : id
   const carriesKey = (doc.verificationMethod ?? []).some(
     method =>
       typeof method.id === 'string' &&
       absolute(method.id) === methodId &&
       method.publicKeyMultibase === publicKeyMultibase
   )
-  const relationship: unknown = doc.capabilityInvocation
-  const named =
-    Array.isArray(relationship) &&
-    relationship.some(entry => {
-      const id =
-        typeof entry === 'string' ? entry : (entry as { id?: unknown })?.id
-      return typeof id === 'string' && absolute(id) === methodId
-    })
+  const named = relationshipMethodIds({
+    entries: doc.capabilityInvocation,
+    docId
+  }).includes(methodId)
   return carriesKey && named
 }

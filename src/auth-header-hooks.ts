@@ -13,6 +13,7 @@ import {
 } from './errors.js'
 import { parseSignatureHeader } from '@interop/http-signature-header'
 import {
+  didOfMethodId,
   isValidController,
   parseSelfHostedWebvh,
   parseWebvhAddress
@@ -65,7 +66,7 @@ export async function parseAuthHeaders(
   let keyId: string | undefined
   try {
     // { keyId, headers, signature, created, expires }
-    const { params } = parseSignatureHeader(headers.authorization ?? '')
+    const { params } = parseSignatureHeader(headers.authorization)
     keyId = params.keyId
     request.zcap = {
       ...params,
@@ -113,7 +114,8 @@ export function invokerDid(request: FastifyRequest): IDID | undefined {
   if (request.provisioningAuthorized) {
     return undefined
   }
-  const did = request.zcap?.keyId.split('#')[0]
+  const keyId = request.zcap?.keyId
+  const did = keyId === undefined ? undefined : didOfMethodId(keyId)
   if (isValidController(did)) {
     return did
   }
@@ -139,6 +141,18 @@ export function invokerDid(request: FastifyRequest): IDID | undefined {
 export function hasAuthHeaders(request: FastifyRequest): boolean {
   const { headers } = request
   return Boolean(headers.authorization && headers['capability-invocation'])
+}
+
+/**
+ * True for the safe (read) HTTP methods, `GET` and `HEAD`: the ones an
+ * anonymous request may make, and the ones an access-control policy grants as
+ * a `read`.
+ *
+ * @param method {string}   the request method
+ * @returns {boolean}
+ */
+export function isSafeMethod(method: string): boolean {
+  return method === 'GET' || method === 'HEAD'
 }
 
 /**
@@ -183,8 +197,7 @@ export async function requireAuthHeadersOrPublicRead(
     return
   }
   // Safe methods may proceed unauthenticated; authorize() decides via policy.
-  const { method } = request
-  if (method === 'GET' || method === 'HEAD') {
+  if (isSafeMethod(request.method)) {
     return
   }
   throw new MissingAuthError()

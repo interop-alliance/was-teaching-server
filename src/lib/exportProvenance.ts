@@ -38,16 +38,20 @@
  */
 import { readLogFromString } from '@interop/did-method-webvh'
 import type { DIDLog } from '@interop/did-method-webvh'
-import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import type { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import jsigs from '@interop/jsonld-signatures'
 import { classifyCollectionFile } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { FastifyBaseLogger } from 'fastify'
 import type { StorageBackend } from '../types.js'
-import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
 import {
-  CLAIM_MEMBERS,
+  absoluteUrl,
+  collectionMetaPath,
+  resourcePath,
+  spaceMetaPath
+} from './paths.js'
+import {
   chunkedDigest,
   fileBytes,
   fileDigest,
@@ -58,10 +62,12 @@ import type { Claims } from './provenanceStatement.js'
 import {
   readServerLog,
   resolveServerDid,
+  serverKeyPair,
+  serverMethodId,
   signingKeyRelationshipProblem
 } from './serverIdentity.js'
 import type { ServerSigningKey } from './serverIdentity.js'
-import { verifyWebvhLog } from './webvhController.js'
+import { headOf, logDid, verifyWebvhLog } from './webvhController.js'
 
 /**
  * What an export needs to sign its provenance: the server's DID, the log
@@ -131,8 +137,7 @@ export async function loadExportAttestor({
   } catch {
     return { reason: 'The server history log snapshot does not parse.' }
   }
-  const head = log.at(-1)
-  if (head === undefined || head.state?.id !== serverDid) {
+  if (logDid(log) !== serverDid) {
     return {
       reason: 'The server history log snapshot names another DID.'
     }
@@ -147,7 +152,7 @@ export async function loadExportAttestor({
     if (problem !== undefined) {
       return { reason: problem }
     }
-    const methodId = `${serverDid}#${publicKeyMultibase}`
+    const methodId = serverMethodId({ serverDid, signingKey })
     const listed = (doc.verificationMethod ?? []).some(
       method =>
         method.id === methodId &&
@@ -165,13 +170,8 @@ export async function loadExportAttestor({
         serverUrl,
         serverDid,
         didLog,
-        didLogVersionId: head.versionId,
-        keyPair: new Ed25519VerificationKey({
-          id: methodId,
-          controller: serverDid,
-          publicKeyMultibase,
-          privateKeyMultibase: signingKey.keyPair.privateKeyMultibase
-        })
+        didLogVersionId: headOf(log).versionId,
+        keyPair: serverKeyPair({ serverDid, signingKey })
       }
     }
   } catch (err) {
@@ -196,22 +196,6 @@ async function archivedServerFields({
 }): Promise<Claims | undefined> {
   const bytes = await fileBytes(file)
   return bytes === undefined ? undefined : serverFieldsOf({ bytes })
-}
-
-/**
- * The claims a statement carries, in `CLAIM_MEMBERS` order, each left out
- * when the archived object lacks it.
- * @param fields {Claims}
- * @returns {Claims}
- */
-function claimsOf(fields: Claims): Claims {
-  const claims: Record<string, unknown> = {}
-  for (const member of CLAIM_MEMBERS) {
-    if (fields[member] !== undefined) {
-      claims[member] = fields[member]
-    }
-  }
-  return claims as Claims
 }
 
 /**
@@ -277,7 +261,7 @@ export async function attestArchiveEntries({
     date: null
   })
   const urlOf = (path: string): string =>
-    new URL(path, attestor.serverUrl).toString()
+    absoluteUrl({ path, serverUrl: attestor.serverUrl })
   const lines: string[] = []
 
   async function attest(statement: Record<string, unknown>): Promise<void> {
@@ -306,7 +290,7 @@ export async function attestArchiveEntries({
     await attest({
       id,
       type: STORAGE_ATTESTATION_TYPE,
-      ...claimsOf(fields)
+      ...fields
     })
   }
 
@@ -368,7 +352,7 @@ export async function attestArchiveEntries({
       await attest({
         id: urlOf(resourcePath({ spaceId, collectionId, resourceId })),
         type: STORAGE_ATTESTATION_TYPE,
-        ...claimsOf(fields ?? {}),
+        ...fields,
         digest
       })
     }

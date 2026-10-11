@@ -15,7 +15,9 @@ import {
   ReservedIdError
 } from '../errors.js'
 
-/** Which kind of id is being validated (selects the thrown error class). */
+/**
+ * Which kind of id is being validated (selects the thrown error class).
+ */
 export type IdKind = 'space' | 'collection' | 'resource'
 
 /**
@@ -103,7 +105,7 @@ export const RESERVED_COLLECTION_IDS = new Set([
  * Space exists yet, and whether or not the identity is configured. A stored
  * `server` Space is still addressable by its controller like any other.
  */
-export const RESERVED_SPACE_IDS = new Set(['server'])
+const RESERVED_SPACE_IDS = new Set(['server'])
 
 export const RESERVED_RESOURCE_IDS = new Set([
   'backend',
@@ -116,6 +118,28 @@ export const RESERVED_RESOURCE_IDS = new Set([
   'query',
   'quota'
 ])
+
+/**
+ * The 400 `invalid-id` error class each id kind throws for an unsafe id.
+ */
+const INVALID_ID_ERRORS: Record<
+  IdKind,
+  new (options: { requestName?: string }) => Error
+> = {
+  space: InvalidSpaceIdError,
+  collection: InvalidCollectionIdError,
+  resource: InvalidResourceIdError
+}
+
+/**
+ * The reserved path-segment set each id kind may not take. Collections and
+ * Resources have one; a Space id does not.
+ */
+const RESERVED_IDS: Record<IdKind, ReadonlySet<string> | undefined> = {
+  space: undefined,
+  collection: RESERVED_COLLECTION_IDS,
+  resource: RESERVED_RESOURCE_IDS
+}
 
 /**
  * Asserts that an id is a single, URL-safe path segment that does not collide
@@ -133,24 +157,11 @@ export function assertValidId(
   { kind, requestName }: { kind: IdKind; requestName?: string }
 ): void {
   if (!isUrlSafeSegment(id)) {
-    switch (kind) {
-      case 'collection':
-        throw new InvalidCollectionIdError({ requestName })
-      case 'resource':
-        throw new InvalidResourceIdError({ requestName })
-      default:
-        throw new InvalidSpaceIdError({ requestName })
-    }
+    throw new INVALID_ID_ERRORS[kind]({ requestName })
   }
 
   // Collections and Resources may not take a reserved path-segment name.
-  const reserved =
-    kind === 'collection'
-      ? RESERVED_COLLECTION_IDS
-      : kind === 'resource'
-        ? RESERVED_RESOURCE_IDS
-        : undefined
-  if (reserved?.has(id)) {
+  if (RESERVED_IDS[kind]?.has(id)) {
     throw new ReservedIdError({ kind, id })
   }
 }

@@ -9,10 +9,7 @@
  * (validate on write / preserve on read), kept separate because encryption is a
  * per-Collection client concern, not a backend capability.
  */
-import type {
-  CollectionEncryption,
-  CollectionEncryptionEpoch
-} from '../types.js'
+import type { CollectionEncryption } from '../types.js'
 import {
   InvalidRequestBodyError,
   EncryptionImmutableError,
@@ -85,13 +82,8 @@ export function assertSupportedEncryption({
   if (encryption === undefined) {
     return undefined
   }
-  const scheme = (encryption as { scheme?: unknown })?.scheme
-  if (
-    typeof encryption !== 'object' ||
-    encryption === null ||
-    typeof scheme !== 'string' ||
-    scheme.length === 0
-  ) {
+  const scheme = isPlainObject(encryption) ? encryption.scheme : undefined
+  if (typeof scheme !== 'string' || scheme.length === 0) {
     throw new InvalidRequestBodyError({
       requestName,
       detail:
@@ -219,15 +211,13 @@ function assertValidEncryptionEpochs({
   if (epochs === undefined) {
     return
   }
-  if (!Array.isArray(epochs) || epochs.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'Collection "encryption.epochs" must be a non-empty array.',
-      pointer: '#/encryption/epochs'
-    })
-  }
   const ids = new Set<string>()
-  epochs.forEach((epoch, epochIndex) => {
+  assertNonEmptyArray({
+    value: epochs,
+    detail: 'Collection "encryption.epochs" must be a non-empty array.',
+    pointer: '#/encryption/epochs',
+    requestName
+  }).forEach((epoch, epochIndex) => {
     const pointer = `#/encryption/epochs/${epochIndex}`
     if (!isPlainObject(epoch)) {
       throw new InvalidRequestBodyError({
@@ -236,15 +226,13 @@ function assertValidEncryptionEpochs({
         pointer
       })
     }
-    const { id, recipients } = epoch as CollectionEncryptionEpoch
-    if (typeof id !== 'string' || id.length === 0) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail:
-          'Each "encryption.epochs" entry must have a non-empty string "id".',
-        pointer: `${pointer}/id`
-      })
-    }
+    const id = assertNonEmptyString({
+      value: epoch.id,
+      detail:
+        'Each "encryption.epochs" entry must have a non-empty string "id".',
+      pointer: `${pointer}/id`,
+      requestName
+    })
     if (ids.has(id)) {
       throw new InvalidRequestBodyError({
         requestName,
@@ -253,32 +241,28 @@ function assertValidEncryptionEpochs({
       })
     }
     ids.add(id)
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      throw new InvalidRequestBodyError({
-        requestName,
+    assertValidRecipientEntries({
+      recipients: assertNonEmptyArray({
+        value: epoch.recipients,
         detail:
           'Each "encryption.epochs" entry must have a non-empty "recipients" array.',
-        pointer: `${pointer}/recipients`
-      })
-    }
-    assertValidRecipientEntries({
-      recipients,
+        pointer: `${pointer}/recipients`,
+        requestName
+      }),
       pointer: `${pointer}/recipients`,
       requestName
     })
   })
-  if (typeof currentEpoch !== 'string' || currentEpoch.length === 0) {
+  const current = assertNonEmptyString({
+    value: currentEpoch,
+    detail: 'Collection "encryption.currentEpoch" must be a non-empty string.',
+    pointer: '#/encryption/currentEpoch',
+    requestName
+  })
+  if (!ids.has(current)) {
     throw new InvalidRequestBodyError({
       requestName,
-      detail:
-        'Collection "encryption.currentEpoch" must be a non-empty string.',
-      pointer: '#/encryption/currentEpoch'
-    })
-  }
-  if (!ids.has(currentEpoch)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: `Collection "encryption.currentEpoch" ("${currentEpoch}") does not name an epoch in "epochs".`,
+      detail: `Collection "encryption.currentEpoch" ("${current}") does not name an epoch in "epochs".`,
       pointer: '#/encryption/currentEpoch'
     })
   }
@@ -362,39 +346,84 @@ function assertValidEncryptionHmac({
       pointer: '#/encryption/hmac'
     })
   }
-  const { id, type, recipients } = hmac as {
-    id?: unknown
-    type?: unknown
-    recipients?: unknown
-  }
-  if (typeof id !== 'string' || id.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'Collection "encryption.hmac" must have a non-empty string "id".',
-      pointer: '#/encryption/hmac/id'
-    })
-  }
-  if (typeof type !== 'string' || type.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail:
-        'Collection "encryption.hmac" must have a non-empty string "type".',
-      pointer: '#/encryption/hmac/type'
-    })
-  }
-  if (!Array.isArray(recipients) || recipients.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
+  const { id, type, recipients } = hmac
+  assertNonEmptyString({
+    value: id,
+    detail: 'Collection "encryption.hmac" must have a non-empty string "id".',
+    pointer: '#/encryption/hmac/id',
+    requestName
+  })
+  assertNonEmptyString({
+    value: type,
+    detail: 'Collection "encryption.hmac" must have a non-empty string "type".',
+    pointer: '#/encryption/hmac/type',
+    requestName
+  })
+  assertValidRecipientEntries({
+    recipients: assertNonEmptyArray({
+      value: recipients,
       detail:
         'Collection "encryption.hmac" must have a non-empty "recipients" array.',
-      pointer: '#/encryption/hmac/recipients'
-    })
-  }
-  assertValidRecipientEntries({
-    recipients,
+      pointer: '#/encryption/hmac/recipients',
+      requestName
+    }),
     pointer: '#/encryption/hmac/recipients',
     requestName
   })
+}
+
+/**
+ * Asserts a descriptor member is a non-empty string, returning it narrowed.
+ * Rejects with `invalid-request-body` (400) at the member's pointer.
+ * @param options {object}
+ * @param options.value {unknown}   the member's value
+ * @param options.detail {string}   the problem detail
+ * @param options.pointer {string}   the member's JSON pointer
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {string}
+ */
+function assertNonEmptyString({
+  value,
+  detail,
+  pointer,
+  requestName
+}: {
+  value: unknown
+  detail: string
+  pointer: string
+  requestName?: string
+}): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new InvalidRequestBodyError({ requestName, detail, pointer })
+  }
+  return value
+}
+
+/**
+ * Asserts a descriptor member is a non-empty array, returning it narrowed.
+ * Rejects with `invalid-request-body` (400) at the member's pointer.
+ * @param options {object}
+ * @param options.value {unknown}   the member's value
+ * @param options.detail {string}   the problem detail
+ * @param options.pointer {string}   the member's JSON pointer
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {unknown[]}
+ */
+function assertNonEmptyArray({
+  value,
+  detail,
+  pointer,
+  requestName
+}: {
+  value: unknown
+  detail: string
+  pointer: string
+  requestName?: string
+}): unknown[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new InvalidRequestBodyError({ requestName, detail, pointer })
+  }
+  return value
 }
 
 /**
@@ -573,7 +602,7 @@ export function assertEncryptionDescriptorTransition({
  * @param options.incoming {CollectionEncryption}   the validated request descriptor
  * @returns {void}
  */
-export function assertEncryptionVersionTransition({
+function assertEncryptionVersionTransition({
   existing,
   incoming
 }: {

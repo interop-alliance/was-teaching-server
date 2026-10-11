@@ -42,7 +42,8 @@ import {
   SPEC_IDENTIFIER,
   SPEC_VERSION
 } from './config.default.js'
-import { serviceDescriptionPath, spacesPath } from './lib/paths.js'
+import { asList } from './lib/chainCapability.js'
+import { absoluteUrl, serviceDescriptionPath, spacesPath } from './lib/paths.js'
 import { resolveServerDid } from './lib/serverIdentity.js'
 import type {
   AuthzProfileVersionEntry,
@@ -70,7 +71,7 @@ import {
  *   (`invokerDid`). A create the provisioning policy granted verifies no
  *   signature and records none.
  */
-export const SERVICE_FEATURES = [
+const SERVICE_FEATURES = [
   'listing',
   'collection-management',
   'space-management',
@@ -107,7 +108,7 @@ export const ENCRYPTED_COLLECTIONS_FEATURES = [
  * @returns {string}
  */
 export function serviceDescriptionUrl(serverUrl: string): string {
-  return new URL(serviceDescriptionPath(), serverUrl).toString()
+  return absoluteUrl({ path: serviceDescriptionPath(), serverUrl })
 }
 
 /**
@@ -142,7 +143,7 @@ export function buildServiceDescription({
       [SPEC_IDENTIFIER]: [
         {
           version: SPEC_VERSION,
-          spaces: new URL(spacesPath(), serverUrl).toString(),
+          spaces: absoluteUrl({ path: spacesPath(), serverUrl }),
           features: SERVICE_FEATURES,
           originId
         } satisfies PwsVersionEntry
@@ -219,7 +220,7 @@ export function addServiceLinkHook(fastify: FastifyInstance): void {
     if (existing === undefined) {
       reply.header('link', serviceLink)
     } else {
-      const links = Array.isArray(existing) ? existing : [String(existing)]
+      const links = asList(existing).map(String)
       reply.header('link', [...links, serviceLink].join(', '))
     }
     return payload

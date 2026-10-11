@@ -29,7 +29,7 @@ import type { CollectionEncryption, ResourceMetadataCustom } from '../types.js'
  * @param options.requestName {string}   request name for the 400 error title
  * @returns {ResourceMetadataCustom}
  */
-export function parseCustomMetadata({
+function parseCustomMetadata({
   body,
   requestName
 }: {

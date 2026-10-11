@@ -41,6 +41,7 @@ import { generationOfEtag } from '../lib/etag.js'
 import { invalidateCollectionGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import { compareStamps, stampOf, withoutStampMembers } from '../lib/hlc.js'
 import { isPlainObject } from '../lib/isPlainObject.js'
+import { compareCodeUnits } from '../lib/pagination.js'
 import {
   collectionLogPath,
   collectionMetaPath,
@@ -130,6 +131,21 @@ function loopKey({
   replicaId: string
 }): string {
   return `${spaceId}/${replicaId}`
+}
+
+/**
+ * Whether an id a peer served names a record this server could store and
+ * address: a URL-safe string outside the reserved ids of its level.
+ * Positional, since a type guard narrows a parameter.
+ * @param id {unknown}
+ * @param reserved {ReadonlySet<string>}   the reserved ids of its level
+ * @returns {boolean}
+ */
+function isStorableId(
+  id: unknown,
+  reserved: ReadonlySet<string>
+): id is string {
+  return typeof id === 'string' && isUrlSafeSegment(id) && !reserved.has(id)
 }
 
 /**
@@ -349,7 +365,7 @@ export class ReplicationManager {
     }
     const stored = await this.#storage.getReplicaState({ spaceId, replicaId })
     const collections = Object.entries(stored?.collections ?? {})
-      .sort(([left], [right]) => (left < right ? -1 : 1))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([id, { state, lastAppliedAt, stall }]) => ({
         id,
         state,
@@ -585,7 +601,8 @@ export class ReplicationManager {
         collectionId
       ] ?? { state: 'syncing' }
       state.collections[collectionId] = collection
-      const before = JSON.stringify(state)
+      // A Collection's pull mutates its own entry alone.
+      const before = JSON.stringify(collection)
       const outcome = await this.#pullCollection({
         ...context,
         collectionId,
@@ -594,7 +611,7 @@ export class ReplicationManager {
       if (outcome === 'unregistered') {
         return false
       }
-      if (JSON.stringify(state) === before) {
+      if (JSON.stringify(collection) === before) {
         continue
       }
       const stored = await this.#storage.writeReplicaState({
@@ -801,9 +818,7 @@ export class ReplicationManager {
       for (const item of items) {
         if (
           !isPlainObject(item) ||
-          typeof item.id !== 'string' ||
-          !isUrlSafeSegment(item.id) ||
-          RESERVED_COLLECTION_IDS.has(item.id)
+          !isStorableId(item.id, RESERVED_COLLECTION_IDS)
         ) {
           continue
         }
@@ -868,18 +883,9 @@ export class ReplicationManager {
    *   loop state
    * @returns {Promise<CollectionOutcome>}
    */
-  async #pullCollection(
-    options: PullContext & {
-      collectionId: string
-      collection: ReplicaCollectionState
-    }
-  ): Promise<CollectionOutcome> {
+  async #pullCollection(options: CollectionPull): Promise<CollectionOutcome> {
     const { spaceId, collectionId, collection, peer, peerSpaceId, peerUrl } =
       options
-    const stall = (reason: ReplicaStallReason, detail: string): 'pending' => {
-      this.#recordStall({ ...options, reason, detail })
-      return 'pending'
-    }
 
     const held = await this.#storage.getCollectionMetadata({
       spaceId,
@@ -927,10 +933,12 @@ export class ReplicationManager {
           throw err
         }
         if (limit === 1) {
-          return stall(
-            'quota-exceeded',
-            "The next change document is larger than this server's upload cap."
-          )
+          return this.#recordStall({
+            ...options,
+            reason: 'quota-exceeded',
+            detail:
+              "The next change document is larger than this server's upload cap."
+          })
         }
         limit = Math.ceil(limit / 2)
         continue
@@ -953,22 +961,14 @@ export class ReplicationManager {
         ? page.json.documents.filter(isPlainObject)
         : []
       for (const document of documents) {
-        let result: ChangeResult
-        try {
-          result = await this.#applyChange({ ...options, document })
-        } catch (err) {
-          const refusal = stallOfError(err)
-          if (refusal === undefined) {
-            throw err
-          }
-          return stall(refusal.reason, refusal.detail)
+        const step = await this.#applyStep({
+          pull: options,
+          apply: () => this.#applyChange({ ...options, document })
+        })
+        if ('ended' in step) {
+          return step.ended
         }
-        if (result.outcome === 'unregistered') {
-          return 'unregistered'
-        }
-        if (result.outcome === 'refused') {
-          return stall(result.reason, result.detail)
-        }
+        const { result } = step
         if (result.outcome === 'pending') {
           return 'pending'
         }
@@ -1005,10 +1005,7 @@ export class ReplicationManager {
    * @returns {Promise<CollectionOutcome>}
    */
   async #pullCollectionMetadata(
-    options: PullContext & {
-      collectionId: string
-      collection: ReplicaCollectionState
-    }
+    options: CollectionPull
   ): Promise<CollectionOutcome> {
     const {
       spaceId,
@@ -1019,10 +1016,6 @@ export class ReplicationManager {
       peerSpaceId,
       peerUrl
     } = options
-    const stall = (reason: ReplicaStallReason, detail: string): 'pending' => {
-      this.#recordStall({ ...options, reason, detail })
-      return 'pending'
-    }
     const url = peerUrl(
       collectionMetaPath({ spaceId: peerSpaceId, collectionId })
     )
@@ -1047,34 +1040,29 @@ export class ReplicationManager {
     }
     const backendId = metadata.backend?.id
     if (backendId !== undefined && backendId !== DEFAULT_BACKEND_ID) {
-      return stall(
-        'unsupported-backend',
-        `The Collection is stored on backend "${backendId}" on the peer. ` +
+      return this.#recordStall({
+        ...options,
+        reason: 'unsupported-backend',
+        detail:
+          `The Collection is stored on backend "${backendId}" on the peer. ` +
           'This server replicates into its own default backend only.'
-      )
+      })
     }
 
-    let result: ApplyResult
-    try {
-      result = await this.#storage.applyCollection({
-        spaceId,
-        replicaId,
-        collectionId,
-        collection: { deleted: false, generation, metadata }
-      })
-    } catch (err) {
-      const refusal = stallOfError(err)
-      if (refusal === undefined) {
-        throw err
-      }
-      return stall(refusal.reason, refusal.detail)
+    const step = await this.#applyStep({
+      pull: options,
+      apply: () =>
+        this.#storage.applyCollection({
+          spaceId,
+          replicaId,
+          collectionId,
+          collection: { deleted: false, generation, metadata }
+        })
+    })
+    if ('ended' in step) {
+      return step.ended
     }
-    if (result.outcome === 'unregistered') {
-      return 'unregistered'
-    }
-    if (result.outcome === 'refused') {
-      return stall(result.reason, result.detail)
-    }
+    const { result } = step
     this.#dropCaches({ kind: 'collection', result, spaceId, collectionId })
     if (result.outcome === 'applied') {
       collection.lastAppliedAt = new Date().toISOString()
@@ -1109,11 +1097,7 @@ export class ReplicationManager {
    * @returns {Promise<ChangeResult>}
    */
   async #applyChange(
-    options: PullContext & {
-      collectionId: string
-      collection: ReplicaCollectionState
-      document: Record<string, unknown>
-    }
+    options: CollectionPull & { document: Record<string, unknown> }
   ): Promise<ChangeResult> {
     const { document, spaceId, collectionId } = options
     // A Resource change drops its own cache, and a Collection Metadata change
@@ -1170,9 +1154,7 @@ export class ReplicationManager {
     const stamp = receivedStampOf(document)
     const { generation, contentType } = document
     if (
-      typeof resourceId !== 'string' ||
-      !isUrlSafeSegment(resourceId) ||
-      RESERVED_RESOURCE_IDS.has(resourceId) ||
+      !isStorableId(resourceId, RESERVED_RESOURCE_IDS) ||
       stamp === undefined ||
       typeof generation !== 'string' ||
       typeof contentType !== 'string'
@@ -1474,9 +1456,49 @@ export class ReplicationManager {
   }
 
   /**
+   * Runs one apply step of a Collection's pull and handles the outcomes that
+   * end the pull: a refusal, returned or thrown (see {@link stallOfError}),
+   * stalls the Collection, and a registration that is gone stops the loop.
+   * Any other error is rethrown.
+   * @param options {object}
+   * @param options.pull {CollectionPull}   the pull the step belongs to
+   * @param options.apply {() => Promise<T>}   the step
+   * @returns {Promise<{ ended: 'pending' | 'unregistered' } | { result: T }>}
+   *   `ended` when the pull stops, else the step's result
+   */
+  async #applyStep<T extends ChangeResult>({
+    pull,
+    apply
+  }: {
+    pull: CollectionPull
+    apply: () => Promise<T>
+  }): Promise<{ ended: 'pending' | 'unregistered' } | { result: T }> {
+    let result: T
+    try {
+      result = await apply()
+    } catch (err) {
+      const refusal = stallOfError(err)
+      if (refusal === undefined) {
+        throw err
+      }
+      return { ended: this.#recordStall({ ...pull, ...refusal }) }
+    }
+    const settled: ChangeResult = result
+    if (settled.outcome === 'unregistered') {
+      return { ended: 'unregistered' }
+    }
+    if (settled.outcome === 'refused') {
+      const { reason, detail } = settled
+      return { ended: this.#recordStall({ ...pull, reason, detail }) }
+    }
+    return { result }
+  }
+
+  /**
    * Records a stall on a Collection's loop state, keeping the time of a
    * stall that already stood for the same reason. A clock-bound stall is
-   * logged at `warn` when it begins, naming the peer.
+   * logged at `warn` when it begins, naming the peer. The Collection's pull
+   * then stops for this cycle.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.replicaId {string}
@@ -1485,7 +1507,7 @@ export class ReplicationManager {
    * @param options.record {StoredReplica['record']}
    * @param options.reason {ReplicaStallReason}
    * @param options.detail {string}
-   * @returns {void}
+   * @returns {'pending'}
    */
   #recordStall({
     spaceId,
@@ -1503,7 +1525,7 @@ export class ReplicationManager {
     record: StoredReplica['record']
     reason: ReplicaStallReason
     detail: string
-  }): void {
+  }): 'pending' {
     const standing =
       collection.state === 'stalled' && collection.stall?.reason === reason
     if (!standing) {
@@ -1518,6 +1540,7 @@ export class ReplicationManager {
       since: standing ? collection.stall!.since : new Date().toISOString(),
       detail
     }
+    return 'pending'
   }
 
   /**
@@ -1608,6 +1631,14 @@ interface PullContext {
   peerSpaceId: string
   peerUrl: (path: string) => string
   record: StoredReplica['record']
+}
+
+/**
+ * The pull context of one Collection, with its id and its loop state.
+ */
+type CollectionPull = PullContext & {
+  collectionId: string
+  collection: ReplicaCollectionState
 }
 
 /**

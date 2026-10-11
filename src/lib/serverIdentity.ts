@@ -24,12 +24,12 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
   CountQuotaExceededError,
   PreconditionFailedError,
-  ProblemError,
   isServerFault
 } from '../errors.js'
 import { backendScoped } from './backendCache.js'
 import { etagOf } from './etag.js'
-import { resolveWebvhController } from './webvhController.js'
+import { logDid, resolveWebvhController } from './webvhController.js'
+import { readWebvhLogResource } from './webvhLogLocation.js'
 import {
   AUXILIARY_SPACE_TYPE,
   SERVER_INSTANCE_SPACE_TYPE,
@@ -74,6 +74,49 @@ export async function createServerSigningKey({
 }): Promise<ServerSigningKey> {
   const keyPair = await Ed25519VerificationKey.generate({ seed })
   return { keyPair, exportSigningKey: `did:key:${keyPair.publicKeyMultibase}` }
+}
+
+/**
+ * The id the export-signing key carries as a method of the server's DID,
+ * `{serverDid}#{publicKeyMultibase}`: the method export provenance and sync
+ * invocations sign with.
+ * @param options {object}
+ * @param options.serverDid {string}
+ * @param options.signingKey {ServerSigningKey}
+ * @returns {string}
+ */
+export function serverMethodId({
+  serverDid,
+  signingKey
+}: {
+  serverDid: string
+  signingKey: ServerSigningKey
+}): string {
+  return `${serverDid}#${signingKey.keyPair.publicKeyMultibase}`
+}
+
+/**
+ * The export-signing key pair named as the method {@link serverMethodId} of
+ * the server's DID, so a signature it makes names that method.
+ * @param options {object}
+ * @param options.serverDid {string}
+ * @param options.signingKey {ServerSigningKey}
+ * @returns {Ed25519VerificationKey}
+ */
+export function serverKeyPair({
+  serverDid,
+  signingKey
+}: {
+  serverDid: string
+  signingKey: ServerSigningKey
+}): Ed25519VerificationKey {
+  const { publicKeyMultibase, privateKeyMultibase } = signingKey.keyPair
+  return new Ed25519VerificationKey({
+    id: serverMethodId({ serverDid, signingKey }),
+    controller: serverDid,
+    publicKeyMultibase,
+    privateKeyMultibase
+  })
 }
 
 /**
@@ -309,19 +352,12 @@ export async function readServerLog({
 }: {
   storage: StorageBackend
 }): Promise<Buffer | undefined> {
-  try {
-    const { resourceStream } = await storage.getResource({
-      spaceId: SERVER_SPACE_ID,
-      collectionId: SERVER_IDENTITY_COLLECTION_ID,
-      resourceId: WEBVH_LOG_RESOURCE_ID
-    })
-    return await buffer(resourceStream)
-  } catch (err) {
-    if (err instanceof ProblemError && err.statusCode === 404) {
-      return undefined
-    }
-    throw err
-  }
+  const stored = await readWebvhLogResource({
+    storage,
+    spaceId: SERVER_SPACE_ID,
+    collectionId: SERVER_IDENTITY_COLLECTION_ID
+  })
+  return stored === undefined ? undefined : await buffer(stored.resourceStream)
 }
 
 /**
@@ -341,8 +377,7 @@ async function readHeadDid({
     return undefined
   }
   try {
-    const did = readLogFromString(logBytes.toString('utf8')).at(-1)?.state?.id
-    return typeof did === 'string' ? did : undefined
+    return logDid(readLogFromString(logBytes.toString('utf8')))
   } catch {
     return undefined
   }

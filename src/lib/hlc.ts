@@ -85,6 +85,17 @@ export function stampOf(
 }
 
 /**
+ * The write stamp members of a complete stamp, and nothing else of the record
+ * that carries it.
+ * @param stamp {WriteStamp}
+ * @returns {WriteStamp}
+ */
+export function pickStamp(stamp: WriteStamp): WriteStamp {
+  const { updatedAt, updatedAtCounter, originId } = stamp
+  return { updatedAt, updatedAtCounter, originId }
+}
+
+/**
  * A record without its write stamp members (`updatedAt`, `updatedAtCounter`,
  * `originId`). A Space or Collection Metadata body takes this form in the
  * Postgres `metadata` jsonb, whose stamp lives in its own columns, and an

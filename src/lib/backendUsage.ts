@@ -31,7 +31,7 @@ import type {
  * @param options.managedBy {string}   the backend's custody mode
  * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
  */
-export function backendUsageFields({
+function backendUsageFields({
   usageBytes,
   spaceTotalBytes,
   capacityBytes,

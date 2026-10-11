@@ -26,7 +26,7 @@ const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
  * The version package.json declares, read from disk at startup. This is the
  * repo's version, not necessarily the running build's -- see BUILD_INFO.
  */
-export const PACKAGE_VERSION = packageJson.version
+const PACKAGE_VERSION = packageJson.version
 
 /**
  * The software identity the service description's `instance` member
@@ -770,15 +770,38 @@ export function assertValidServerUrl(
  * @returns {string}   the trimmed, validated base URL
  */
 export function parseServerUrl(raw: string | undefined): string {
-  if (raw === undefined || raw.trim() === '') {
+  const serverUrl = trimmedOrUndefined(raw)
+  if (serverUrl === undefined) {
     throw new Error(
       `SERVER_URL is required: the server base URL used to build and match ` +
         `ZCap invocationTarget URLs (e.g. SERVER_URL='http://localhost:3002').`
     )
   }
-  const serverUrl = raw.trim()
   assertValidServerUrl(serverUrl)
   return serverUrl
+}
+
+/**
+ * An env value with its surrounding whitespace removed, or `undefined` when
+ * it is unset, empty, or whitespace-only.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string|undefined}
+ */
+function trimmedOrUndefined(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * The non-empty entries of a comma-separated env value, each trimmed.
+ * @param raw {string}   the raw env value
+ * @returns {string[]}
+ */
+function splitCsv(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0)
 }
 
 /**
@@ -806,10 +829,11 @@ function parseDecimalInteger(raw: string): number | undefined {
  * @returns {number}   the port
  */
 export function parsePort(raw: string | undefined): number {
-  if (raw === undefined || raw.trim() === '') {
+  const trimmed = trimmedOrUndefined(raw)
+  if (trimmed === undefined) {
     return DEFAULT_PORT
   }
-  const value = parseDecimalInteger(raw)
+  const value = parseDecimalInteger(trimmed)
   if (value === undefined || value < 1 || value > 65535) {
     throw new Error(
       `PORT must be an integer between 1 and 65535; got "${raw}".`
@@ -826,10 +850,7 @@ export function parsePort(raw: string | undefined): number {
  * @returns {string}   the trimmed host
  */
 export function parseHost(raw: string | undefined): string {
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_HOST
-  }
-  return raw.trim()
+  return trimmedOrUndefined(raw) ?? DEFAULT_HOST
 }
 
 /**
@@ -875,10 +896,7 @@ export function loopbackPortMismatch({
  * @returns {string|undefined}   the trimmed connection string, or `undefined`
  */
 function parseDatabaseUrl(raw: string | undefined): string | undefined {
-  if (raw === undefined || raw.trim() === '') {
-    return undefined
-  }
-  return raw.trim()
+  return trimmedOrUndefined(raw)
 }
 
 /**
@@ -892,10 +910,8 @@ function parseDatabaseUrl(raw: string | undefined): string | undefined {
  * @returns {string|undefined}   the resolved absolute path, or `undefined`
  */
 export function parseDataDir(raw: string | undefined): string | undefined {
-  if (raw === undefined || raw.trim() === '') {
-    return undefined
-  }
-  return path.resolve(raw.trim())
+  const dataDir = trimmedOrUndefined(raw)
+  return dataDir === undefined ? undefined : path.resolve(dataDir)
 }
 
 /**
@@ -942,11 +958,11 @@ export function parseKmsRecordKekRegistry({
   keks?: string
   currentKek?: string
 }): KmsRecordKekRegistry | undefined {
-  const kekSet = kek !== undefined && kek.trim() !== ''
-  const keksSet = keks !== undefined && keks.trim() !== ''
-  const currentSet = currentKek !== undefined && currentKek.trim() !== ''
+  const kekValue = trimmedOrUndefined(kek)
+  const keksValue = trimmedOrUndefined(keks)
+  const currentValue = trimmedOrUndefined(currentKek)
 
-  if (kekSet && keksSet) {
+  if (kekValue !== undefined && keksValue !== undefined) {
     throw new Error(
       'Set only one of KMS_RECORD_KEK or KMS_RECORD_KEKS, not both (ambiguous).'
     )
@@ -955,22 +971,16 @@ export function parseKmsRecordKekRegistry({
   // Build the ordered registry: each KEK keyed by its derived id, in config
   // order (the first entry is the default current KEK).
   const registry = new Map<string, RecordKek>()
-  const order: RecordKek[] = []
 
-  if (kekSet) {
-    const parsed = parseKekMultibase(kek!.trim())
+  if (kekValue !== undefined) {
+    const parsed = parseKekMultibase(kekValue)
     registry.set(parsed.id, parsed)
-    order.push(parsed)
-  } else if (keksSet) {
-    let position = 0
-    for (const entry of keks!.split(',')) {
-      const trimmed = entry.trim()
-      if (trimmed === '') {
-        continue // empty entries are ignored (like WAS_ENABLED_BACKENDS)
-      }
-      position += 1
+  } else if (keksValue !== undefined) {
+    // Empty entries are ignored (like WAS_ENABLED_BACKENDS) and not counted.
+    for (const [index, entry] of splitCsv(keksValue).entries()) {
+      const position = index + 1
       const parsed = parseKekMultibase(
-        trimmed,
+        entry,
         `KMS_RECORD_KEKS entry ${position}`
       )
       if (registry.has(parsed.id)) {
@@ -980,14 +990,13 @@ export function parseKmsRecordKekRegistry({
         )
       }
       registry.set(parsed.id, parsed)
-      order.push(parsed)
     }
   }
 
   // No KEK material at all (all unset, or a list of only empty entries): a
   // dangling KMS_RECORD_CURRENT_KEK is an error; otherwise encryption is off.
   if (registry.size === 0) {
-    if (currentSet) {
+    if (currentValue !== undefined) {
       throw new Error(
         'KMS_RECORD_CURRENT_KEK is set but no KEK is configured; ' +
           'set KMS_RECORD_KEK or KMS_RECORD_KEKS.'
@@ -996,9 +1005,10 @@ export function parseKmsRecordKekRegistry({
     return undefined
   }
 
-  const currentKekId = currentSet
-    ? resolveCurrentKekId(currentKek!.trim(), registry)
-    : order[0]!.id
+  const currentKekId =
+    currentValue !== undefined
+      ? resolveCurrentKekId(currentValue, registry)
+      : registry.keys().next().value!
   return { keks: registry, currentKekId }
 }
 
@@ -1050,13 +1060,14 @@ function parseLimit(
   name: string,
   quantity: string
 ): number | undefined {
-  if (raw === undefined || raw.trim() === '') {
+  const trimmed = trimmedOrUndefined(raw)
+  if (trimmed === undefined) {
     return undefined
   }
-  if (raw.trim().toLowerCase() === 'unlimited') {
+  if (trimmed.toLowerCase() === 'unlimited') {
     return Infinity
   }
-  const value = parseDecimalInteger(raw)
+  const value = parseDecimalInteger(trimmed)
   if (value === undefined) {
     throw new Error(
       `${name} must be ${quantity}, or "unlimited"; got "${raw}".`
@@ -1181,10 +1192,7 @@ function parseEnabledBackends(raw: string | undefined): string[] | undefined {
   if (raw === undefined) {
     return undefined
   }
-  const providers = raw
-    .split(',')
-    .map(entry => entry.trim())
-    .filter(entry => entry.length > 0)
+  const providers = splitCsv(raw)
   return providers.length > 0 ? providers : undefined
 }
 
@@ -1224,7 +1232,7 @@ function parseOnboardingToken(raw: string | undefined): string | undefined {
  * @param raw {string|undefined}   the raw env value
  * @returns {boolean}
  */
-export function parseDiscloseVersion(raw: string | undefined): boolean {
+function parseDiscloseVersion(raw: string | undefined): boolean {
   const value = raw?.trim().toLowerCase() ?? ''
   if (value === '' || value === 'true') {
     return true
@@ -1251,8 +1259,8 @@ export function parseDiscloseVersion(raw: string | undefined): boolean {
 export function parseServerKeySeed(
   raw: string | undefined
 ): Uint8Array | undefined {
-  const value = raw?.trim() ?? ''
-  if (value === '') {
+  const value = trimmedOrUndefined(raw)
+  if (value === undefined) {
     return undefined
   }
   try {
@@ -1275,8 +1283,8 @@ export function parseServerKeySeed(
  * @returns {IDID|undefined}
  */
 export function parseAdminDid(raw: string | undefined): IDID | undefined {
-  const value = raw?.trim() ?? ''
-  if (value === '') {
+  const value = trimmedOrUndefined(raw)
+  if (value === undefined) {
     return undefined
   }
   if (!isValidController(value)) {
@@ -1316,13 +1324,14 @@ export function parseOriginId(raw: string | undefined): string | undefined {
  * @param raw {string|undefined}   the raw env value
  * @returns {number|undefined}
  */
-export function parseReplicationClockBound(
+function parseReplicationClockBound(
   raw: string | undefined
 ): number | undefined {
-  if (raw === undefined || raw.trim() === '') {
+  const trimmed = trimmedOrUndefined(raw)
+  if (trimmed === undefined) {
     return undefined
   }
-  const value = parseDecimalInteger(raw)
+  const value = parseDecimalInteger(trimmed)
   if (value === undefined || value < 1) {
     throw new Error(
       `WAS_REPLICATION_CLOCK_BOUND_MS must be a positive integer number of ` +
@@ -1348,10 +1357,7 @@ export function parseWebvhBlocklist(
   if (raw === undefined) {
     return undefined
   }
-  const entries = raw
-    .split(',')
-    .map(entry => entry.trim())
-    .filter(entry => entry.length > 0)
+  const entries = splitCsv(raw)
   if (entries.length === 0) {
     return undefined
   }

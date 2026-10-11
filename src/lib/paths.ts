@@ -19,6 +19,24 @@
  */
 
 /**
+ * The absolute URL of a path on this server: `path` resolved against the
+ * server's base URL.
+ * @param options {object}
+ * @param options.path {string}   a path one of the builders below returns
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {string}
+ */
+export function absoluteUrl({
+  path,
+  serverUrl
+}: {
+  path: string
+  serverUrl: string
+}): string {
+  return new URL(path, serverUrl).toString()
+}
+
+/**
  * The service description (`/service`), the server-wide document every
  * response links to with the `service` relation. The specification fixes no
  * path for it; this is the one this server serves it at.
@@ -109,7 +127,7 @@ export function collectionPath({
   collectionId: string
   trailingSlash?: boolean
 }): string {
-  return `/space/${spaceId}/${collectionId}${trailingSlash ? '/' : ''}`
+  return `${spacePath({ spaceId })}/${collectionId}${trailingSlash ? '/' : ''}`
 }
 
 /**
@@ -129,7 +147,7 @@ export function resourcePath({
   collectionId: string
   resourceId: string
 }): string {
-  return `/space/${spaceId}/${collectionId}/${resourceId}`
+  return `${collectionPath({ spaceId, collectionId })}/${resourceId}`
 }
 
 /**
