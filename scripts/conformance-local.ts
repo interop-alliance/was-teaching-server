@@ -14,10 +14,17 @@
  * pnpm forwards them itself), e.g.
  * `pnpm conformance:local --grep chunk --reporter json`.
  *
+ * The server stores under a fresh temp dir (`WAS_DATA_DIR`), removed after the
+ * run, so a run never reads or leaves Spaces in the project `data/` directory.
+ * A `WAS_DATA_DIR` set in the environment takes precedence and is kept.
+ *
  * Usage: pnpm conformance:local
  */
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import process from 'node:process'
 
 const port = process.env.PORT ?? '3002'
@@ -75,8 +82,17 @@ function runConformance(): Promise<number> {
  */
 async function main(): Promise<void> {
   const serverLogs: string[] = []
+  const tempDataDir =
+    process.env.WAS_DATA_DIR === undefined
+      ? await mkdtemp(path.join(tmpdir(), 'was-conformance-'))
+      : undefined
   const server: ChildProcess = spawn('tsx', ['src/start.ts'], {
-    env: { ...process.env, SERVER_URL: serverUrl, PORT: port }
+    env: {
+      ...process.env,
+      SERVER_URL: serverUrl,
+      PORT: port,
+      ...(tempDataDir !== undefined && { WAS_DATA_DIR: tempDataDir })
+    }
   })
   server.stdout?.on('data', chunk => serverLogs.push(chunk.toString()))
   server.stderr?.on('data', chunk => serverLogs.push(chunk.toString()))
@@ -92,6 +108,16 @@ async function main(): Promise<void> {
     }
   } finally {
     server.kill('SIGTERM')
+    if (tempDataDir !== undefined) {
+      // Let the server release its store lock before the dir goes away.
+      if (server.exitCode === null && server.signalCode === null) {
+        await new Promise<void>(resolve => {
+          server.once('exit', () => resolve())
+          setTimeout(resolve, 5_000).unref()
+        })
+      }
+      await rm(tempDataDir, { recursive: true, force: true })
+    }
   }
   process.exit(exitCode)
 }

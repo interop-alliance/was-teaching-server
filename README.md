@@ -368,7 +368,9 @@ ZCap `invocationTarget` URLs embed the full host:port, so even `localhost` vs
 For a local run, `pnpm conformance:local` does the whole dance for you: it spins
 up the server on a fixed local URL, waits until it answers, runs the CLI against
 that same URL, and tears the server down afterward (even if the suite fails) —
-so the two URLs can't drift out of sync.
+so the two URLs can't drift out of sync. The server stores under a fresh temp
+dir that is removed after the run, so nothing lands in the project `data/`
+directory (set `WAS_DATA_DIR` to keep a run's data instead).
 
 ```bash
 # One-shot local run (recommended). Override the port with PORT=... if 3002 is

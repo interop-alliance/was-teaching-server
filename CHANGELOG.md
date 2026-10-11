@@ -18,6 +18,9 @@
   non-JSON blob bytes; the Postgres apply guard and governed-log writes use one
   statement each; `List Spaces` filters by controller before sorting.
 - `fs-json-store` is no longer a dependency.
+- `pnpm conformance:local` runs the server over a fresh temp data dir, removed
+  after the run, instead of the project `data/` directory. An explicit
+  `WAS_DATA_DIR` still wins.
 - `pnpm run lint` now refuses hand-written copies of the shared helpers
   (`absoluteUrl`, `didOfMethodId`, `isPlainObject`, `pickStamp`, `isEnoent`,
   `asList`, the root-capability prefix) and nested ternaries through
