@@ -126,6 +126,7 @@ import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import {
   hasCustomMembers,
   normalizeMetadataWrite,
+  resolveCollectionMetadataInput,
   restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceWrite
@@ -180,6 +181,7 @@ import type {
 import {
   runEqualityQuery,
   assertNoUniqueEqualityConflict,
+  declaredUniqueIndexesOf,
   findEqualityUniqueViolation
 } from '../lib/equalityIndex.js'
 import type {
@@ -248,7 +250,7 @@ import type {
   ImmutableUnder,
   MetadataValidatorParts,
   StoredCollectionLog,
-  CollectionTransitionContext,
+  CollectionMetadataInput,
   FeedDocument,
   KeystoreConfig,
   KmsKeyRecord,
@@ -636,7 +638,14 @@ export class FileSystemBackend implements StorageBackend {
    * Runs a write that creates a path inside a Space on the shared side of the
    * Space gate (see `#spaceGate`), so a concurrent container removal cannot
    * land in the middle of it. Shared, so writes to a Space still run
-   * concurrently with one another.
+   * concurrently with one another. With `exclusive` the write runs on the
+   * exclusive side instead, as a removal does: it is admitted once no write
+   * to the Space is in flight, and while it runs none is admitted. A
+   * Collection Metadata write takes it, so a composition that scans the
+   * Collection's Resources sees every Resource write that landed and none in
+   * flight. The gate admits readers ahead of a waiting writer, so like a
+   * removal the write is delayed while writes to the Space keep overlapping;
+   * each shared section is a single file write, so the queue drains.
    *
    * The gate alone orders a write against a removal. It does not stop a write
    * whose shared acquisition comes after the removal released the exclusive
@@ -646,31 +655,44 @@ export class FileSystemBackend implements StorageBackend {
    * (`SpaceNotFoundError`, 404), and so must the Collection when
    * `container.collectionId` is given (`CollectionNotFoundError`, 404). No
    * removal can land between that check and the write. Only Update Space,
-   * which creates the Space, omits it.
+   * which creates the Space, omits it. The Collection Metadata object the
+   * check read is handed to the write, so a Resource write takes the
+   * Collection's `unique` index declarations from the record the gate covers
+   * rather than from a read made before it.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.container] {object}   the containers that must exist
    * @param [options.container.collectionId] {string}
    * @param [options.container.requestName] {string}   names the refused
    *   operation in the 404
-   * @param options.write {() => Promise<T>}   the write to run under the gate
+   * @param [options.exclusive] {boolean}   run on the exclusive side
+   * @param options.write {(collection?: StoredCollectionMetadata) => Promise<T>}
+   *   the write to run under the gate, handed the live Collection Metadata
+   *   object when `container.collectionId` is given
    * @returns {Promise<T>}
    */
   async #underSpaceWrite<T>({
     spaceId,
     container,
+    exclusive = false,
     write
   }: {
     spaceId: string
     container?: { collectionId?: string; requestName?: string }
-    write: () => Promise<T>
+    exclusive?: boolean
+    write: (collection?: StoredCollectionMetadata) => Promise<T>
   }): Promise<T> {
-    return this.#spaceGate.read(spaceId, async () => {
+    const guarded = async (): Promise<T> => {
       if (container) {
-        await this.#assertContainersExist({ spaceId, ...container })
+        return write(
+          await this.#assertContainersExist({ spaceId, ...container })
+        )
       }
       return write()
-    })
+    }
+    return exclusive
+      ? this.#spaceGate.write(spaceId, guarded)
+      : this.#spaceGate.read(spaceId, guarded)
   }
 
   /**
@@ -678,12 +700,13 @@ export class FileSystemBackend implements StorageBackend {
    * `.space.<id>.json`, and the Collection's `.collection.<id>.json` when a
    * `collectionId` is given. A tombstoned Collection has no Metadata object.
    * Called under the Space gate (see `#underSpaceWrite`), so the answer holds
-   * until the write finishes.
+   * until the write finishes. Resolves the live Collection Metadata object
+   * when a `collectionId` is given.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.requestName] {string}
-   * @returns {Promise<void>}
+   * @returns {Promise<StoredCollectionMetadata | undefined>}
    */
   async #assertContainersExist({
     spaceId,
@@ -693,16 +716,18 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId?: string
     requestName?: string
-  }): Promise<void> {
+  }): Promise<StoredCollectionMetadata | undefined> {
     if (!(await fileExists(this.#spaceMetadataPath(spaceId)))) {
       throw new SpaceNotFoundError({ requestName })
     }
     if (collectionId === undefined) {
-      return
+      return undefined
     }
-    if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
+    const collection = await this.#readLiveCollection({ spaceId, collectionId })
+    if (!collection) {
       throw new CollectionNotFoundError({ requestName })
     }
+    return collection
   }
 
   /**
@@ -3232,16 +3257,16 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionMetadata {CollectionMetadata}
+   * @param options.collectionMetadata {CollectionMetadataInput}   the object
+   *   to persist, or the request layer's composition callback, run atomically
+   *   with the write against the prior object and the Collection's history
+   *   log as of the lock
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Collection's `createdBy` on first write only
    * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
    *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Collection throws `PreconditionFailedError` (412)
-   * @param [options.assertTransition] {Function}   the request layer's
-   *   state-transition checks, run atomically with the write against the
-   *   prior object and the Collection's history log as of the lock
    * @returns {Promise<MetadataWriteResult<CollectionMetadata>>}   the
    *   Collection Metadata object's new validator (its `generation` and the
    *   stamp this write mints, local segment 0), whether the write created the
@@ -3250,31 +3275,37 @@ export class FileSystemBackend implements StorageBackend {
   async writeCollection({
     spaceId,
     collectionId,
-    collectionMetadata,
+    collectionMetadata: input,
     createdBy,
     ifMatch,
-    ifNoneMatch,
-    assertTransition
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId: string
-    collectionMetadata: CollectionMetadata
+    collectionMetadata: CollectionMetadataInput
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-    assertTransition?: (
-      context: CollectionTransitionContext
-    ) => void | Promise<void>
   }): Promise<MetadataWriteResult<CollectionMetadata>> {
     // Serialize the read-check-write under the per-Collection metadata lock so
-    // the `If-Match` compare-and-swap and the stamp are atomic with the write (two concurrent edits cannot clobber one another). A
-    // distinct lock namespace from the per-Resource / unique-scan locks: a
-    // metadata write and a Resource write touch different files. The Space
-    // gate wraps it, as on every path-creating write: this one creates the
-    // Collection dir, so the Space must still exist once the gate is held.
+    // the `If-Match` compare-and-swap and the stamp are atomic with the write
+    // (two concurrent edits cannot clobber one another). A distinct lock
+    // namespace from the per-Resource / unique-scan locks: a metadata write
+    // and a Resource write touch different files. The Space gate wraps it, as
+    // on every path-creating write: this one creates the Collection dir, so
+    // the Space must still exist once the gate is held.
+    //
+    // The write runs on the gate's exclusive side, as a container removal
+    // does: every Resource write of the Space in flight has landed before it
+    // runs, and none starts before it is done. A composition that scans the
+    // Collection's Resources (a `unique` declaration checks them for a
+    // duplicate) therefore sees every stored Resource, and a Resource write
+    // that starts after reads the declaration this write stores. Postgres
+    // gives the same guarantee through its Space row lock.
     return this.#underSpaceWrite({
       spaceId,
       container: {},
+      exclusive: true,
       write: () =>
         this.#writeMutex.run(
           this.#collectionMetaLockKey({ spaceId, collectionId }),
@@ -3307,19 +3338,16 @@ export class FileSystemBackend implements StorageBackend {
               ifNoneMatch
             })
 
-            // The request layer's state-transition checks (e.g. epoch
-            // append-only), re-evaluated here against the object just read
-            // under the lock, together with the governing history log as of
-            // the same lock: a log write takes this lock first, so the log
-            // cannot move between this read and the write below. The log is
-            // read only when a check will see it; a create has none, since
-            // the log goes with its Collection.
-            if (assertTransition) {
-              const log = prior
-                ? await this.getCollectionLog({ spaceId, collectionId })
-                : undefined
-              await assertTransition({ prior, log })
-            }
+            // The request layer's composition and its state-transition
+            // checks (e.g. epoch append-only), run here against the object
+            // just read under the lock, together with the governing history
+            // log as of the same lock: a log write takes this lock first, so
+            // the log cannot move between this read and the write below.
+            const collectionMetadata = await resolveCollectionMetadataInput({
+              input,
+              prior,
+              readLog: () => this.getCollectionLog({ spaceId, collectionId })
+            })
 
             // Count quota (create path only): a new Collection must not push its
             // Space past `maxCollectionsPerSpace`; overwriting an existing
@@ -4245,7 +4273,6 @@ export class FileSystemBackend implements StorageBackend {
     createdBy,
     epoch,
     writerId,
-    uniqueIndexes,
     immutable,
     ifMatch,
     ifNoneMatch
@@ -4257,7 +4284,6 @@ export class FileSystemBackend implements StorageBackend {
     createdBy?: IDID
     epoch?: string
     writerId?: string
-    uniqueIndexes?: NormalizedIndexDeclaration[]
     immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -4273,7 +4299,9 @@ export class FileSystemBackend implements StorageBackend {
     // Collection still exist, so a container removal can neither land in the
     // middle of the write nor precede it unnoticed.
     const container = { collectionId, requestName: 'Write Resource' }
-    const write = (assertUnique?: (prior?: MetaSidecar) => Promise<void>) =>
+    const writeLocked = (
+      assertUnique?: (prior?: MetaSidecar) => Promise<void>
+    ) =>
       this.#writeMutex.run(lockKey, () =>
         this.#writeResourceLocked({
           spaceId,
@@ -4307,53 +4335,61 @@ export class FileSystemBackend implements StorageBackend {
     // The scan itself runs inside the per-Resource lock (`assertUnique`), where
     // the write-once rule is decided first: a write that rule answers stores
     // nothing, so it claims nothing and skips the scan.
-    const { blindedUnique, equalityUnique } = uniqueClaimsOf({
-      input,
-      uniqueIndexes
-    })
-    if (blindedUnique || equalityUnique) {
-      return this.#underSpaceWrite({
-        spaceId,
-        container,
-        write: () =>
-          this.#writeMutex.run(
-            this.#collectionLockKey({ spaceId, collectionId }),
-            () =>
-              write(async prior => {
-                // One Collection scan serves both claims. The equality candidate set
-                // is the richer of the two (it also carries blobs and each sidecar's
-                // `custom`), so when the equality claim needs it the blinded
-                // candidates -- the live, parsable JSON documents -- are derived from
-                // it rather than re-read. A blinded-only claim reads JSON documents
-                // only, and the sidecars that judge them live.
-                const candidates = await this.#readEqualityCandidates({
-                  spaceId,
-                  collectionId,
-                  excludeResourceId: resourceId,
-                  jsonOnly: !equalityUnique
-                })
-                if (blindedUnique) {
-                  assertNoUniqueBlindedConflict({
-                    document: input.kind === 'json' ? input.data : undefined,
-                    candidates: jsonCandidatesFrom(candidates)
-                  })
-                }
-                if (equalityUnique) {
-                  // A content write does not change the Resource's `custom`, so the
-                  // custom side of the claim comes from the CURRENT stored sidecar,
-                  // which the write read under its lock (`prior`).
-                  assertNoUniqueEqualityConflict({
-                    indexes: uniqueIndexes!,
-                    content: input.kind === 'json' ? input.data : undefined,
-                    custom: prior?.custom,
-                    candidates
-                  })
-                }
+    // The declarations come from the Collection Metadata object the Space
+    // gate hands over, read under the gate: a declaring Metadata write runs
+    // on the gate's exclusive side, so it either landed before this read, and
+    // binds this write, or waits until this write is done and scans it.
+    return this.#underSpaceWrite({
+      spaceId,
+      container,
+      write: collection => {
+        const uniqueIndexes = declaredUniqueIndexesOf({
+          collectionMetadata: collection
+        })
+        const { blindedUnique, equalityUnique } = uniqueClaimsOf({
+          input,
+          uniqueIndexes
+        })
+        if (!blindedUnique && !equalityUnique) {
+          return writeLocked()
+        }
+        return this.#writeMutex.run(
+          this.#collectionLockKey({ spaceId, collectionId }),
+          () =>
+            writeLocked(async prior => {
+              // One Collection scan serves both claims. The equality candidate set
+              // is the richer of the two (it also carries blobs and each sidecar's
+              // `custom`), so when the equality claim needs it the blinded
+              // candidates -- the live, parsable JSON documents -- are derived from
+              // it rather than re-read. A blinded-only claim reads JSON documents
+              // only, and the sidecars that judge them live.
+              const candidates = await this.#readEqualityCandidates({
+                spaceId,
+                collectionId,
+                excludeResourceId: resourceId,
+                jsonOnly: !equalityUnique
               })
-          )
-      })
-    }
-    return this.#underSpaceWrite({ spaceId, container, write })
+              if (blindedUnique) {
+                assertNoUniqueBlindedConflict({
+                  document: input.kind === 'json' ? input.data : undefined,
+                  candidates: jsonCandidatesFrom(candidates)
+                })
+              }
+              if (equalityUnique) {
+                // A content write does not change the Resource's `custom`, so the
+                // custom side of the claim comes from the CURRENT stored sidecar,
+                // which the write read under its lock (`prior`).
+                assertNoUniqueEqualityConflict({
+                  indexes: uniqueIndexes,
+                  content: input.kind === 'json' ? input.data : undefined,
+                  custom: prior?.custom,
+                  candidates
+                })
+              }
+            })
+        )
+      }
+    })
   }
 
   /**
@@ -5814,7 +5850,6 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
-    uniqueIndexes,
     ifMatch,
     ifNoneMatch
   }: {
@@ -5823,7 +5858,6 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
-    uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<ResourceMetadataWriteResult | undefined> {
@@ -5915,50 +5949,50 @@ export class FileSystemBackend implements StorageBackend {
     // (unchanged by a metadata write), custom is the incoming value this write
     // sets -- before taking the per-Resource lock nested inside. Distinct-key
     // nesting cannot deadlock (plain writes never hold a Resource key while
-    // waiting on a Collection key).
-    if (uniqueIndexes !== undefined && uniqueIndexes.length > 0) {
-      return this.#underSpaceWrite({
-        spaceId,
-        container: { collectionId },
-        write: () =>
-          this.#writeMutex.run(
-            this.#collectionLockKey({ spaceId, collectionId }),
-            async () => {
-              // An absent Resource is the handler's 404, answered before any
-              // uniqueness claim is judged (as on the Postgres backend).
-              const { live } = await this.#readLiveFile({
-                collectionDir,
-                resourceId
-              })
-              if (!live) {
-                return undefined
-              }
-              assertNoUniqueEqualityConflict({
-                indexes: uniqueIndexes,
-                content: await this.#readJsonContentAt(live),
-                custom,
-                candidates: await this.#readEqualityCandidates({
-                  spaceId,
-                  collectionId,
-                  excludeResourceId: resourceId
-                })
-              })
-              return this.#writeMutex.run(
-                this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-                writeMeta
-              )
-            }
-          )
-      })
-    }
+    // waiting on a Collection key). The declarations come from the Collection
+    // Metadata object the Space gate hands over, as on a content write.
     return this.#underSpaceWrite({
       spaceId,
       container: { collectionId },
-      write: () =>
-        this.#writeMutex.run(
-          this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-          writeMeta
+      write: collection => {
+        const uniqueIndexes = declaredUniqueIndexesOf({
+          collectionMetadata: collection
+        })
+        if (uniqueIndexes.length === 0) {
+          return this.#writeMutex.run(
+            this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+            writeMeta
+          )
+        }
+        return this.#writeMutex.run(
+          this.#collectionLockKey({ spaceId, collectionId }),
+          async () => {
+            // An absent Resource is the handler's 404, answered before any
+            // uniqueness claim is judged (as on the Postgres backend).
+            const { live } = await this.#readLiveFile({
+              collectionDir,
+              resourceId
+            })
+            if (!live) {
+              return undefined
+            }
+            assertNoUniqueEqualityConflict({
+              indexes: uniqueIndexes,
+              content: await this.#readJsonContentAt(live),
+              custom,
+              candidates: await this.#readEqualityCandidates({
+                spaceId,
+                collectionId,
+                excludeResourceId: resourceId
+              })
+            })
+            return this.#writeMutex.run(
+              this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+              writeMeta
+            )
+          }
         )
+      }
     })
   }
 

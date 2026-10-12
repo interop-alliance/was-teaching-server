@@ -17,7 +17,6 @@ Ready:
 - WAS-92 [M] (fs) Filesystem GET can observe a Resource with no validator
   mid-write
 - WAS-132 [M] (*) A present but unparseable `If-None-Match` on a write is a 400
-- WAS-134 [M] (*) Compose Update Collection under the lock
 - WAS-135 [M] (fs) Torn-run ordering in the filesystem backend's delete and
   update paths
 - WAS-136 [M] (*) Backend registry lifecycle: cache, immutability, in-use
@@ -305,31 +304,6 @@ is deliberate. Reused for writes it turns a guarded create into an unconditional
 replace: the loser of a provisioning race rewrites the winner's `controller` or
 `type`, with a 204 to both. Node joins duplicate `If-None-Match` headers with
 `, `, so a client library plus a wrapper that both set `*` produce `*, *`.
-
-### WAS-134: [M] (*) Compose Update Collection under the lock
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: consistency, plaintext-indexes, backend
-- discovered-from: whole-codebase review (2026-09-17), verified (19 of 20
-  trials)
-- acceptance:
-  - [ ] The carry-forward of `plaintext`, `backend` and the other preserved
-        members is computed from the record read under the `cmeta:` lock, not
-        from the pre-verification read (move composition into the
-        `assertTransition` callback, or have it return the object to persist)
-  - [ ] The unique-index declaration scan and the Resource write that reads the
-        declaration serialize on one lock, so a Resource write in flight during
-        a `unique: true` declaration cannot land a duplicate
-  - [ ] A test drives an unconditional rename concurrently with a `plaintext`
-        add and asserts the declaration survives
-
-The under-lock re-check re-runs assertions against the fresh record but the
-object being written was composed against the stale one, and assertions catch
-violations, not lost carry-forwards. A `unique: true` declaration disappears
-with a 204 to both writers, or a `backend` selection silently reverts to the
-default. The comment at the re-check claims the opposite.
 
 ### WAS-135: [M] (fs) Torn-run ordering in the filesystem backend's delete and update paths
 

@@ -255,11 +255,37 @@ the write stamped it. Create Space, Create Collection, and the create-by-`PUT`
 of a container's `meta` send that object through the read projection, and choose
 `201` or `204` from the backend's answer.
 
-The handler's own read happens before the lock. Two unconditional `PUT`s of one
-new Collection's `meta` can both see it absent, but only the first write creates
-it, and the second answers `204`. Update Space pins its write to its pre-read
-(`assertTransition`), and Create Space is a guarded create, so their create
-decision already matched the backend's.
+Update Collection composes the object it stores inside the backend's write, from
+the stored object the backend reads under the lock, so the members a full
+replacement carries forward when the body omits them (`plaintext`, `backend`,
+`generator`, a governed `revisions`) come from the record the write replaces.
+Composed from a read made before the lock, a rename racing a `unique` index
+declaration would store the object that read saw and drop the declaration, with
+a `204` to both writers. The descriptor checks run in the same callback against
+the same record. Since the backend evaluates `If-Match` and `If-None-Match`
+before it runs the callback, a stale validator answers `412` ahead of any
+refusal the body earns, such as an unknown `backend` (`409`) or a `plaintext`
+beside an existing `encryption` (`400`).
+
+A body that declares a `unique` index also runs its scan of the stored Resources
+in that callback. A Collection Metadata write runs with no Resource write of the
+Space in flight, so the scan and the write see every stored Resource and none
+that is still landing. Postgres gets this from the Space row lock every Resource
+write takes. The filesystem backend runs the write on the exclusive side of its
+Space gate, as a container removal does. The gate admits a Resource write ahead
+of a waiting exclusive write, so a Metadata write is delayed while writes to the
+Space keep overlapping, like a removal; that backend is built to be read, not
+for throughput. A registered data-plane backend's writes do not pass through
+this server's lock, so there the scan stays best-effort and the write-time check
+catches what it missed. A Resource write reads the Collection's `unique`
+declarations under its own lock rather than taking them from the handler, so a
+declaration that lands between the handler's read and the write still binds it.
+
+Two unconditional `PUT`s of one new Collection's `meta` can both see it absent
+before their writes, but only the first write creates it, and the second answers
+`204`. Update Space pins its write to its pre-read (`assertTransition`), and
+Create Space is a guarded create, so their create decision already matched the
+backend's.
 
 ## Policies as versioned records
 

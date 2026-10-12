@@ -5996,3 +5996,41 @@ two new top-level stamp members widen it. The choice is a wire decision.
 Superseded by WAS-133 (the Resource `/meta` validator covers every member it
 serves), done 2026-10-05, which chose the first option: the `/meta` `ETag` is
 the content-first composite of both records' validators. Nothing further to do.
+
+### WAS-134: [M] (*) Compose Update Collection under the lock
+
+- status: done
+- done: 2026-10-12
+- priority: medium
+- backend: *
+- labels: consistency, plaintext-indexes, backend
+- discovered-from: whole-codebase review (2026-09-17), verified (19 of 20
+  trials)
+- acceptance:
+  - [x] The carry-forward of `plaintext`, `backend` and the other preserved
+        members is computed from the record read under the `cmeta:` lock, not
+        from the pre-verification read (move composition into the
+        `assertTransition` callback, or have it return the object to persist)
+  - [x] The unique-index declaration scan and the Resource write that reads the
+        declaration serialize on one lock, so a Resource write in flight during
+        a `unique: true` declaration cannot land a duplicate
+  - [x] A test drives an unconditional rename concurrently with a `plaintext`
+        add and asserts the declaration survives
+
+The under-lock re-check re-runs assertions against the fresh record but the
+object being written was composed against the stale one, and assertions catch
+violations, not lost carry-forwards. A `unique: true` declaration disappears
+with a 204 to both writers, or a `backend` selection silently reverts to the
+default. The comment at the re-check claims the opposite.
+
+Shipped 2026-10-12: `writeCollection` takes a composition callback in place of
+`assertTransition` and persists what it returns; Update Collection composes and
+runs the newly-unique scan inside it. Both backends read a Collection's `unique`
+declarations under their own lock on a Resource write (the `uniqueIndexes`
+option is gone). A Collection Metadata write excludes the Space's Resource
+writes: the filesystem backend runs it on the exclusive side of the Space gate,
+as a removal, and the Postgres Space row lock already serialized the two. A
+shared-side-first attempt with a retry on the exclusive side was considered and
+dropped: the filesystem backend is built to be read, so one rule, the same as a
+removal's, beats a saved drain on a rename. A stale `If-Match` now answers 412
+ahead of a body-derived 400/409, recorded in the CHANGELOG.

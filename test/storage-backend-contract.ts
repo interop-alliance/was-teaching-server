@@ -3970,26 +3970,22 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await harness.cleanup()
       })
 
-      it('invokes assertTransition with undefined on a create', async () => {
+      it('hands the composition callback undefined on a create', async () => {
         const { backend } = harness
         let seen: unknown = 'unset'
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-create',
-          collectionMetadata: {
-            id: 'at-create',
-            type: ['Collection'],
-            name: 'Created'
-          },
-          assertTransition: ({ prior }) => {
+          collectionMetadata: ({ prior }) => {
             seen = prior
+            return { id: 'at-create', type: ['Collection'], name: 'Created' }
           }
         })
-        // A create has no prior object to re-read under the lock.
+        // A create has no prior object to read under the lock.
         assert.equal(seen, undefined)
       })
 
-      it('invokes assertTransition with the current object (and its validator) on an update', async () => {
+      it('hands the composition callback the current object (and its validator) on an update, and persists what it returns', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
@@ -4001,27 +3997,35 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         })
         let seen: StoredCollectionMetadata | undefined
-        await backend.writeCollection({
+        const written = await backend.writeCollection({
           spaceId,
           collectionId: 'at-update',
-          collectionMetadata: {
-            id: 'at-update',
-            type: ['Collection'],
-            name: 'Second'
-          },
-          assertTransition: ({ prior }) => {
+          collectionMetadata: ({ prior }) => {
             seen = prior
+            return {
+              id: 'at-update',
+              type: ['Collection'],
+              name: `Second after ${prior?.name}`
+            }
           }
         })
-        // The callback sees the freshly re-read current object, carrying
-        // the stamp it is about to supersede.
+        // The callback sees the current object read under the lock, carrying
+        // the stamp it is about to supersede, and composes the stored object
+        // from it.
         assert.equal(seen?.name, 'First')
         assert.equal(seen?.metaLocal, 0)
         assert.ok(seen?.updatedAt)
         assert.ok(seen?.metaGeneration)
+        assert.equal(written.created, false)
+        assert.equal(written.metadata.name, 'Second after First')
+        const stored = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId: 'at-update'
+        })
+        assert.equal(stored?.name, 'Second after First')
       })
 
-      it('invokes assertTransition with the governing history log as of the lock', async () => {
+      it('hands the composition callback the governing history log as of the lock', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
@@ -4036,13 +4040,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-log',
-          collectionMetadata: {
-            id: 'at-log',
-            type: ['Collection'],
-            name: 'Not yet governed'
-          },
-          assertTransition: ({ log }) => {
+          collectionMetadata: ({ log }) => {
             seenLog = log
+            return {
+              id: 'at-log',
+              type: ['Collection'],
+              name: 'Not yet governed'
+            }
           }
         })
         // No log yet: the callback is handed none.
@@ -4056,13 +4060,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-log',
-          collectionMetadata: {
-            id: 'at-log',
-            type: ['Collection'],
-            name: 'Governed now'
-          },
-          assertTransition: ({ log }) => {
+          collectionMetadata: ({ log }) => {
             seenLog = log
+            return { id: 'at-log', type: ['Collection'], name: 'Governed now' }
           }
         })
         // The very next Metadata write sees the log just written, body and
@@ -4071,7 +4071,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(formatEtag(seenLog!.validator), formatEtag(created!))
       })
 
-      it('a throwing assertTransition aborts the write (object and validator unchanged)', async () => {
+      it('a throwing composition callback aborts the write (object and validator unchanged)', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
@@ -4091,13 +4091,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend.writeCollection({
             spaceId,
             collectionId: 'at-abort',
-            collectionMetadata: {
-              id: 'at-abort',
-              type: ['Collection'],
-              name: 'Clobber'
-            },
-            assertTransition: () => {
-              throw new TransitionRejected('rail refused the transition')
+            collectionMetadata: () => {
+              throw new TransitionRejected('the transition was refused')
             }
           })
         ).rejects.toBeInstanceOf(TransitionRejected)
@@ -5757,6 +5752,78 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         assert.ok('documents' in result)
         assert.deepEqual(result.documents, [])
+      })
+    })
+
+    describe('unique plaintext indexes (declaration read under the lock)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-unique-plaintext'
+
+      function write(resourceId: string, data: unknown) {
+        return harness.backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId,
+          input: jsonInput(data)
+        })
+      }
+
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('a write takes the unique declaration from the stored Collection Metadata object, with no option passed', async () => {
+        await write('holder', { slug: 'one' })
+        // No declaration yet: a duplicate is admitted.
+        await write('twin', { slug: 'one' })
+        await harness.backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'twin',
+          input: jsonInput({ slug: 'other' })
+        })
+        await harness.backend.writeCollection({
+          spaceId,
+          collectionId: 'col',
+          collectionMetadata: {
+            id: 'col',
+            type: ['Collection'],
+            plaintext: { indexes: [{ name: 'slug', unique: true }] }
+          }
+        })
+        await expect(write('claimant', { slug: 'one' })).rejects.toBeInstanceOf(
+          UniqueAttributeConflictError
+        )
+        // A `custom`-sourced claim reads the same declaration.
+        await harness.backend.writeCollection({
+          spaceId,
+          collectionId: 'col',
+          collectionMetadata: {
+            id: 'col',
+            type: ['Collection'],
+            plaintext: {
+              indexes: [{ name: 'name', source: 'custom', unique: true }]
+            }
+          }
+        })
+        await harness.backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'holder',
+          custom: { name: 'same', tags: [] }
+        })
+        await expect(
+          harness.backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'twin',
+            custom: { name: 'same', tags: [] }
+          })
+        ).rejects.toBeInstanceOf(UniqueAttributeConflictError)
       })
     })
 

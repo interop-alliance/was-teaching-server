@@ -117,6 +117,7 @@ import {
 import {
   hasCustomMembers,
   normalizeMetadataWrite,
+  resolveCollectionMetadataInput,
   restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceWrite
@@ -152,6 +153,7 @@ import type {
 import {
   runEqualityQuery,
   assertNoUniqueEqualityConflict,
+  declaredUniqueIndexesOf,
   findEqualityUniqueViolation
 } from '../lib/equalityIndex.js'
 import type {
@@ -219,7 +221,7 @@ import type {
   CollectionLogResult,
   ImmutableUnder,
   StoredCollectionLog,
-  CollectionTransitionContext,
+  CollectionMetadataInput,
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
@@ -1069,13 +1071,20 @@ export class PostgresBackend implements StorageBackend {
    * Space no route can reach, which the next Space created under the same id
    * would adopt. Holding the Space row until commit keeps either delete from
    * landing after the check.
+   *
+   * Resolves the Collection's `unique: true` plaintext index declarations,
+   * read from the same row the liveness check reads, under the Space row
+   * lock every Collection Metadata write takes too: a declaring write either
+   * committed before this read, and binds the caller's write, or waits for
+   * this transaction and scans its row. Empty when no `collectionId` is
+   * given.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.requestName] {string}   names the refused operation in
    *   the 404
-   * @returns {Promise<void>}
+   * @returns {Promise<NormalizedIndexDeclaration[]>}
    */
   async #lockLiveContainers({
     client,
@@ -1087,7 +1096,7 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     collectionId?: string
     requestName?: string
-  }): Promise<void> {
+  }): Promise<NormalizedIndexDeclaration[]> {
     const { rows: spaceRows } = await client.query<{ live: boolean }>(
       `SELECT metadata IS NOT NULL AS live FROM spaces
         WHERE space_id = $1 FOR UPDATE`,
@@ -1097,17 +1106,17 @@ export class PostgresBackend implements StorageBackend {
       throw new SpaceNotFoundError({ requestName })
     }
     if (collectionId === undefined) {
-      return
+      return []
     }
-    // A tombstoned Collection has no Metadata object.
-    const { rows: collectionRows } = await client.query<{ live: boolean }>(
-      `SELECT metadata IS NOT NULL AND NOT deleted AS live FROM collections
-        WHERE space_id = $1 AND collection_id = $2`,
-      [spaceId, collectionId]
-    )
-    if (!collectionRows[0]?.live) {
+    const uniqueIndexes = await this.#declaredUniqueIndexes({
+      client,
+      spaceId,
+      collectionId
+    })
+    if (uniqueIndexes === undefined) {
       throw new CollectionNotFoundError({ requestName })
     }
+    return uniqueIndexes
   }
 
   /**
@@ -1379,6 +1388,47 @@ export class PostgresBackend implements StorageBackend {
       prior = await lockingSelect()
     }
     return prior
+  }
+
+  /**
+   * The Collection's `unique: true` plaintext index declarations, read from
+   * its live row inside the caller's transaction. Called after the Space row
+   * lock, which every Collection Metadata write takes too, so the declaration
+   * read here is the one in force for the rest of the transaction.
+   * `#lockLiveContainers` reads through it for the writes that refuse an
+   * absent Collection; a write that answers the absent case itself calls it
+   * directly. A tombstoned Collection has no Metadata object.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<NormalizedIndexDeclaration[] | undefined>}   `undefined`
+   *   when the Collection has no live Metadata object
+   */
+  async #declaredUniqueIndexes({
+    client,
+    spaceId,
+    collectionId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+  }): Promise<NormalizedIndexDeclaration[] | undefined> {
+    const { rows } = await client.query<{
+      plaintext: CollectionMetadata['plaintext'] | null
+    }>(
+      `SELECT metadata->'plaintext' AS plaintext FROM collections
+        WHERE space_id = $1 AND collection_id = $2
+          AND metadata IS NOT NULL AND NOT deleted`,
+      [spaceId, collectionId]
+    )
+    const [row] = rows
+    if (row === undefined) {
+      return undefined
+    }
+    return declaredUniqueIndexesOf({
+      collectionMetadata: { plaintext: row.plaintext ?? undefined }
+    })
   }
 
   /**
@@ -1822,16 +1872,15 @@ export class PostgresBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionMetadata {CollectionMetadata}
+   * @param options.collectionMetadata {CollectionMetadataInput}   the object
+   *   to persist, or the request layer's composition callback, run against
+   *   the row just read under its lock, the history log columns included
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Collection's `createdBy` on first write only
    * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
    *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Collection throws `PreconditionFailedError` (412)
-   * @param [options.assertTransition] {Function}   the request layer's
-   *   state-transition checks, run against the row just read under its lock,
-   *   the history log columns included
    * @returns {Promise<MetadataWriteResult<CollectionMetadata>>}   the
    *   Collection's new validator (its `generation` and the stamp this write
    *   mints, local segment 0), whether the write created the Collection (a
@@ -1840,21 +1889,17 @@ export class PostgresBackend implements StorageBackend {
   async writeCollection({
     spaceId,
     collectionId,
-    collectionMetadata,
+    collectionMetadata: input,
     createdBy,
     ifMatch,
-    ifNoneMatch,
-    assertTransition
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId: string
-    collectionMetadata: CollectionMetadata
+    collectionMetadata: CollectionMetadataInput
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-    assertTransition?: (
-      context: CollectionTransitionContext
-    ) => void | Promise<void>
   }): Promise<MetadataWriteResult<CollectionMetadata>> {
     return this.#withTransaction(async client => {
       // Serialize all Collection writes within the Space on its space row: the
@@ -1864,7 +1909,10 @@ export class PostgresBackend implements StorageBackend {
       // `maxCollectionsPerSpace`), and two creates of the *same* id could
       // both pass a guarded create. It is also the first lock of the
       // backend-wide order (`#lockSpaceRow`), and refuses a Space that has no
-      // Metadata object.
+      // Metadata object. Every Resource write of the Space takes the same row
+      // lock, so a composition that scans the Resources sees every write that
+      // committed and none that is in flight, as on the filesystem backend's
+      // Space gate.
       await this.#lockLiveContainers({ client, spaceId })
       // Lock the Collection row (if any) and read its current Metadata object
       // and validator, so the `If-Match` compare-and-swap, the transition
@@ -1897,10 +1945,14 @@ export class PostgresBackend implements StorageBackend {
         ifMatch,
         ifNoneMatch
       })
-      // The request layer's state-transition checks (e.g. epoch append-only),
-      // re-evaluated here against the row just read under the lock, its
-      // history log included.
-      await assertTransition?.({ prior, log: logResultFromRow(rows[0]) })
+      // The request layer's composition and its state-transition checks
+      // (e.g. epoch append-only), run here against the row just read under
+      // the lock, its history log included.
+      const collectionMetadata = await resolveCollectionMetadataInput({
+        input,
+        prior,
+        readLog: async () => logResultFromRow(rows[0])
+      })
       // Count quota (create path only): a create is no row or a tombstoned
       // row; writing one must not push the Space past
       // `maxCollectionsPerSpace` (spec "Quotas"). A tombstone does not count.
@@ -2707,7 +2759,6 @@ export class PostgresBackend implements StorageBackend {
     createdBy,
     epoch,
     writerId,
-    uniqueIndexes,
     immutable,
     ifMatch,
     ifNoneMatch
@@ -2719,7 +2770,6 @@ export class PostgresBackend implements StorageBackend {
     createdBy?: IDID
     epoch?: string
     writerId?: string
-    uniqueIndexes?: NormalizedIndexDeclaration[]
     immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -2730,7 +2780,9 @@ export class PostgresBackend implements StorageBackend {
       // First lock of the backend-wide order (`#lockSpaceRow`), before the
       // advisory and row locks below. Refuses a Space or Collection that has
       // no Metadata object.
-      await this.#lockLiveContainers({
+      // The Collection's `unique` declarations ride along, read under the
+      // Space row lock a declaring Metadata write also takes.
+      const uniqueIndexes = await this.#lockLiveContainers({
         client,
         spaceId,
         collectionId,
@@ -2838,7 +2890,7 @@ export class PostgresBackend implements StorageBackend {
           [spaceId, collectionId, resourceId]
         )
         assertNoUniqueEqualityConflict({
-          indexes: uniqueIndexes!,
+          indexes: uniqueIndexes,
           content: jsonDocument,
           custom: selfRows[0]?.custom ?? undefined,
           candidates: await this.#readEqualityCandidates(client, {
@@ -3385,7 +3437,6 @@ export class PostgresBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
-    uniqueIndexes,
     ifMatch,
     ifNoneMatch
   }: {
@@ -3394,7 +3445,6 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
-    uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<ResourceMetadataWriteResult | undefined> {
@@ -3408,9 +3458,17 @@ export class PostgresBackend implements StorageBackend {
       // `custom`-sourced attribute (the `equality-query` feature). When the
       // Collection declares any unique index, take the per-Collection advisory
       // lock (held to commit, serializing concurrent claimants) so the
-      // conflict scan below is atomic with the write.
-      const equalityUnique =
-        uniqueIndexes !== undefined && uniqueIndexes.length > 0
+      // conflict scan below is atomic with the write. The declarations are
+      // read under the Space row lock, as on a content write.
+      // An absent Collection declares none; its Resource is absent too, which
+      // is the handler's 404, answered below.
+      const uniqueIndexes =
+        (await this.#declaredUniqueIndexes({
+          client,
+          spaceId,
+          collectionId
+        })) ?? []
+      const equalityUnique = uniqueIndexes.length > 0
       if (equalityUnique) {
         await this.#lockCollectionUniqueness({ client, spaceId, collectionId })
       }
@@ -3475,7 +3533,7 @@ export class PostgresBackend implements StorageBackend {
       if (equalityUnique) {
         // Custom is the incoming value this write sets.
         assertNoUniqueEqualityConflict({
-          indexes: uniqueIndexes!,
+          indexes: uniqueIndexes,
           content: prior.content
             ? parseJsonOrUndefined(prior.content)
             : undefined,

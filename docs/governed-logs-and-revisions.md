@@ -66,9 +66,9 @@ guarded create may move a member off its default, but may not change one the
 stored object sets to another value (`revisions-immutable`, 409).
 
 The derivation is memoized per backend by the log's validator (see
-[The descriptor cache](#the-descriptor-cache)). Update Collection's recheck
-under the lock derives from the log the backend hands its `assertTransition`
-callback, so a Metadata write parses the log at most once.
+[The descriptor cache](#the-descriptor-cache)). Update Collection composes under
+the lock, from the log the backend hands its composition callback, so a Metadata
+write parses the log at most once.
 
 ## Log writes
 

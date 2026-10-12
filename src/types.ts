@@ -678,15 +678,39 @@ export type ImmutableUnder = (context: {
  * Space or Delete Collection.
  */
 /**
- * What a Collection Metadata write's `assertTransition` check is handed,
- * read under the backend's per-Collection lock: the current object (`prior`,
+ * What a Collection Metadata write's composition callback is handed, read
+ * under the backend's per-Collection lock: the current object (`prior`,
  * `undefined` on a create) and the Collection's governing history log
  * (`log`, `undefined` when it has none).
+ *
+ * The write runs with no Resource write of the Space in flight: every one
+ * that started has finished, and none starts until the write is done (the
+ * filesystem backend's Space gate, exclusive side; the Postgres Space row
+ * lock). A composition that scans the Collection's Resources (a
+ * `unique: true` declaration checks the stored Resources for a duplicate)
+ * therefore sees every stored Resource, and a Resource write that starts after
+ * reads the declaration the write stores.
  */
 export interface CollectionTransitionContext {
   prior?: StoredCollectionMetadata
   log?: CollectionLogResult
 }
+
+/**
+ * The object a Collection Metadata write persists: either the object itself,
+ * or a callback the backend runs under its lock, handed the current record
+ * (`CollectionTransitionContext`), that returns it. The request layer passes
+ * the callback, so the members a full-replacement write carries forward from
+ * the stored object (`plaintext`, `backend`, `generator`, a governed
+ * `revisions`) are composed from the record the write replaces, not from an
+ * earlier read, and the state-transition checks run against that same record.
+ * Throwing aborts the write.
+ */
+export type CollectionMetadataInput =
+  | CollectionMetadata
+  | ((
+      context: CollectionTransitionContext
+    ) => CollectionMetadata | Promise<CollectionMetadata>)
 
 /**
  * One document of a Collection's changes feed (`StorageBackend.changesSince`),
@@ -1023,27 +1047,27 @@ export interface StorageBackend {
   writeCollection(options: {
     spaceId: string
     collectionId: string
-    collectionMetadata: CollectionMetadata
+    /**
+     * The object to persist, or a callback that composes it. The callback
+     * runs atomically with the write (inside the backend's per-Collection
+     * lock / row-locking transaction), after the precondition, against the
+     * freshly re-read current object (`undefined` on a create) and the
+     * Collection's governing history log as of the same lock (`undefined`
+     * when it has none). It carries the request layer's composition and its
+     * state-transition checks -- the carry-forward of an omitted `plaintext`
+     * or `backend`, the epoch append-only rule, the refusal of a direct
+     * `encryption` write on a log-governed Collection -- which composed
+     * against a pre-lock read would lose or miss a concurrent write. The log
+     * is handed over rather than re-read by the callback, so it costs no
+     * second read and sees the log the lock covers. Since the precondition
+     * is evaluated first, a stale `If-Match` answers 412 ahead of any
+     * refusal the composition raises from the body.
+     */
+    collectionMetadata: CollectionMetadataInput
     /** DID of the invoker; recorded as `createdBy` on first write only */
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-    /**
-     * Invoked atomically with the write (inside the backend's per-Collection
-     * lock / row-locking transaction) against the freshly re-read current
-     * object (`undefined` on a create) and the Collection's governing
-     * history log as of the same lock (`undefined` when it has none);
-     * throwing aborts the write. Carries the request layer's
-     * state-transition checks -- e.g. the epoch append-only rule, and the
-     * refusal of a direct `encryption` write on a log-governed Collection --
-     * which are otherwise evaluated against a pre-lock read and could miss a
-     * concurrent write. The log is handed over rather than re-read by the
-     * callback, so the recheck costs no second read and sees the log the
-     * lock covers.
-     */
-    assertTransition?: (
-      context: CollectionTransitionContext
-    ) => void | Promise<void>
   }): Promise<MetadataWriteResult<CollectionMetadata>>
   /**
    * Reads a Collection Metadata object. Resolves falsy when the Collection
@@ -1120,11 +1144,11 @@ export interface StorageBackend {
    * never self-conflicts.
    *
    * A backend carrying the `equality-query` feature enforces the analogous
-   * plaintext unique-attribute invariant when the request layer passes
-   * `uniqueIndexes` (the target Collection's normalized `unique: true`
-   * declarations, resolved from its control-plane description): a write whose
-   * extracted value for a `unique` content-sourced attribute is already claimed
-   * by a different live Resource in the same Collection rejects with
+   * plaintext unique-attribute invariant from the Collection's `unique: true`
+   * declarations (`plaintext.indexes`), which the backend reads under the
+   * same lock that excludes a concurrent declaration: a write whose extracted
+   * value for a `unique` content-sourced attribute is already claimed by a
+   * different live Resource in the same Collection rejects with
    * `UniqueAttributeConflictError` (409), evaluated atomically with the write
    * (see `lib/equalityIndex.ts`). Unlike the blinded invariant this is
    * Collection-level, so a conflict does not require the other side to opt in.
@@ -1134,14 +1158,6 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     input: ResourceInput
-    /**
-     * The target Collection's normalized `unique: true` index declarations,
-     * passed by the request layer only when the Collection declares any. The
-     * backend enforces the plaintext unique-attribute claim atomically with the
-     * write (409 `UniqueAttributeConflictError`), for the content-sourced
-     * entries a content write can claim.
-     */
-    uniqueIndexes?: NormalizedIndexDeclaration[]
     /**
      * DID of the party whose capability invocation authorized this write (the
      * signing key's DID, fragment stripped). Recorded as the Resource's
@@ -1268,15 +1284,6 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
-    /**
-     * The target Collection's normalized `unique: true` index declarations,
-     * passed by the request layer only when the Collection declares any. The
-     * backend enforces the plaintext unique-attribute claim atomically with the
-     * metadata write (409 `UniqueAttributeConflictError`), for the
-     * custom-sourced entries a metadata write can claim (see
-     * `lib/equalityIndex.ts`).
-     */
-    uniqueIndexes?: NormalizedIndexDeclaration[]
     /**
      * The client-declared key epoch (the `key-epochs` feature), a sibling of
      * `custom`. Unlike `custom` (full replacement), an OMITTED `epoch`
@@ -1562,7 +1569,10 @@ export interface StorageBackend {
    * `(name, value)`, resolving the first such `{ name, value }` or `undefined`
    * when none exists. The request layer runs it when a Collection update ADDS a
    * unique claim, rejecting a found violation with `id-conflict` (409) so a
-   * unique claim is never acknowledged over already-conflicting data.
+   * unique claim is never acknowledged over already-conflicting data. It runs
+   * inside the update's composition callback, under the `writeCollection`
+   * lock, which excludes this backend's Resource writes, so none is in flight
+   * while it scans.
    *
    * OPTIONAL: paired with `queryByEquality` on backends carrying the
    * `equality-query` feature. The Space and Collection are guaranteed to exist

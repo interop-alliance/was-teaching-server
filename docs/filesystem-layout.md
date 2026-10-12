@@ -269,7 +269,10 @@ alone. It is finished in four places:
 
 - `open()` finishes every such delete at boot.
 - A read of the Collection (`getCollectionMetadata`) finishes it on the
-  exclusive side of the Space gate.
+  exclusive side of the Space gate. The gate is reader-priority: an exclusive
+  write is admitted once no shared write is in flight, and a shared write
+  arriving meanwhile goes ahead of it, so an exclusive write is delayed while
+  writes to the Space keep overlapping.
 - A retried delete finishes it and answers 404.
 - A create or an import over the tombstone finishes it before writing the new
   life.
