@@ -6034,3 +6034,26 @@ shared-side-first attempt with a retry on the exclusive side was considered and
 dropped: the filesystem backend is built to be read, so one rule, the same as a
 removal's, beats a saved drain on a rename. A stale `If-Match` now answers 412
 ahead of a body-derived 400/409, recorded in the CHANGELOG.
+
+### WAS-145: [M] (*) Media-type edge cases in `resolveResourceInput`
+
+- status: done
+- done: 2026-10-12
+- priority: medium
+- backend: *
+- labels: correctness, content-types
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] The `+json` parser regex is anchored so `application/ld+jsonl` and
+        `application/ld+json-seq` take the binary path `isJsonContentType()`
+        promises, instead of handing a parsed object to `pipeline` (500)
+  - [x] The multipart branch matches case-insensitively and only
+        `multipart/form-data`; `multipart/mixed` and other multipart types are
+        stored as blobs or refused with a typed 415
+  - [x] A chunk `PUT` declaring a JSON media type is stored byte-verbatim
+        (chunks are ranges of a stream, not documents)
+  - [x] The multipart 413 names the limit that was enforced (the server
+        backend's), and `maxUploadBytes!` is not asserted on an optional field
+  - [x] A multipart create's 201 echoes the stored `content-type`, not the
+        request envelope's
+  - [x] `test/` covers each case

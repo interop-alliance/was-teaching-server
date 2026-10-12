@@ -97,8 +97,9 @@ this -- uploads are made programmatically by a signing client). The OPTIONAL
 `multipart/form-data` upload is supported as a convenience for the HTML-form
 workflow: it MUST carry exactly one file part, and the server buffers that part
 in memory bounded by `MAX_UPLOAD_BYTES`, so it is best suited to smaller
-uploads. `MAX_UPLOAD_BYTES` also bounds a JSON or text Resource write, which the
-server buffers in memory the same way.
+uploads. Any other `multipart/*` media type is stored as an opaque blob, like
+any other raw body. `MAX_UPLOAD_BYTES` also bounds a JSON or text Resource
+write, which the server buffers in memory the same way.
 
 #### Access Control Policy (public read)
 

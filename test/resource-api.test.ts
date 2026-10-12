@@ -15,6 +15,7 @@ import {
   etagGeneration,
   openTempBackend,
   responseOf,
+  signedMultipart,
   splitResourceMetaEtag,
   startTestServer,
   zcapClients
@@ -1319,6 +1320,45 @@ describe('Resource API', () => {
       assert.match(response.headers.get('content-type')!, /application\/jsonl/)
       assert.equal(await response.text(), body)
     })
+
+    it('[signed] a +json-prefixed non-JSON suffix (+jsonl, +json-seq) is stored as raw bytes', async () => {
+      // `application/ld+jsonl` and `application/ld+json-seq` are not JSON
+      // documents; the `+json` parser must not claim them by prefix.
+      const body = '{"a":1}\n{"a":2}\n'
+      for (const [resourceId, type] of [
+        ['ld.jsonl', 'application/ld+jsonl'],
+        ['ld.json-seq', 'application/ld+json-seq']
+      ] as const) {
+        await aliceCredentials.put(resourceId, new Blob([body], { type }))
+        const meta = await aliceCredentials.resource(resourceId).meta()
+        assert.equal(meta!.contentType, type)
+        assert.equal(meta!.size, Buffer.byteLength(body))
+        const response = await alice.was.request({
+          url: `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`,
+          method: 'GET'
+        })
+        assert.equal(response.status, 200)
+        assert.equal(await response.text(), body)
+      }
+    })
+
+    it('[signed] a multipart type other than form-data is stored as a raw blob', async () => {
+      const body =
+        '--x\r\ncontent-type: text/plain\r\n\r\nfirst\r\n--x\r\n' +
+        'content-type: text/plain\r\n\r\nsecond\r\n--x--\r\n'
+      const type = 'multipart/mixed; boundary=x'
+      await aliceCredentials.put('mixed', new Blob([body], { type }))
+      const meta = await aliceCredentials.resource('mixed').meta()
+      assert.equal(meta!.contentType, type)
+      assert.equal(meta!.size, Buffer.byteLength(body))
+      const response = await alice.was.request({
+        url: `${serverUrl}/space/${alice.space1.id}/credentials/mixed`,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get('content-type'), type)
+      assert.equal(await response.text(), body)
+    })
   })
 
   describe('Multipart upload (HTML-form convenience path)', () => {
@@ -1356,36 +1396,38 @@ describe('Resource API', () => {
       const text = await response.text()
       assert.equal(response.status, 201, text)
       const created = JSON.parse(text)
+      // The 201 names the stored content type (the file part's), not the
+      // request envelope's.
+      assert.equal(created['content-type'], 'application/json')
       const stored: any = await aliceCredentials.get(created.id)
       assert.equal(stored.name, 'form upload')
     })
 
+    it('[signed] the multipart media type is matched case-insensitively', async () => {
+      const response = await signedMultipart({
+        signer: alice.signer,
+        url: `${serverUrl}/space/${alice.space1.id}/credentials/`,
+        method: 'POST',
+        envelopeType: 'MULTIPART/FORM-DATA',
+        partType: 'application/json',
+        partBody: '{"id":"from-upper-form","name":"upper form upload"}'
+      })
+      const text = await response.text()
+      assert.equal(response.status, 201, text)
+      const created = JSON.parse(text)
+      assert.equal(created['content-type'], 'application/json')
+      const stored: any = await aliceCredentials.get(created.id)
+      assert.equal(stored.name, 'upper form upload')
+    })
+
     it('[signed] a multipart PUT replaces an existing Resource', async () => {
       await aliceCredentials.put('multipart-put', { name: 'before' })
-      const url = `${serverUrl}/space/${alice.space1.id}/credentials/multipart-put`
-      const boundary = 'was-test-boundary'
-      const body = new TextEncoder().encode(
-        `--${boundary}\r\n` +
-          'Content-Disposition: form-data; name="file"; filename="a.json"\r\n' +
-          'Content-Type: application/json\r\n\r\n' +
-          '{"name":"after"}\r\n' +
-          `--${boundary}--\r\n`
-      )
-      const headers = await signCapabilityInvocation({
-        url,
+      const response = await signedMultipart({
+        signer: alice.signer,
+        url: `${serverUrl}/space/${alice.space1.id}/credentials/multipart-put`,
         method: 'PUT',
-        headers: {
-          date: new Date().toUTCString(),
-          'content-type': `multipart/form-data; boundary=${boundary}`
-        },
-        body,
-        invocationSigner: alice.signer,
-        capabilityAction: 'PUT'
-      })
-      const response = await fetch(url, {
-        method: 'PUT',
-        headers,
-        body: new Blob([body])
+        partType: 'application/json',
+        partBody: '{"name":"after"}'
       })
       assert.ok(response.ok, await response.text())
       const stored: any = await aliceCredentials.get('multipart-put')
@@ -1424,6 +1466,94 @@ describe('Resource API', () => {
       assert.equal(response.status, 400)
       const problem: any = await response.json()
       assert.match(problem.type, /#invalid-authorization-header$/)
+    })
+  })
+
+  describe('Multipart upload under an unlimited cap', () => {
+    let openFastify: FastifyInstance, openServerUrl: string, openAlice: any
+    const openSpaceId = 'c1d9e4f3-5e3b-4d6c-8b2f-7a8e9f0b1c2d'
+
+    beforeAll(async () => {
+      ;({ fastify: openFastify, serverUrl: openServerUrl } =
+        await startTestServer({
+          backend: await openTempBackend({
+            prefix: 'was-multipart-open-',
+            maxUploadBytes: Infinity
+          })
+        }))
+      ;({ alice: openAlice } = await zcapClients({ serverUrl: openServerUrl }))
+      const space = await openAlice.was.createSpace({
+        id: openSpaceId,
+        name: 'Multipart Open Space',
+        controller: openAlice.did
+      })
+      await space.createCollection({ id: 'data', name: 'Data' })
+    })
+
+    afterAll(async () => {
+      await openFastify.close()
+    })
+
+    it("[signed] buffers a file part past Fastify's 1 MiB default under MAX_UPLOAD_BYTES=unlimited", async () => {
+      // With no cap configured the multipart buffer is bounded by the
+      // buffered-body limit (64 MiB), not by the 1 MiB `bodyLimit`
+      // `@fastify/multipart` falls back to when it is given no `fileSize`.
+      const response = await signedMultipart({
+        signer: openAlice.signer,
+        url: `${openServerUrl}/space/${openSpaceId}/data/`,
+        method: 'POST',
+        partType: 'application/octet-stream',
+        partBody: 'x'.repeat(2 * 1024 * 1024)
+      })
+      assert.equal(response.status, 201, await response.text())
+    })
+  })
+
+  describe('Multipart upload over the server cap (413)', () => {
+    let capFastify: FastifyInstance, capServerUrl: string, capAlice: any
+    let capBackendId: string
+    const capSpaceId = 'b0c8f3e2-4d2a-4c5b-9a1e-6f7d8e9a0b1c'
+    const maxUploadBytes = 1024
+
+    beforeAll(async () => {
+      const backend = await openTempBackend({
+        prefix: 'was-multipart-cap-',
+        maxUploadBytes
+      })
+      capBackendId = backend.describe().id
+      ;({ fastify: capFastify, serverUrl: capServerUrl } =
+        await startTestServer({ backend }))
+      ;({ alice: capAlice } = await zcapClients({ serverUrl: capServerUrl }))
+      const space = await capAlice.was.createSpace({
+        id: capSpaceId,
+        name: 'Multipart Cap Space',
+        controller: capAlice.did
+      })
+      await space.createCollection({ id: 'data', name: 'Data' })
+    })
+
+    afterAll(async () => {
+      await capFastify.close()
+    })
+
+    it('[signed] names the server backend limit the multipart buffer enforced', async () => {
+      const response = await signedMultipart({
+        signer: capAlice.signer,
+        url: `${capServerUrl}/space/${capSpaceId}/data/`,
+        method: 'POST',
+        partType: 'application/octet-stream',
+        partBody: 'x'.repeat(maxUploadBytes * 2)
+      })
+      const problemText = await response.text()
+      assert.equal(response.status, 413, problemText)
+      const problem = JSON.parse(problemText)
+      assert.match(problem.type, /payload-too-large/, problemText)
+      const detail: string = problem.errors[0].detail
+      assert.ok(
+        detail.includes(`'maxUploadBytes' of ${maxUploadBytes}`),
+        detail
+      )
+      assert.ok(detail.includes(`for backend '${capBackendId}'`), detail)
     })
   })
 })

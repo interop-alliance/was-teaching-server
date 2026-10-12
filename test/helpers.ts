@@ -148,6 +148,57 @@ export async function signedGet({
 }
 
 /**
+ * Sends a signed `multipart/form-data` write carrying one file part, the
+ * HTML-form convenience path, through a plain `fetch` (was-client sends no
+ * multipart bodies).
+ * @param options {object}
+ * @param options.signer {ISigner}   the invoking key
+ * @param options.url {string}   the absolute Collection or Resource URL
+ * @param options.method {'POST' | 'PUT'}
+ * @param options.partType {string}   the file part's `Content-Type`
+ * @param options.partBody {string}   the file part's body
+ * @param [options.envelopeType] {string}   the request's own media type,
+ *   before the boundary parameter (default `multipart/form-data`)
+ * @returns {Promise<Response>}
+ */
+export async function signedMultipart({
+  signer,
+  url,
+  method,
+  partType,
+  partBody,
+  envelopeType = 'multipart/form-data'
+}: {
+  signer: ISigner
+  url: string
+  method: 'POST' | 'PUT'
+  partType: string
+  partBody: string
+  envelopeType?: string
+}): Promise<Response> {
+  const boundary = 'was-test-boundary'
+  const body = new TextEncoder().encode(
+    `--${boundary}\r\n` +
+      'Content-Disposition: form-data; name="file"; filename="part"\r\n' +
+      `Content-Type: ${partType}\r\n\r\n` +
+      `${partBody}\r\n` +
+      `--${boundary}--\r\n`
+  )
+  const headers = await signCapabilityInvocation({
+    url,
+    method,
+    headers: {
+      date: new Date().toUTCString(),
+      'content-type': `${envelopeType}; boundary=${boundary}`
+    },
+    body,
+    invocationSigner: signer,
+    capabilityAction: method
+  })
+  return fetch(url, { method, headers, body: new Blob([body]) })
+}
+
+/**
  * The four capturing segments of a validator as this server emits them:
  * generation, epoch milliseconds, counter, origin id. The `ETag` parsers
  * below build their patterns from it.

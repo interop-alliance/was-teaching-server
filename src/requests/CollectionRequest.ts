@@ -40,7 +40,6 @@ import {
   parseListFilter
 } from '../lib/equalityIndex.js'
 import { resolveBackendDescriptor } from '../lib/backends.js'
-import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertRevisionsTransition } from '../lib/revisions.js'
 import { coerceQueryLimit, parsePageParams } from '../lib/pagination.js'
 import {
@@ -169,18 +168,6 @@ export class CollectionRequest {
       requestName
     })
 
-    // Fail-closed encryption enforcement: if the Collection declares a recognized
-    // `encryption` scheme, the content write MUST be a conforming envelope of it
-    // (right media type + envelope shape), else `encryption-scheme-mismatch`
-    // (422). Runs after auth (above) and the 404, before the body is resolved --
-    // so a wrong content type is rejected without consuming the upload, and the
-    // 422 is only observable by a caller already authorized to write here.
-    assertEncryptedWriteConforms({
-      collectionMetadata,
-      contentType: request.headers['content-type'],
-      body: request.body
-    })
-
     // zCap checks out, continue
     const resourceId = uuidv4()
 
@@ -191,7 +178,9 @@ export class CollectionRequest {
       collectionId,
       collectionMetadata
     })
-    const input = await resolveResourceInput(request, dataBackend)
+    // Runs the encrypted-Collection conformance check (422) after auth and the
+    // 404 above, so it is only observable by a caller authorized to write here.
+    const input = await resolveResourceInput(request, { collectionMetadata })
     // The key epoch, writer id, unique indexes, write-once rule and
     // `createdBy` of the write (`resourceWriteOptions`).
     const writeOptions = resourceWriteOptions({
@@ -220,9 +209,11 @@ export class CollectionRequest {
     // write (the conditional-writes feature).
     reply.header('etag', formatEtag(written.validator))
 
+    // The stored content type: for a multipart upload that is the file part's,
+    // not the request envelope's.
     return reply.status(201).send({
       id: resourceId,
-      'content-type': request.headers['content-type'],
+      'content-type': input.contentType,
       url: createdUrl
     })
   }

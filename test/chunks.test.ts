@@ -14,6 +14,7 @@ import { mkdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
+import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import type { Space, Collection } from '@interop/was-client'
 
@@ -236,6 +237,59 @@ describe('Chunk API (chunked-streams)', () => {
       // A JSON content-type is auto-parsed onto `.data`.
       assert.equal(getResponse.data.jwe.ciphertext, 'AAAA')
     })
+
+    it('[signed] a chunk declaring a JSON media type is stored byte-verbatim', async () => {
+      // A chunk is a range of a stream, not a document: a slice of a JSON
+      // stream need not parse as JSON, and must not be re-serialized.
+      const resourceId = 'json-range'
+      await dataCollection.put(resourceId, { id: resourceId })
+
+      const slice = '{"partial": [1, 2,'
+      for (const [index, type] of [
+        [0, 'application/json'],
+        [1, 'application/ld+json']
+      ] as const) {
+        const putResponse = await alice.was.request({
+          url: chunkUrl(resourceId, index),
+          method: 'PUT',
+          body: new Blob([slice], { type })
+        })
+        assert.equal(putResponse.status, 204)
+        // A plain signed fetch: was-client would parse a JSON content type.
+        const url = chunkUrl(resourceId, index)
+        const headers = await signCapabilityInvocation({
+          url,
+          method: 'GET',
+          headers: { date: new Date().toUTCString() },
+          invocationSigner: alice.signer,
+          capabilityAction: 'GET'
+        })
+        const getResponse = await fetch(url, { headers })
+        assert.equal(getResponse.status, 200)
+        assert.match(getResponse.headers.get('content-type')!, /json/)
+        assert.equal(await getResponse.text(), slice)
+      }
+    })
+
+    it('[signed] a text/plain chunk is stored byte-verbatim', async () => {
+      const resourceId = 'text-range'
+      await dataCollection.put(resourceId, { id: resourceId })
+      // An astral-plane character: a string piped by UTF-16 code unit would
+      // split it into lone surrogates.
+      const slice = 'a range of text \u{1F600} cut mid-sentence'
+      const putResponse = await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'PUT',
+        body: new Blob([slice], { type: 'text/plain' })
+      })
+      assert.equal(putResponse.status, 204)
+      const getResponse = await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'GET'
+      })
+      assert.equal(getResponse.status, 200)
+      assert.equal(await getResponse.text(), slice)
+    })
   })
 
   describe('listing', () => {
@@ -325,6 +379,24 @@ describe('Chunk API (chunked-streams)', () => {
       assert.equal(
         response.headers.location,
         `/space/${spaceId}/data/${resourceId}/chunks/`
+      )
+    })
+  })
+
+  describe('redirects', () => {
+    it('the slash form of a chunk URL 308-redirects before any parser reads the body', async () => {
+      // The redirect sits in the chunk write scope, so a body no JSON parser
+      // would accept still gets the 308, not a 400 from the parser.
+      const response = await fastify.inject({
+        method: 'PUT',
+        url: `/space/${spaceId}/data/some-resource/chunks/0/`,
+        headers: { 'content-type': 'application/json' },
+        payload: '{"partial": [1, 2,'
+      })
+      assert.equal(response.statusCode, 308)
+      assert.equal(
+        response.headers.location,
+        `/space/${spaceId}/data/some-resource/chunks/0`
       )
     })
   })

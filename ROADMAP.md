@@ -23,7 +23,6 @@ Ready:
   checks, data-plane delete
 - WAS-144 [M] (*) Ignore a non-`Signature` `Authorization` header on an
   anonymous read
-- WAS-145 [M] (*) Media-type edge cases in `resolveResourceInput`
 - WAS-191 [M] (fs) The sidecar is the commit point of a filesystem Resource
   write
 - WAS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
@@ -411,30 +410,6 @@ nothing), but the two backends disagree with the contract.
         or the handler's doc says capability-only
   - [ ] Tests for `Bearer` and `Basic` on a `PublicCanRead` Resource, and an
         anonymous equality query on a public Collection
-
-### WAS-145: [M] (*) Media-type edge cases in `resolveResourceInput`
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: correctness, content-types
-- discovered-from: whole-codebase review (2026-09-17), verified
-- acceptance:
-  - [ ] The `+json` parser regex is anchored so `application/ld+jsonl` and
-        `application/ld+json-seq` take the binary path `isJsonContentType()`
-        promises, instead of handing a parsed object to `pipeline` (500)
-  - [ ] The multipart branch matches case-insensitively and only
-        `multipart/form-data`; `multipart/mixed` and other multipart types are
-        stored as blobs or refused with a typed 415
-  - [ ] A chunk `PUT` declaring a JSON media type is stored byte-verbatim
-        (chunks are ranges of a stream, not documents)
-  - [ ] The multipart 413 names the limit that was enforced (the server
-        backend's), and `maxUploadBytes!` is not asserted on an optional field
-  - [ ] A multipart create's 201 echoes the stored `content-type`, not the
-        request envelope's
-  - [ ] `test/` covers each case
-
----
 
 ### WAS-191: [M] (fs) The sidecar is the commit point of a filesystem Resource write
 

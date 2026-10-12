@@ -129,8 +129,9 @@ Two things to get right:
   `@fastify/cors` again yourself unless you pass `cors: false`);
 - `@fastify/multipart` (its `fileSize` limit follows the backend's
   `maxUploadBytes`);
-- content-type parsers: `application/*+json` parsed as JSON, and a catch-all
-  pass-through so arbitrary binary media types stream to storage;
+- content-type parsers: `application/*+json` parsed as JSON (the suffix ends at
+  the media type, so `+jsonl` is not JSON), and a catch-all pass-through so
+  arbitrary binary media types stream to storage;
 - the route groups themselves, each in its own encapsulated context, so their
   auth/digest hooks and error handler do not apply to routes you add outside the
   plugin.
