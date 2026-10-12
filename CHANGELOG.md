@@ -4,6 +4,27 @@
 
 ### Added
 
+- `pnpm perf:pg` runs the same local load-performance check as `pnpm perf:fs`
+  (see 0.42.2's entry) against the Postgres backend instead, so the two are
+  directly comparable. A new `docker-compose.yml` defines a local Postgres
+  container matching `pnpm test:pg`'s existing connection convention
+  (`postgres://was:was@localhost:5433/was`). `pnpm perf:pg:seed` resets a fixed
+  schema (`perf`) and fills it directly through `PostgresBackend`'s own write
+  methods; `pnpm perf:pg` always runs against that pre-seeded schema (there is
+  no over-HTTP seeding fallback, since seeding Postgres one signed request at a
+  time is far slower than writing straight through the backend), and leaves the
+  seeded data in place afterward for inspection or reuse.
+- `pnpm perf:pg` also runs a payload matrix, reported as its own table: reads
+  and writes of a JSON credential, a 100 KiB file and a 10 MiB file in a public,
+  a private plaintext and a private encrypted (`edv`) Collection, each counted
+  in whole files. `pnpm perf:pg:seed` sets up the encrypted Collection the way
+  freewallet does, with a key epoch, a blinded-index key, and real EDV envelopes
+  and chunks written through `@interop/was-client` over an in-process server.
+  Timed encrypted writes send copies of the stored envelopes and chunks, so
+  client-side crypto stays out of the numbers, and binary writes delete their
+  files untimed so repeated runs don't fill the database. The seed's new
+  `--binary-total-mib` (default 100) adds that much extra binary data in a
+  `perf-ballast` Space, to grow the database past Postgres's own cache.
 - Chunk replication. A pull loop that applies a chunked Resource now reads the
   source server's chunk listing, stages each listed chunk it does not hold under
   the `etag` the listing names, and applies the parent and its chunk set in one

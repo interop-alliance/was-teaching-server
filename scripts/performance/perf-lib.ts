@@ -125,12 +125,16 @@ export function pivotRows({
 }
 
 /**
- * One pivoted cell as it reads in the table: the skip string as-is, `--` for
- * a gap, or `<rate> req/s (<avg> ms)`.
+ * One table cell as it reads: the skip string as-is, `--` for a gap, or
+ * `<rate> <unit> (<avg> ms)`.
  * @param cell {Measurement | string | undefined}
+ * @param [unit] {string}   `req/s` by default; the matrix counts `files/s`
  * @returns {string}
  */
-function formatCell(cell: Measurement | string | undefined): string {
+function formatCell(
+  cell: Measurement | string | undefined,
+  unit = 'req/s'
+): string {
   if (cell === undefined) {
     return '--'
   }
@@ -138,7 +142,7 @@ function formatCell(cell: Measurement | string | undefined): string {
     return cell
   }
   const avg = cell.avgMs === undefined ? 'n/a' : formatNumber(cell.avgMs, 2)
-  return `${formatNumber(cell.rate, 1)} req/s (${avg} ms)`
+  return `${formatNumber(cell.rate, 1)} ${unit} (${avg} ms)`
 }
 
 /**
@@ -159,9 +163,113 @@ export function formatPivotedTable({
   const header = `| Test | ${sizes.map(size => `size ${size}`).join(' | ')} |`
   const divider = `|---|${sizes.map(() => '---:').join('|')}|`
   const body = pivoted.map(
-    ({ test, cells }) => `| ${test} | ${cells.map(formatCell).join(' | ')} |`
+    ({ test, cells }) =>
+      `| ${test} | ${cells.map(cell => formatCell(cell)).join(' | ')} |`
   )
   return [header, divider, ...body].join('\n')
+}
+
+/**
+ * One payload-matrix result: a Collection category and a payload, with its
+ * read and write measurement (or the skip string, for a public read without
+ * k6). Each counts whole files, however many requests one file takes.
+ */
+export interface MatrixRow {
+  category: MatrixCategory
+  payload: MatrixPayload
+  read: Measurement | string
+  write: Measurement | string
+}
+
+const matrixCategoryLabels: Record<MatrixCategory, string> = {
+  public: 'Public',
+  plaintext: 'Plaintext',
+  encrypted: 'Encrypted'
+}
+
+const matrixPayloadLabels: Record<MatrixPayload, string> = {
+  json: 'JSON',
+  small: '100 KiB file',
+  large: '10 MiB file'
+}
+
+/**
+ * How a matrix cell is named in progress lines and failure lists, e.g.
+ * `Encrypted, 10 MiB file`.
+ * @param options {object}
+ * @param options.category {MatrixCategory}
+ * @param options.payload {MatrixPayload}
+ * @returns {string}
+ */
+export function matrixLabel({
+  category,
+  payload
+}: {
+  category: MatrixCategory
+  payload: MatrixPayload
+}): string {
+  return `${matrixCategoryLabels[category]}, ${matrixPayloadLabels[payload]}`
+}
+
+/**
+ * One completed matrix test as a progress line, e.g.
+ * `Encrypted, 10 MiB file, write: 12.3 files/s (80.10 ms), 0 failed`.
+ * @param options {object}
+ * @param options.category {MatrixCategory}
+ * @param options.payload {MatrixPayload}
+ * @param options.operation {string}   `read` or `write`
+ * @param options.result {Measurement | string}
+ * @returns {string}
+ */
+export function formatMatrixProgressLine({
+  category,
+  payload,
+  operation,
+  result
+}: {
+  category: MatrixCategory
+  payload: MatrixPayload
+  operation: string
+  result: Measurement | string
+}): string {
+  const label = `${matrixLabel({ category, payload })}, ${operation}`
+  if (typeof result === 'string') {
+    return `${label}: ${result}`
+  }
+  return `${label}: ${formatCell(result, 'files/s')}, ${result.failed} failed`
+}
+
+/**
+ * The payload matrix as a Markdown table, one row per category and payload,
+ * followed by a failures line.
+ * @param rows {MatrixRow[]}
+ * @returns {string}
+ */
+export function formatMatrixTable(rows: MatrixRow[]): string {
+  const failures: string[] = []
+  const body = rows.map(({ category, payload, read, write }) => {
+    for (const [operation, result] of [
+      ['read', read],
+      ['write', write]
+    ] as const) {
+      if (typeof result !== 'string' && result.failed > 0) {
+        failures.push(
+          `${matrixLabel({ category, payload })} ${operation}: ${result.failed} failed`
+        )
+      }
+    }
+    return (
+      `| ${matrixCategoryLabels[category]} | ${matrixPayloadLabels[payload]} | ` +
+      `${formatCell(read, 'files/s')} | ${formatCell(write, 'files/s')} |`
+    )
+  })
+  return [
+    '| Collection | Payload | Read | Write |',
+    '|---|---|---:|---:|',
+    ...body,
+    '',
+    failures.length > 0 ? `Failures: ${failures.join('; ')}` : 'Failures: none'
+  ].join('\n')
 }
 
 /** How close a largest/smallest rate ratio has to be to 1 to read as flat. */
@@ -273,6 +381,9 @@ export function formatMachine({
  * @param options.durationSeconds {number}
  * @param options.serialWrites {number}
  * @param options.withK6 {boolean}
+ * @param [options.matrix] {boolean}   whether the payload matrix runs too: 9
+ *   reads (3 of them through k6) and 9 writes, the 6 binary writes with an
+ *   untimed delete after each round, priced at half the test's length
  * @returns {number} minutes, rounded up
  */
 export function estimateMinutes({
@@ -283,7 +394,8 @@ export function estimateMinutes({
   warmUpWrites,
   pauseMs,
   withK6,
-  filling
+  filling,
+  matrix = false
 }: {
   sizes: number[]
   edgeSizes: number[]
@@ -293,13 +405,19 @@ export function estimateMinutes({
   pauseMs: number
   withK6: boolean
   filling: boolean
+  matrix?: boolean
 }): number {
   const writesPerSecond = 25
   const sum = (values: number[]) =>
     values.reduce((total, value) => total + value, 0)
   const filled = filling ? 2 * sum(sizes) + 3 * sum(edgeSizes) : 0
+  const matrixTests = matrix ? (withK6 ? 9 : 6) + 9 : 0
+  const matrixCleanupSeconds = matrix ? 6 * durationSeconds * 0.5 : 0
   const loadTests =
-    (withK6 ? 2 * sizes.length : 0) + sizes.length + 2 * edgeSizes.length
+    (withK6 ? 2 * sizes.length : 0) +
+    sizes.length +
+    2 * edgeSizes.length +
+    matrixTests
   // a delete round refills its Resources at the write rate, about twice as slow
   // as it deletes them
   const refillSeconds = edgeSizes.length * durationSeconds * 1.8
@@ -311,9 +429,50 @@ export function estimateMinutes({
     loadTests * durationSeconds +
     refillSeconds +
     serialSeconds +
+    matrixCleanupSeconds +
     pauseSeconds
   return Math.ceil(seconds / 60)
 }
+
+/**
+ * The payload matrix's fixed Space ids: one Space holding the read targets,
+ * one taking the timed writes, and one holding `--binary-total-mib` of extra
+ * binary data that nothing reads.
+ */
+export const matrixSpaceIds = {
+  read: 'perf-matrix-read',
+  write: 'perf-matrix-write',
+  ballast: 'perf-ballast'
+} as const
+
+/**
+ * The matrix categories, each one a Collection of that id in both the read
+ * and the write Space.
+ */
+export const matrixCategories = ['public', 'plaintext', 'encrypted'] as const
+
+export type MatrixCategory = (typeof matrixCategories)[number]
+
+/**
+ * The matrix payloads. In the public and plaintext Collections each read
+ * target's Resource id is the payload name; the encrypted Collection's ids
+ * are EDV ids minted at seed time.
+ */
+export const matrixPayloads = ['json', 'small', 'large'] as const
+
+export type MatrixPayload = (typeof matrixPayloads)[number]
+
+/**
+ * The small binary payload: under was-client's 512 KiB threshold, so in an
+ * encrypted Collection it is one EDV document.
+ */
+export const smallFileBytes = 100 * 1024
+
+/**
+ * The large binary payload: over the 512 KiB threshold, so in an encrypted
+ * Collection it is one EDV document plus ten 1 MiB chunks.
+ */
+export const largeFileBytes = 10 * 1024 * 1024
 
 /**
  * The ids `vc-1` to `vc-<count>`.
@@ -496,6 +655,64 @@ export async function deleteLoad({
       })
     )
     timedMs += performance.now() - started
+  }
+  return {
+    rate: completed / (timedMs / 1000),
+    avgMs: completed ? totalMs / completed : undefined,
+    failed
+  }
+}
+
+/**
+ * Timed creates with an untimed cleanup, from `clients` concurrent clients,
+ * in rounds: each round every client runs `create` once (timed, together),
+ * then `remove` for what it created (untimed). Rounds repeat until the timed
+ * part reaches `durationSeconds`, so the stored data never grows past one
+ * round's worth, however large each create is. A failed create counts as a
+ * failure and is not removed.
+ * @param options {object}
+ * @param options.clients {number}
+ * @param options.durationSeconds {number}
+ * @param options.create {(worker: number, round: number) => Promise<unknown>}
+ * @param options.remove {(worker: number, round: number) => Promise<unknown>}
+ * @returns {Promise<Measurement>}
+ */
+export async function createDeleteLoad({
+  clients,
+  durationSeconds,
+  create,
+  remove
+}: {
+  clients: number
+  durationSeconds: number
+  create: (worker: number, round: number) => Promise<unknown>
+  remove: (worker: number, round: number) => Promise<unknown>
+}): Promise<Measurement> {
+  const workers = Array.from({ length: clients }, (_unused, worker) => worker)
+  let completed = 0
+  let failed = 0
+  let totalMs = 0
+  let timedMs = 0
+  for (let round = 0; timedMs < durationSeconds * 1000; round++) {
+    const created: number[] = []
+    const started = performance.now()
+    await Promise.all(
+      workers.map(async worker => {
+        const sent = performance.now()
+        try {
+          await create(worker, round)
+          completed++
+          totalMs += performance.now() - sent
+          created.push(worker)
+        } catch {
+          failed++
+        }
+      })
+    )
+    timedMs += performance.now() - started
+    await Promise.all(
+      created.map(worker => remove(worker, round).catch(() => undefined))
+    )
   }
   return {
     rate: completed / (timedMs / 1000),
