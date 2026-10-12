@@ -18,16 +18,22 @@
  */
 import type { FastifyRequest } from 'fastify'
 import type { ParsedCollectionMetadataBody } from '../lib/collectionMetadataBody.js'
-import { assertSupportedBackend } from '../lib/backends.js'
+import { assertSupportedBackend, DEFAULT_BACKEND_ID } from '../lib/backends.js'
 import { assertEncryptionDescriptorTransition } from '../lib/encryption.js'
-import { assertPlaintextNotEncrypted } from '../lib/equalityIndex.js'
+import {
+  assertPlaintextNotEncrypted,
+  declaredUniqueIndexesOf
+} from '../lib/equalityIndex.js'
 import {
   assertGovernedMergeUnchanged,
   assertRevisionsTransition
 } from '../lib/revisions.js'
 import type { GovernedDescriptors } from '../lib/governedLog.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
-import { EncryptionHistoryLogGovernedError } from '../errors.js'
+import {
+  EncryptionHistoryLogGovernedError,
+  UnsupportedBackendError
+} from '../errors.js'
 import type { CollectionMetadata } from '../types.js'
 
 /**
@@ -119,7 +125,11 @@ function assertCollectionMetadataTransition({
  * - `plaintext` and `generator` are the spec's carve-outs from clearing: an
  *   omitted member leaves the stored one untouched, and a supplied one
  *   replaces it whole. The result may not carry both `plaintext` and
- *   `encryption` (400).
+ *   `encryption` (400). A `unique: true` index declaration is refused on a
+ *   Collection stored on a registered external backend
+ *   (`unsupported-backend`, 409): the server enforces the claim inside its own
+ *   backends' Resource writes, which read the declaration under their lock,
+ *   and an external adapter holds no copy of the declaration.
  * - `name` and `epoch` are taken from the body alone: omitted means cleared. A create with no `name` gets the Collection
  *   id as its name.
  * - `custom`, when present, is the plaintext `{ name, tags }` object or, on an
@@ -183,6 +193,23 @@ export async function composeCollectionMetadata({
     requestName
   })
   const plaintext = parsed.plaintext ?? existing?.plaintext
+  // A `unique` claim is enforced inside the Resource write of the server's
+  // own backends, which read the declaration under their lock. A registered
+  // external backend's adapter never receives the Collection Metadata
+  // object, so it cannot enforce the claim; the declaration is refused rather
+  // than stored unenforced. Checked on the composed pair, so selecting an
+  // external backend on a Collection that already declares one is refused
+  // too.
+  if (
+    backend.id !== DEFAULT_BACKEND_ID &&
+    declaredUniqueIndexesOf({ collectionMetadata: { plaintext } }).length > 0
+  ) {
+    throw new UnsupportedBackendError({
+      backendId: backend.id,
+      detail: `Backend '${backend.id}' is a registered external backend, which does not enforce a 'unique' plaintext index declaration.`,
+      pointer: '#/plaintext/indexes'
+    })
+  }
   const generator = parsed.generator ?? existing?.generator
   const encryption = parsed.encryption ?? governed?.encryption
   // A governed Collection's descriptor lives in its log, so a body

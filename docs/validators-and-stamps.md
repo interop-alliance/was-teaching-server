@@ -275,11 +275,14 @@ write takes. The filesystem backend runs the write on the exclusive side of its
 Space gate, as a container removal does. The gate admits a Resource write ahead
 of a waiting exclusive write, so a Metadata write is delayed while writes to the
 Space keep overlapping, like a removal; that backend is built to be read, not
-for throughput. A registered data-plane backend's writes do not pass through
-this server's lock, so there the scan stays best-effort and the write-time check
-catches what it missed. A Resource write reads the Collection's `unique`
-declarations under its own lock rather than taking them from the handler, so a
-declaration that lands between the handler's read and the write still binds it.
+for throughput. A Resource write reads the Collection's `unique` declarations
+under its own lock rather than taking them from the handler, so a declaration
+that lands between the handler's read and the write still binds it. A registered
+external backend's adapter never receives the Collection Metadata object and its
+writes do not pass through this server's lock, so a `unique` declaration on a
+Collection stored there cannot be enforced; the declaration is refused
+(`unsupported-backend`, 409), as is selecting an external backend on a
+Collection that already declares one.
 
 Two unconditional `PUT`s of one new Collection's `meta` can both see it absent
 before their writes, but only the first write creates it, and the second answers

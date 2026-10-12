@@ -551,9 +551,9 @@ export class CollectionRequest {
           // backend's write excludes the Space's Resource writes, and a
           // Resource write reads the declaration under the lock this write
           // holds, so one racing this update either finished before the scan
-          // or sees the declaration. A registered data-plane backend's writes
-          // do not pass through this server's lock, so there the scan stays
-          // best-effort and the write-time check catches what it missed.
+          // or sees the declaration. A Collection on a registered external
+          // backend cannot declare one (`composeCollectionMetadata` refuses
+          // it), so the scan only ever runs on the server's own backends.
           const newlyUnique = newlyUniqueDeclarations({
             existing,
             incoming: collectionMetadata

@@ -20,6 +20,11 @@
   Collection now answers 412 ahead of a refusal the body earns (an unknown
   `backend`, a `plaintext` beside an existing `encryption`), where the body's
   refusal came first before.
+- A `unique: true` plaintext index declaration on a Collection stored on a
+  registered external backend is refused (409 `unsupported-backend`, pointer
+  `#/plaintext/indexes`), as is selecting an external backend on a Collection
+  that declares one. The adapter never receives the declaration, so the claim
+  went unenforced there.
 
 ### Changed
 
