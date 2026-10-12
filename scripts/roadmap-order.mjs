@@ -14,7 +14,8 @@
  *     whose intro carries `<!-- roadmap-order: by-id -->` is sorted by id
  *     number instead;
  *   - rewrites the computed title markers: the priority tag `[H]`/`[M]`/`[L]`
- *     read off the `priority` field, then `[blocks N]` and `[after WAS-X]`;
+ *     read off the `priority` field, the backend code `(fs)`/`(pg)`/`(*)`
+ *     read off the `backend` field, then `[blocks N]` and `[after WAS-X]`;
  *   - regenerates the index block under the H1.
  *
  * Anything it cannot resolve (an unknown id, a cycle, an item with no field
@@ -52,8 +53,10 @@ const INDEX_END = '<!-- roadmap-order:index:end -->'
 const BY_ID_MARKER = '<!-- roadmap-order: by-id -->'
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 }
 const PRIORITY_TAG = { high: 'H', medium: 'M', low: 'L' }
+const BACKEND_CODES = new Set(['fs', 'pg', '*'])
 const EXTERNAL_ID = /\b(?:WASS|WC|FW|DCW|WBU|WR|WSR|SC|ECS|PWSCS)-\d+\b/g
-const ITEM_HEADING = /^### (WAS-\d+):\s*((?:\[[^\]]*\]\s*)*)(.*)$/
+const ITEM_HEADING =
+  /^### (WAS-\d+):\s*((?:(?:\[[^\]]*\]|\((?:fs|pg|\*)\))\s*)*)(.*)$/
 
 const problems = []
 const satisfied = []
@@ -161,6 +164,10 @@ function modelItem(raw, sectionHeading) {
   if (!(priorityWord in PRIORITY_RANK)) {
     problem(`${id} has no priority (high / medium / low); no tag written`)
   }
+  const backendCode = (fields.get('backend')?.value ?? '').split(/\s+/)[0]
+  if (!BACKEND_CODES.has(backendCode)) {
+    problem(`${id} has no backend (fs / pg / *); no code written`)
+  }
   const dependsOn = fields.get('depends-on')?.value ?? ''
   const blockedBy = fields.get('blocked-by')?.value ?? ''
   const blockedByIsNone = /^none\b/i.test(blockedBy)
@@ -168,6 +175,7 @@ function modelItem(raw, sectionHeading) {
     id,
     title,
     priorityTag: PRIORITY_TAG[priorityWord] ?? null,
+    backendCode: BACKEND_CODES.has(backendCode) ? backendCode : null,
     raw,
     section: sectionHeading,
     fields,
@@ -257,12 +265,14 @@ function orderSection(items, byId) {
 }
 
 /**
- * Rebuilds the heading with the priority tag first and the computed markers
- * after it, and the field block with `blocks:` reflecting the reverse edges.
+ * Rebuilds the heading with the priority tag and backend code first and the
+ * computed markers after them, and the field block with `blocks:` reflecting
+ * the reverse edges.
  */
 function renderItem(item) {
   const markers = []
   if (item.priorityTag) markers.push(`[${item.priorityTag}]`)
+  if (item.backendCode) markers.push(`(${item.backendCode})`)
   if (item.blocks.length > 0) markers.push(`[blocks ${item.blocks.length}]`)
   const after = item.openBlockers
     .slice()
@@ -307,7 +317,8 @@ function renderItem(item) {
 
 function itemLabel(item) {
   const tag = item.priorityTag ? `[${item.priorityTag}] ` : ''
-  return `${item.id} ${tag}${item.title}`
+  const code = item.backendCode ? `(${item.backendCode}) ` : ''
+  return `${item.id} ${tag}${code}${item.title}`
 }
 
 /**

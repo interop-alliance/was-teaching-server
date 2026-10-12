@@ -14,133 +14,140 @@ item others wait on with its dependents beneath it.
 
 Ready:
 
-- WAS-92 [M] Filesystem GET can observe a Resource with no validator mid-write
-- WAS-132 [M] A present but unparseable `If-None-Match` on a write is a 400
-- WAS-134 [M] Compose Update Collection under the lock
-- WAS-135 [M] Torn-run ordering in the filesystem backend's delete and update
-  paths
-- WAS-136 [M] Backend registry lifecycle: cache, immutability, in-use checks,
-  data-plane delete
-- WAS-144 [M] Ignore a non-`Signature` `Authorization` header on an anonymous
-  read
-- WAS-145 [M] Media-type edge cases in `resolveResourceInput`
-- WAS-191 [M] The sidecar is the commit point of a filesystem Resource write
-- WAS-181 [L] Pin that a sidecar imported without timestamps is served with both
-  on each backend
-- WAS-83 [L] Anonymous Get Policy with a malformed id now returns 401
-- WAS-193 [L] `epoch` moves on a `/meta` write without a content stamp
+- WAS-92 [M] (fs) Filesystem GET can observe a Resource with no validator
+  mid-write
+- WAS-132 [M] (*) A present but unparseable `If-None-Match` on a write is a 400
+- WAS-134 [M] (*) Compose Update Collection under the lock
+- WAS-135 [M] (fs) Torn-run ordering in the filesystem backend's delete and
+  update paths
+- WAS-136 [M] (*) Backend registry lifecycle: cache, immutability, in-use
+  checks, data-plane delete
+- WAS-144 [M] (*) Ignore a non-`Signature` `Authorization` header on an
+  anonymous read
+- WAS-145 [M] (*) Media-type edge cases in `resolveResourceInput`
+- WAS-191 [M] (fs) The sidecar is the commit point of a filesystem Resource
+  write
+- WAS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
+  both on each backend
+- WAS-83 [L] (*) Anonymous Get Policy with a malformed id now returns 401
+- WAS-193 [L] (*) `epoch` moves on a `/meta` write without a content stamp
 
 **Spec and protocol**
 
 Ready:
 
-- WAS-142 [M] Problem documents on every route, and Fastify's own errors typed
-- WAS-66 [M] Accept ids beyond the unreserved charset (percent-encoding on disk,
-  real webvh round-trip)
-- WAS-64 [M] Default document for public collections (`index.html`)
-- WAS-162 [M] Research verifying zcap invocations signed by a did:webvh hosted
-  elsewhere
-- WAS-194 [M] `encryption` is declared only when the Collection is created
+- WAS-142 [M] (*) Problem documents on every route, and Fastify's own errors
+  typed
+- WAS-66 [M] (*) Accept ids beyond the unreserved charset (percent-encoding on
+  disk, real webvh round-trip)
+- WAS-64 [M] (*) Default document for public collections (`index.html`)
+- WAS-162 [M] (*) Research verifying zcap invocations signed by a did:webvh
+  hosted elsewhere
+- WAS-194 [M] (*) `encryption` is declared only when the Collection is created
 
 **Features**
 
 Ready:
 
-- WAS-1 [H] Google Cloud console identity verification for interopalliance.org
-  (blocks 4)
-- WAS-58 [M] Aggregate quota reporting across an account's auxiliary Spaces
-- WAS-70 [M] Keystore deletion (route, backend method, orphan GC)
-- WAS-73 [M] Periodic sweep of Spaces and keystores whose did:webvh controller
-  no longer resolves
-- WAS-195 [M] Store the content digest of each Resource and chunk
+- WAS-1 [H] (*) Google Cloud console identity verification for
+  interopalliance.org (blocks 4)
+- WAS-58 [M] (*) Aggregate quota reporting across an account's auxiliary Spaces
+- WAS-70 [M] (*) Keystore deletion (route, backend method, orphan GC)
+- WAS-73 [M] (*) Periodic sweep of Spaces and keystores whose did:webvh
+  controller no longer resolves
+- WAS-195 [M] (*) Store the content digest of each Resource and chunk
 
 Chains:
 
-- WAS-1 [H] Google Cloud console identity verification for interopalliance.org
-  - WAS-2 [H] Google OAuth confidential client + consent setup (plan stage 4)
-  - WAS-3 [H] Google Drive plaintext adapter (plan stage 5)
-  - WAS-4 [M] Google Drive EDV flavor (plan stage 6)
-  - WAS-5 [L] Drive API ToS use-case clearance
-- WAS-2 [H] Google OAuth confidential client + consent setup (plan stage 4)
-  - WAS-3 [H] Google Drive plaintext adapter (plan stage 5)
-- WAS-3 [H] Google Drive plaintext adapter (plan stage 5)
-  - WAS-4 [M] Google Drive EDV flavor (plan stage 6)
+- WAS-1 [H] (*) Google Cloud console identity verification for
+  interopalliance.org
+  - WAS-2 [H] (*) Google OAuth confidential client + consent setup (plan
+    stage 4)
+  - WAS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
+  - WAS-4 [M] (*) Google Drive EDV flavor (plan stage 6)
+  - WAS-5 [L] (*) Drive API ToS use-case clearance
+- WAS-2 [H] (*) Google OAuth confidential client + consent setup (plan stage 4)
+  - WAS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
+- WAS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
+  - WAS-4 [M] (*) Google Drive EDV flavor (plan stage 6)
 
 **Multi-primary Spaces**
 
 Ready:
 
-- WAS-180 [M] Delete Space removes revocations before the Space directory
-- WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict model)
-- WAS-207 [L] Resolve a replicated `did:webvh` log that declares witnesses
-- WAS-209 [L] Cover the replicated-controller path on Postgres and under the
-  client-annex clause
-- WAS-201 [L] Replicate a Collection stored on a registered external backend
-- WAS-198 [L] Keep peer did:webvh head records and fetch bounds across eviction
-  and restart
-- WAS-184 [L] Write-time creation and revision statements
+- WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
+- WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
+  model)
+- WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
+- WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
+  the client-annex clause
+- WAS-201 [L] (*) Replicate a Collection stored on a registered external backend
+- WAS-198 [L] (*) Keep peer did:webvh head records and fetch bounds across
+  eviction and restart
+- WAS-184 [L] (*) Write-time creation and revision statements
 
 **Performance**
 
 Ready:
 
-- WAS-196 [M] Bound the cost of accumulated Collection tombstones
-- WAS-203 [M] Skip a feed document the puller already holds before reading its
-  body
-- WAS-212 [M] Open a Resource's byte stream lazily so a conditional read costs
-  one metadata read
-- WAS-204 [L] Stop re-applying a peer's Collection tombstones on every pull
+- WAS-196 [M] (*) Bound the cost of accumulated Collection tombstones
+- WAS-203 [M] (*) Skip a feed document the puller already holds before reading
+  its body
+- WAS-212 [M] (*) Open a Resource's byte stream lazily so a conditional read
+  costs one metadata read
+- WAS-204 [L] (*) Stop re-applying a peer's Collection tombstones on every pull
   cycle
-- WAS-199 [L] Verify a peer invoker's delegation chain once
-- WAS-77 [L] Per-Collection filename cache on the filesystem backend
+- WAS-199 [L] (*) Verify a peer invoker's delegation chain once
+- WAS-77 [L] (fs) Per-Collection filename cache on the filesystem backend
 
 **Docs, tests, and cleanup**
 
 Ready:
 
-- WAS-46 [H] Un-skip the Postgres and flag-gated storage-contract tests
-- WAS-47 [M] Cover `start.ts` and the untested config parsers
-- WAS-9 [M] Open the upstream `minimal-cipher` AEAD-gap issue
-- WAS-10 [M] Open the upstream `edv-client` truncation issue
-- WAS-103 [L] Make `spacePath` / `collectionPath` return the canonical container
-  URL by default
-- WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
-  move)
-- WAS-202 [L] Pull-loop tests beyond the two-server filesystem case
-- WAS-210 [L] One function decides where a `did:webvh` resolves from
-- WAS-215 [L] Replace the hand-rolled usage cache in the filesystem backend with
-  `LruCache`
+- WAS-46 [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
+- WAS-47 [M] (*) Cover `start.ts` and the untested config parsers
+- WAS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
+- WAS-10 [M] (*) Open the upstream `edv-client` truncation issue
+- WAS-103 [L] (*) Make `spacePath` / `collectionPath` return the canonical
+  container URL by default
+- WAS-168 [L] (*) `SERVER_URL` move runbook for the server DID log (portable
+  domain move)
+- WAS-202 [L] (*) Pull-loop tests beyond the two-server filesystem case
+- WAS-210 [L] (*) One function decides where a `did:webvh` resolves from
+- WAS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
+  with `LruCache`
 
 **Someday / Maybe**
 
 Ready:
 
-- WAS-12 [L] Live `pull.stream$` SSE endpoint for the changes feed
-- WAS-13 [L] Tombstone GC / retention policy
-- WAS-14 [M] Attachment / blob replication for sync
-- WAS-15 [L] Client-produced snapshot/checkpoint entries in the changes feed
-- WAS-16 [L] Opaque/blinded Resource ids + padded sizes (opt-in)
-- WAS-18 [L] Publish the StorageBackend port for npm-installable backends
-- WAS-19 [L] SQLite backend
-- WAS-20 [L] Full-text / vector search query profiles
-- WAS-21 [L] Composite adapter
-- WAS-22 [L] External KEK custody behind `recordKekLoader`
-- WAS-23 [L] Sub-path-mounted `SERVER_URL` drops its base path in built URLs
-- WAS-24 [L] Server-enforced JSON Schema per Collection
-- WAS-25 [L] Equality-index extensions
-- WAS-36 [L] Server-signed changes-feed checkpoints (split-view detection)
-- WAS-179 [L] Read-only replica switch
+- WAS-12 [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
+- WAS-13 [L] (*) Tombstone GC / retention policy
+- WAS-14 [M] (*) Attachment / blob replication for sync
+- WAS-15 [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
+- WAS-16 [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
+- WAS-18 [L] (*) Publish the StorageBackend port for npm-installable backends
+- WAS-19 [L] (*) SQLite backend
+- WAS-20 [L] (*) Full-text / vector search query profiles
+- WAS-21 [L] (*) Composite adapter
+- WAS-22 [L] (*) External KEK custody behind `recordKekLoader`
+- WAS-23 [L] (*) Sub-path-mounted `SERVER_URL` drops its base path in built URLs
+- WAS-24 [L] (*) Server-enforced JSON Schema per Collection
+- WAS-25 [L] (*) Equality-index extensions
+- WAS-36 [L] (*) Server-signed changes-feed checkpoints (split-view detection)
+- WAS-179 [L] (*) Read-only replica switch
 
 **Parking**
 
 Ready:
 
-- WAS-11 [L] Space-level `/query`
-- WAS-17 [L] BYOS beyond My-Drive OAuth
-- WAS-69 [L] Drop `Ed25519Signature2020` from the delegation-proof verify side
-- WAS-167 [L] Further uses of the server identity (write receipts, epoch
+- WAS-11 [L] (*) Space-level `/query`
+- WAS-17 [L] (*) BYOS beyond My-Drive OAuth
+- WAS-69 [L] (*) Drop `Ed25519Signature2020` from the delegation-proof verify
+  side
+- WAS-167 [L] (*) Further uses of the server identity (write receipts, epoch
   attestation, delegatee, signed manifest)
-- WAS-185 [L] Several server processes over one store (HLC and origin id)
+- WAS-185 [L] (*) Several server processes over one store (HLC and origin id)
 
 <!-- roadmap-order:index:end -->
 
@@ -162,14 +169,18 @@ history).
 
 ## Item format
 
-Each work item is a heading `### WAS-N: [P] Title`, then a field block, then
+Each work item is a heading `### WAS-N: [P] (B) Title`, then a field block, then
 free prose context. `[P]` is the priority tag (`[H]`, `[M]`, `[L]`), computed
-from the `priority` field by the ordering script, which may also add
-`[blocks N]` and `[after WAS-X]` after it. No marker in a title is edited by
-hand.
+from the `priority` field by the ordering script. `(B)` is the backend code,
+computed from the `backend` field: `(fs)` for an item specific to the filesystem
+backend, `(pg)` for one specific to the Postgres backend, and `(*)` for one that
+applies to both, is backend-independent, or has no backend dimension. The script
+may also add `[blocks N]` and `[after WAS-X]` after them. No marker in a title
+is edited by hand.
 
 Fields: `status` (`todo` / `in-progress` / `draft` / `done`), `priority` (`high`
-/ `medium` / `low`), `labels` (comma-separated), optional `discovered-from` (the
+/ `medium` / `low`), `backend` (`fs` / `pg` / `*`, which storage backend the
+item applies to), `labels` (comma-separated), optional `discovered-from` (the
 item, review, or question the item came out of, with its date), optional
 `blocked-by` (other `WAS-N` ids, or an external id such as `WASS-N` or `FW-N`),
 `blocks` (derived, written by the script), a `touches:` list where it applies,
@@ -238,10 +249,11 @@ A wrong answer, a torn write, or two backends that disagree. Nothing here widens
 what a caller may do; it is the server answering incorrectly for a caller who is
 allowed to ask.
 
-### WAS-92: [M] Filesystem GET can observe a Resource with no validator mid-write
+### WAS-92: [M] (fs) Filesystem GET can observe a Resource with no validator mid-write
 
 - status: todo
 - priority: medium
+- backend: fs
 - labels: filesystem-backend, consistency
 - discovered-from: code review of the working tree (2026-09-05)
 - acceptance:
@@ -268,10 +280,11 @@ is not affected. Candidate fixes: have reads take the resource mutex, or write
 the sidecar first and make the content file visible last (a rename), so the
 sidecar is present whenever the bytes are.
 
-### WAS-132: [M] A present but unparseable `If-None-Match` on a write is a 400
+### WAS-132: [M] (*) A present but unparseable `If-None-Match` on a write is a 400
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: conditional-requests, consistency
 - discovered-from: whole-codebase review (2026-09-17), verified
 - acceptance:
@@ -293,10 +306,11 @@ replace: the loser of a provisioning race rewrites the winner's `controller` or
 `type`, with a 204 to both. Node joins duplicate `If-None-Match` headers with
 `, `, so a client library plus a wrapper that both set `*` produce `*, *`.
 
-### WAS-134: [M] Compose Update Collection under the lock
+### WAS-134: [M] (*) Compose Update Collection under the lock
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: consistency, plaintext-indexes, backend
 - discovered-from: whole-codebase review (2026-09-17), verified (19 of 20
   trials)
@@ -317,10 +331,11 @@ violations, not lost carry-forwards. A `unique: true` declaration disappears
 with a 204 to both writers, or a `backend` selection silently reverts to the
 default. The comment at the re-check claims the opposite.
 
-### WAS-135: [M] Torn-run ordering in the filesystem backend's delete and update paths
+### WAS-135: [M] (fs) Torn-run ordering in the filesystem backend's delete and update paths
 
 - status: todo
 - priority: medium
+- backend: fs
 - labels: filesystem-backend, consistency
 - discovered-from: whole-codebase review (2026-09-17)
 - touches:
@@ -351,10 +366,11 @@ default. The comment at the re-check claims the opposite.
         closed or documented: a reader between the two is served the new
         `backends` under the old `ETag`
 
-### WAS-136: [M] Backend registry lifecycle: cache, immutability, in-use checks, data-plane delete
+### WAS-136: [M] (*) Backend registry lifecycle: cache, immutability, in-use checks, data-plane delete
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: gdrive-byos, backend, consistency
 - discovered-from: whole-codebase review (2026-09-17)
 - touches:
@@ -400,10 +416,11 @@ data-plane delete, a no-op one included, because `deleteResource` returns
 nothing. The effect is minor (a policy over an absent Resource grants a read of
 nothing), but the two backends disagree with the contract.
 
-### WAS-144: [M] Ignore a non-`Signature` `Authorization` header on an anonymous read
+### WAS-144: [M] (*) Ignore a non-`Signature` `Authorization` header on an anonymous read
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: authorization, public-read
 - discovered-from: whole-codebase review (2026-09-17), verified
 - acceptance:
@@ -421,10 +438,11 @@ nothing), but the two backends disagree with the contract.
   - [ ] Tests for `Bearer` and `Basic` on a `PublicCanRead` Resource, and an
         anonymous equality query on a public Collection
 
-### WAS-145: [M] Media-type edge cases in `resolveResourceInput`
+### WAS-145: [M] (*) Media-type edge cases in `resolveResourceInput`
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: correctness, content-types
 - discovered-from: whole-codebase review (2026-09-17), verified
 - acceptance:
@@ -444,10 +462,11 @@ nothing), but the two backends disagree with the contract.
 
 ---
 
-### WAS-191: [M] The sidecar is the commit point of a filesystem Resource write
+### WAS-191: [M] (fs) The sidecar is the commit point of a filesystem Resource write
 
 - status: todo
 - priority: medium
+- backend: fs
 - labels: filesystem-backend, consistency, replication
 - discovered-from: WAS-172 (2026-10-03)
 - touches:
@@ -476,10 +495,11 @@ path's own ordering.
 
 ---
 
-### WAS-181: [L] Pin that a sidecar imported without timestamps is served with both on each backend
+### WAS-181: [L] (*) Pin that a sidecar imported without timestamps is served with both on each backend
 
 - status: todo
 - priority: low
+- backend: *
 - labels: import-export, filesystem-backend, postgres-backend, test-coverage
 - discovered-from: code review of src/backends and src/lib (2026-09-11)
 - touches:
@@ -503,10 +523,11 @@ Collection Metadata rule is different on purpose and stays as is: a Collection
 imported without `createdAt` keeps it absent, so a later write cannot date the
 container after the contents it holds.
 
-### WAS-83: [L] Anonymous Get Policy with a malformed id now returns 401
+### WAS-83: [L] (*) Anonymous Get Policy with a malformed id now returns 401
 
 - status: todo
 - priority: low
+- backend: *
 - labels: policy, wire-contract
 - discovered-from: code review of the working tree (2026-09-05)
 - acceptance:
@@ -523,10 +544,11 @@ behaved this way, but wire-observable and uncovered by any test.
 
 ---
 
-### WAS-193: [L] `epoch` moves on a `/meta` write without a content stamp
+### WAS-193: [L] (*) `epoch` moves on a `/meta` write without a content stamp
 
 - status: todo
 - priority: low
+- backend: *
 - labels: data-model, replication, encryption
 - discovered-from: WAS-172 review (2026-10-03)
 - touches:
@@ -549,10 +571,11 @@ orders by content stamps would not see that change as a content revision.
 Conformance gaps against the spec, spec-side proposals this server would
 implement once decided, and research that may end in either.
 
-### WAS-142: [M] Problem documents on every route, and Fastify's own errors typed
+### WAS-142: [M] (*) Problem documents on every route, and Fastify's own errors typed
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: errors, wire-contract
 - discovered-from: whole-codebase review (2026-09-17), verified
 - acceptance:
@@ -572,10 +595,11 @@ implement once decided, and research that may end in either.
   - [ ] Decide whether 401s carry a `WWW-Authenticate` challenge, and with what
         value (wire-level)
 
-### WAS-66: [M] Accept ids beyond the unreserved charset (percent-encoding on disk, real webvh round-trip)
+### WAS-66: [M] (*) Accept ids beyond the unreserved charset (percent-encoding on disk, real webvh round-trip)
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: data-model, backend, webvh
 - touches:
   - was-teaching-server: `src/lib/validateId.ts` (the charset gate),
@@ -626,10 +650,11 @@ charset ruled out for free: case-insensitive filesystems (two ids differing only
 by case), Windows reserved names, and Unicode normalization (two byte sequences
 rendering identically) may each need an explicit stance.
 
-### WAS-64: [M] Default document for public collections (`index.html`)
+### WAS-64: [M] (*) Default document for public collections (`index.html`)
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: spec-side, policy, serving
 - discovered-from: agent storage demo next steps (2026-08-21)
 - touches:
@@ -658,10 +683,11 @@ hosted-page sandbox header. Every route group installs the `sandboxHostedPage`
 gets it with no extra step. Have the tests assert the header on the served
 document.
 
-### WAS-162: [M] Research verifying zcap invocations signed by a did:webvh hosted elsewhere
+### WAS-162: [M] (*) Research verifying zcap invocations signed by a did:webvh hosted elsewhere
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: research, zcap, webvh, social
 - discovered-from: cross-host did:webvh invoker question (2026-09-29)
 - touches:
@@ -692,10 +718,11 @@ keeps the member layout open for account DIDs, pending this item.
 
 ---
 
-### WAS-194: [M] `encryption` is declared only when the Collection is created
+### WAS-194: [M] (*) `encryption` is declared only when the Collection is created
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: collection-metadata, encryption, wire-contract
 - discovered-from: WAS-173 (2026-10-03)
 - touches:
@@ -738,10 +765,11 @@ all four EDV server affordances). The spec has since removed the `features`
 vocabulary the plan advertised those affordances through, and so has this server
 (WAS-111); the affordances themselves are unchanged.
 
-### WAS-1: [H] [blocks 4] Google Cloud console identity verification for interopalliance.org
+### WAS-1: [H] (*) [blocks 4] Google Cloud console identity verification for interopalliance.org
 
 - status: todo
 - priority: high
+- backend: *
 - labels: gdrive-byos, policy
 - blocks: WAS-2, WAS-3, WAS-4, WAS-5
 - acceptance:
@@ -757,10 +785,11 @@ setup, both adapter stages, and the ToS clearance conversation all presuppose a
 verified org. Note: This is technically not necessary for the feature, but will
 help with verification and testing.
 
-### WAS-2: [H] [blocks 1] [after WAS-1] Google OAuth confidential client + consent setup (plan stage 4)
+### WAS-2: [H] (*) [blocks 1] [after WAS-1] Google OAuth confidential client + consent setup (plan stage 4)
 
 - status: todo
 - priority: high
+- backend: *
 - labels: gdrive-byos, oauth
 - blocked-by: WAS-1
 - blocks: WAS-3
@@ -789,10 +818,11 @@ refresh tokens** (server master key vs. the WebKMS substrate; rotation) --
 distinct from EDV client keys, which the server never holds. Prerequisite for
 the two adapter stages below.
 
-### WAS-3: [H] [blocks 1] [after WAS-1, WAS-2] Google Drive plaintext adapter (plan stage 5)
+### WAS-3: [H] (*) [blocks 1] [after WAS-1, WAS-2] Google Drive plaintext adapter (plan stage 5)
 
 - status: todo
 - priority: high
+- backend: *
 - labels: gdrive-byos, backend
 - blocked-by: WAS-1, WAS-2
 - blocks: WAS-4
@@ -810,10 +840,11 @@ still open), resumable uploads, `about.get` quotas, backoff with jitter. v1
 targets personal / My Drive only (one code path covers consumer and Workspace
 personal storage).
 
-### WAS-4: [M] [after WAS-1, WAS-3] Google Drive EDV flavor (plan stage 6)
+### WAS-4: [M] (*) [after WAS-1, WAS-3] Google Drive EDV flavor (plan stage 6)
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: gdrive-byos, encryption
 - blocked-by: WAS-1, WAS-3
 - acceptance:
@@ -834,10 +865,11 @@ mitigations are worth their cost (size padding, keeping blinded attributes off
 settle here, along with what to upstream into the spec's privacy-considerations
 text.
 
-### WAS-58: [M] Aggregate quota reporting across an account's auxiliary Spaces
+### WAS-58: [M] (*) Aggregate quota reporting across an account's auxiliary Spaces
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: server, quotas, webvh
 - acceptance:
   - [ ] Decide the aggregation payload shape and direction with Dmitri
@@ -857,10 +889,11 @@ per-Space breakdown in a new member (which would need an addition to
 `@interop/storage-core`'s quota types). Both are permanent wire choices and need
 deciding with Dmitri before implementation.
 
-### WAS-70: [M] Keystore deletion (route, backend method, orphan GC)
+### WAS-70: [M] (*) Keystore deletion (route, backend method, orphan GC)
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: kms, backend, cleanup
 - discovered-from: freewallet FW-400 design pass (2026-08-31), open question 3
 - touches:
@@ -906,10 +939,11 @@ Space's own `did.jsonl`), so the keystore is not merely leaked but permanently
 unauthenticatable: no request can reach it. With no orphan GC, these accumulate
 unboundedly -- plaintext at rest unless `KMS_RECORD_KEK` is set.
 
-### WAS-73: [M] Periodic sweep of Spaces and keystores whose did:webvh controller no longer resolves
+### WAS-73: [M] (*) Periodic sweep of Spaces and keystores whose did:webvh controller no longer resolves
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: cleanup, backend, kms
 - discovered-from: freewallet FW-400 design pass v3 (2026-08-31), the eventual
   mender of its accepted (b4)-(b5) residue; also the sweep WAS-70's orphan-GC
@@ -939,10 +973,11 @@ are all deleted is unreachable to every client, since nothing can locate it and
 nothing can authorize against it, so the server is the only party that can
 remove it.
 
-### WAS-195: [M] Store the content digest of each Resource and chunk
+### WAS-195: [M] (*) Store the content digest of each Resource and chunk
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: data-model, storage, provenance, collection-metadata
 - discovered-from: WAS-173 (2026-10-03)
 - touches:
@@ -990,10 +1025,11 @@ export signs the stored digest or keeps hashing the archived bytes is open,
 since a stored value does not detect damaged bytes. The write-time statements of
 WAS-184 need a digest at write time and would read this one.
 
-### WAS-5: [L] [after WAS-1] Drive API ToS use-case clearance
+### WAS-5: [L] (*) [after WAS-1] Drive API ToS use-case clearance
 
 - status: todo
 - priority: low
+- backend: *
 - labels: gdrive-byos, policy
 - blocked-by: WAS-1
 - acceptance:
@@ -1013,10 +1049,11 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-180: [M] Delete Space removes revocations before the Space directory
+### WAS-180: [M] (fs) Delete Space removes revocations before the Space directory
 
 - status: todo
 - priority: medium
+- backend: fs
 - labels: filesystem-backend, zcap, correctness
 - acceptance:
   - [ ] The filesystem backend's `deleteSpace` removes the Space directory
@@ -1038,10 +1075,11 @@ pull; it is an existing defect independent of replication.
 
 ---
 
-### WAS-96: [M] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] (*) Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: data-model, replication, changes-feed, etag, sync
 - design: designs/WAS-96-multi-primary-spaces.md
 - design-approved: 2026-10-02
@@ -1183,10 +1221,11 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
-### WAS-207: [L] Resolve a replicated `did:webvh` log that declares witnesses
+### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 
 - status: todo
 - priority: low
+- backend: *
 - labels: replication, webvh
 - discovered-from: WAS-177 (2026-10-04)
 - acceptance:
@@ -1202,10 +1241,11 @@ A wallet that uses witnesses cannot use a replica until this is decided.
 
 ---
 
-### WAS-209: [L] Cover the replicated-controller path on Postgres and under the client-annex clause
+### WAS-209: [L] (pg) Cover the replicated-controller path on Postgres and under the client-annex clause
 
 - status: todo
 - priority: low
+- backend: pg
 - labels: replication, webvh, tests, postgres-backend
 - discovered-from: WAS-177 (2026-10-04)
 - acceptance:
@@ -1220,10 +1260,11 @@ two-server test runs on the filesystem backend only.
 
 ---
 
-### WAS-201: [L] Replicate a Collection stored on a registered external backend
+### WAS-201: [L] (*) Replicate a Collection stored on a registered external backend
 
 - status: todo
 - priority: low
+- backend: *
 - labels: replication, backends
 - discovered-from: WAS-176 (2026-10-04)
 - acceptance:
@@ -1242,10 +1283,11 @@ layer does (`fetchCollectionAndBackend`).
 
 ---
 
-### WAS-198: [L] Keep peer did:webvh head records and fetch bounds across eviction and restart
+### WAS-198: [L] (*) Keep peer did:webvh head records and fetch bounds across eviction and restart
 
 - status: todo
 - priority: low
+- backend: *
 - labels: security, replication, webvh
 - discovered-from: WAS-175 (adversarial review, 2026-10-03; code review,
   2026-10-03)
@@ -1285,10 +1327,11 @@ and is the part to design first.
 
 ---
 
-### WAS-184: [L] Write-time creation and revision statements
+### WAS-184: [L] (*) Write-time creation and revision statements
 
 - status: todo
 - priority: low
+- backend: *
 - labels: security, replication, provenance, wire-contract
 - touches:
   - wallet-attached-storage-spec: the provenance statement shape (two statements
@@ -1336,10 +1379,11 @@ is in the storage, archive and import shapes.
 
 Request cost on a path that already answers correctly.
 
-### WAS-196: [M] Bound the cost of accumulated Collection tombstones
+### WAS-196: [M] (*) Bound the cost of accumulated Collection tombstones
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: performance, quotas, filesystem-backend, postgres-backend
 - discovered-from: code review of the Collection tombstone change (2026-10-03)
 - acceptance:
@@ -1379,10 +1423,11 @@ Metadata file. Another is moving a tombstone out of the Collection directory
 namespace. The Postgres backend filters on the `deleted` column in SQL, so its
 per-request cost is an index question, but its row count grows the same way.
 
-### WAS-203: [M] Skip a feed document the puller already holds before reading its body
+### WAS-203: [M] (*) Skip a feed document the puller already holds before reading its body
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: performance, replication, filesystem-backend, postgres-backend
 - discovered-from: simplify pass over the replication change (2026-10-04)
 - acceptance:
@@ -1417,10 +1462,11 @@ The feed document already carries the record's stamp, so the decision needs no
 peer request. The local read is the sidecar on the filesystem backend and the
 stamp columns in Postgres.
 
-### WAS-212: [M] Open a Resource's byte stream lazily so a conditional read costs one metadata read
+### WAS-212: [M] (*) Open a Resource's byte stream lazily so a conditional read costs one metadata read
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: performance, caching, filesystem-backend, postgres-backend
 - discovered-from: question about the Resource GET path (2026-10-05)
 - acceptance:
@@ -1473,10 +1519,11 @@ deployment target for the wallet log workloads that motivated the 304 path.
 `StorageBackend` and `ResourceResult` are server-local types with no implementer
 outside this repo, so the shape change needs no cross-repo follow-up.
 
-### WAS-204: [L] Stop re-applying a peer's Collection tombstones on every pull cycle
+### WAS-204: [L] (*) Stop re-applying a peer's Collection tombstones on every pull cycle
 
 - status: todo
 - priority: low
+- backend: *
 - labels: performance, replication, filesystem-backend, postgres-backend
 - discovered-from: simplify pass over the replication change (2026-10-04)
 - acceptance:
@@ -1506,10 +1553,11 @@ before the call, or the stamps of the tombstones already applied kept in the
 registration's loop state. WAS-196 bounds what tombstones cost a request. This
 item is the pull loop's share of the same growth.
 
-### WAS-199: [L] Verify a peer invoker's delegation chain once
+### WAS-199: [L] (*) Verify a peer invoker's delegation chain once
 
 - status: todo
 - priority: low
+- backend: *
 - labels: performance, zcap, replication
 - discovered-from: simplify pass over the peer `did:webvh` resolution change
   (2026-10-04)
@@ -1563,10 +1611,11 @@ The library option must not weaken verification. It should carry the verified
 chain result itself, keyed to the capability it was computed for, and the
 invocation proof and the invoker-is-controller check still run in full.
 
-### WAS-77: [L] Per-Collection filename cache on the filesystem backend
+### WAS-77: [L] (fs) Per-Collection filename cache on the filesystem backend
 
 - status: todo
 - priority: low
+- backend: fs
 - labels: performance, filesystem-backend
 - discovered-from: signup request-pattern review (2026-09-03)
 - acceptance:
@@ -1608,10 +1657,11 @@ plus a survey of the server's own `test/` suite. Suite-side items land in
 `@interop/was-conformance-suite` (tracked here per convention); the `test/`
 items are in-repo.
 
-### WAS-46: [H] Un-skip the Postgres and flag-gated storage-contract tests
+### WAS-46: [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
 
 - status: todo
 - priority: high
+- backend: pg
 - labels: tests, backend
 - discovered-from: test coverage analysis (2026-07-22)
 - acceptance:
@@ -1629,10 +1679,11 @@ tests that only run when a backend advertises `hardQuota`/`exactUsage` then run
 against _no_ backend at all, since the filesystem harness sets both flags false
 -- the race-condition tests the flags exist for are dormant by default.
 
-### WAS-47: [M] Cover `start.ts` and the untested config parsers
+### WAS-47: [M] (*) Cover `start.ts` and the untested config parsers
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: tests
 - discovered-from: test coverage analysis (2026-07-22)
 - acceptance:
@@ -1655,10 +1706,11 @@ the forks. Draft issue text below, ready to paste (trim the fork references if
 filing before the forks are published). The two issues reference each other as
 companions.
 
-### WAS-9: [M] Open the upstream `minimal-cipher` AEAD-gap issue
+### WAS-9: [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: upstream, encryption
 - discovered-from: test coverage analysis (2026-07-22)
 - acceptance:
@@ -1695,10 +1747,11 @@ caller-supplied protected-header params"**
 > document id, key epoch, scheme version -- and detect ciphertext swapped
 > between addresses by verifying the parsed header after decrypt.
 
-### WAS-10: [M] Open the upstream `edv-client` truncation issue
+### WAS-10: [M] (*) Open the upstream `edv-client` truncation issue
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: upstream, encryption
 - discovered-from: test coverage analysis (2026-07-22)
 - acceptance:
@@ -1729,10 +1782,11 @@ caller-supplied protected-header params"**
 
 ---
 
-### WAS-103: [L] Make `spacePath` / `collectionPath` return the canonical container URL by default
+### WAS-103: [L] (*) Make `spacePath` / `collectionPath` return the canonical container URL by default
 
 - status: todo
 - priority: low
+- backend: *
 - labels: cleanup, paths
 - discovered-from: simplify pass on the v0.5 route table (2026-09-12)
 - acceptance:
@@ -1757,10 +1811,11 @@ no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
 sub-resource builders extend; about 9 external call sites use it, and each
 should move to the named base builder or a sub-resource builder.
 
-### WAS-168: [L] `SERVER_URL` move runbook for the server DID log (portable domain move)
+### WAS-168: [L] (*) `SERVER_URL` move runbook for the server DID log (portable domain move)
 
 - status: todo
 - priority: low
+- backend: *
 - labels: operations, security, tooling
 - blocked-by: did-cli-typescript CLI-22
 - acceptance:
@@ -1785,10 +1840,11 @@ with the same SCID. Not scheduled for implementation yet.
 
 ---
 
-### WAS-202: [L] Pull-loop tests beyond the two-server filesystem case
+### WAS-202: [L] (*) Pull-loop tests beyond the two-server filesystem case
 
 - status: todo
 - priority: low
+- backend: *
 - labels: tests, replication
 - discovered-from: WAS-176 (2026-10-04)
 - acceptance:
@@ -1810,10 +1866,11 @@ at all for the first two loop branches.
 
 ---
 
-### WAS-210: [L] One function decides where a `did:webvh` resolves from
+### WAS-210: [L] (*) One function decides where a `did:webvh` resolves from
 
 - status: todo
 - priority: low
+- backend: *
 - labels: webvh, authorization, cleanup
 - discovered-from: review of the WAS-177 change (2026-10-04)
 - acceptance:
@@ -1837,10 +1894,11 @@ because it restructures the authorization path.
 
 ---
 
-### WAS-215: [L] Replace the hand-rolled usage cache in the filesystem backend with `LruCache`
+### WAS-215: [L] (fs) Replace the hand-rolled usage cache in the filesystem backend with `LruCache`
 
 - status: todo
 - priority: low
+- backend: fs
 - labels: filesystem, quotas, cleanup
 - discovered-from: simplify pass over the `MAX_RESOURCES_PER_SPACE` removal
   branch (2026-10-08); do after that branch lands
@@ -1921,10 +1979,11 @@ section is ordered by id, not by dependency.
 
 <!-- roadmap-order: by-id -->
 
-### WAS-12: [L] Live `pull.stream$` SSE endpoint for the changes feed
+### WAS-12: [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, sync
 - acceptance:
   - [ ] An SSE endpoint emits `{ documents, checkpoint }` batches so clients
@@ -1932,10 +1991,11 @@ section is ordered by id, not by dependency.
   - [ ] Filesystem backend implements it via poll-diffs; Postgres via
         `LISTEN/NOTIFY`
 
-### WAS-13: [L] Tombstone GC / retention policy
+### WAS-13: [L] (*) Tombstone GC / retention policy
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, sync
 - acceptance:
   - [ ] A retention policy defines how long a tombstone outlives the slowest
@@ -1951,10 +2011,11 @@ pull-only transport gives the serving server no view of what a peer has pulled,
 so v1 of replication never reaps (Collection tombstones included, WAS-174);
 retention needs peers to report their position back, which this item designs.
 
-### WAS-14: [M] Attachment / blob replication for sync
+### WAS-14: [M] (*) Attachment / blob replication for sync
 
 - status: todo
 - priority: medium
+- backend: *
 - labels: someday, sync
 - acceptance:
   - [ ] A size/streaming design produced, tied to the chunked-streams and
@@ -1976,10 +2037,11 @@ whole-stream consistency (two origins each rewriting a whole stream converge on
 a mix of chunks under per-chunk LWW; tying a chunk's validity to the parent
 revision it was written under is one additive member on the chunk record).
 
-### WAS-15: [L] Client-produced snapshot/checkpoint entries in the changes feed
+### WAS-15: [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, sync, encryption
 - acceptance:
   - [ ] A client-produced snapshot/checkpoint entry type in the changes feed
@@ -1997,10 +2059,11 @@ server serving stale state -- the gap Cryptomator leaves open after two audits,
 per the hardening notes) and the compaction tier the linear `changesSince` feed
 currently lacks. Interlocks with the tombstone-GC follow-on (WAS-13).
 
-### WAS-16: [L] Opaque/blinded Resource ids + padded sizes (opt-in)
+### WAS-16: [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, encryption, privacy
 - acceptance:
   - [ ] Client-chosen opaque ids (deterministic AES-SIV name encryption as the
@@ -2019,10 +2082,11 @@ axis. Feeds the "server knowledge" spec section (ECS-4 in the Encrypted
 Collections spec roadmap): whatever stays visible should be listed there as a
 documented, deliberate residue.
 
-### WAS-18: [L] Publish the StorageBackend port for npm-installable backends
+### WAS-18: [L] (*) Publish the StorageBackend port for npm-installable backends
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, backend
 - acceptance:
   - [ ] The port published outside the server (`StorageBackend` + supporting
@@ -2046,10 +2110,11 @@ the port; the in-repo `test/` suites, which already run against an injected
 backend, are the seed). Open scoping question: ship the three together or
 piecemeal.
 
-### WAS-19: [L] SQLite backend
+### WAS-19: [L] (*) SQLite backend
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, backend
 - acceptance:
   - [ ] A `node:sqlite`-based backend implements the port and passes the `test/`
@@ -2064,10 +2129,11 @@ LMDB is effectively superseded (port already proven twice, misaligned with the
 query roadmap, buffers blobs in RAM); FoundationDB stays a far-future hyperscale
 note.
 
-### WAS-20: [L] Full-text / vector search query profiles
+### WAS-20: [L] (*) Full-text / vector search query profiles
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, query
 - acceptance:
   - [ ] New `POST .../query` profiles + `features` tokens per the established
@@ -2081,10 +2147,11 @@ interacts with the byte-exact vs. normalized-projection tension (the shipped
 profiles keep stored bytes exact and index write-time projections; search would
 ride the same path).
 
-### WAS-21: [L] Composite adapter
+### WAS-21: [L] (*) Composite adapter
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, backend
 - acceptance:
   - [ ] One `StorageBackend` satisfied by several specialized stores, keeping
@@ -2098,10 +2165,11 @@ composition lives behind the port or above it. (Different axis from BYOS
 `managedBy: external`, which selects _whose_ storage a Collection lives on, not
 how the server's own backend is composed.)
 
-### WAS-22: [L] External KEK custody behind `recordKekLoader`
+### WAS-22: [L] (*) External KEK custody behind `recordKekLoader`
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, kms
 - acceptance:
   - [ ] `recordKekLoader`'s return type widened to
@@ -2117,10 +2185,11 @@ step, worth doing before any adapter exists: widen the loader's return type,
 since an external custodian needs an async loader (network fetch, with caching
 and a negative-cache policy for retired KEKs).
 
-### WAS-23: [L] Sub-path-mounted `SERVER_URL` drops its base path in built URLs
+### WAS-23: [L] (*) Sub-path-mounted `SERVER_URL` drops its base path in built URLs
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, bug
 - acceptance:
   - [ ] A `serverUrl`-rooted join helper preserves the base path at all join
@@ -2143,10 +2212,11 @@ fixture. Because it touches the ZCap match path, treat it as its own change.
 This is the server side of the same defect `was-client` fixed in its 2026-07
 refactor (its finding #12).
 
-### WAS-24: [L] Server-enforced JSON Schema per Collection
+### WAS-24: [L] (*) Server-enforced JSON Schema per Collection
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, data-model
 - acceptance:
   - [ ] An optional `schema` Collection property (a JSON Schema the server
@@ -2163,10 +2233,11 @@ post-authorization write path, plaintext-JSON-only, mutually exclusive with
 `encryption` for the same reason. Worth speccing as its own registry or
 Collection-property section.
 
-### WAS-25: [L] Equality-index extensions
+### WAS-25: [L] (*) Equality-index extensions
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, query
 - acceptance:
   - [ ] Compound indexes (e.g.
@@ -2186,10 +2257,11 @@ encrypted photos, since `custom` metadata is server-visible plaintext
 regardless; (c) _path-valued index names_ -- extending the `name` grammar to
 JSON Pointer for nested attributes.
 
-### WAS-36: [L] Server-signed changes-feed checkpoints (split-view detection)
+### WAS-36: [L] (*) Server-signed changes-feed checkpoints (split-view detection)
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, sync, security
 - acceptance:
   - [ ] The server signs feed checkpoints ("as of feed version N, the head hash
@@ -2213,10 +2285,11 @@ direction (a reader detecting a server serving stale ciphertext); this item is
 the server-attested direction. Interlocks with WAS-12 (the SSE `checkpoint`
 batch is a natural carrier).
 
-### WAS-179: [L] Read-only replica switch
+### WAS-179: [L] (*) Read-only replica switch
 
 - status: todo
 - priority: low
+- backend: *
 - labels: someday, replication
 - acceptance:
   - [ ] A per-server, controller-only switch on a replicated Space refuses every
@@ -2234,10 +2307,11 @@ grants on the replica; this item enforces it.
 Every `draft` item: no actionable done-state yet. A draft states why it is
 parked and gains acceptance criteria when promoted to `todo`.
 
-### WAS-11: [L] Space-level `/query`
+### WAS-11: [L] (*) Space-level `/query`
 
 - status: draft (spec-blocked)
 - priority: low
+- backend: *
 - labels: query, spec-blocked
 - acceptance: none yet -- the operation is reserved in the spec with nothing to
   implement
@@ -2253,10 +2327,11 @@ MVP -- tombstones, `changesSince`, the `changes` query profile, and the
 freewallet browser adapter -- all shipped; the wire contract is normative in the
 spec's Query Profile Registry appendix + Conditional Requests section).
 
-### WAS-17: [L] BYOS beyond My-Drive OAuth
+### WAS-17: [L] (*) BYOS beyond My-Drive OAuth
 
 - status: draft (parking record)
 - priority: low
+- backend: *
 - labels: someday, gdrive-byos
 - acceptance: none yet -- recorded so the v1 adapter doesn't foreclose these;
   revisit only on demand
@@ -2272,10 +2347,11 @@ providers_ -- the `provider`-keyed adapter + OAuth registration generalizes to
 Dropbox / OneDrive / S3-compatible; Google Drive is the first concrete
 `external` provider, not a special case.
 
-### WAS-69: [L] Drop `Ed25519Signature2020` from the delegation-proof verify side
+### WAS-69: [L] (*) Drop `Ed25519Signature2020` from the delegation-proof verify side
 
 - status: draft
 - priority: low
+- backend: *
 - labels: zcap, authorization, cleanup
 - discovered-from: the 2026-08-29 move of delegation proofs to `eddsa-jcs-2022`
   (freewallet FW-395), whose server half accepts both suites
@@ -2300,10 +2376,11 @@ Promote this to `todo` when both hold, with acceptance criteria naming how each
 was confirmed. Until then the cost of carrying the old suite is one extra suite
 instance per verification, which only ever matches proofs of its own type.
 
-### WAS-167: [L] Further uses of the server identity (write receipts, epoch attestation, delegatee, signed manifest)
+### WAS-167: [L] (*) Further uses of the server identity (write receipts, epoch attestation, delegatee, signed manifest)
 
 - status: draft
 - priority: low
+- backend: *
 - labels: someday, security
 
 Parking record split from WAS-7 (archived) on 2026-09-29, so the option value of
@@ -2333,10 +2410,11 @@ shown to a third party, or compared between parties.
 
 Signed changes-feed checkpoints already have their own item, WAS-36.
 
-### WAS-185: [L] Several server processes over one store (HLC and origin id)
+### WAS-185: [L] (*) Several server processes over one store (HLC and origin id)
 
 - status: draft
 - priority: low
+- backend: *
 - labels: someday, replication, filesystem-backend, postgres-backend
 
 Parking record (discovered-from: WAS-96, open point 12). v1 requires one server
