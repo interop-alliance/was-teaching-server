@@ -67,9 +67,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `request.server` (the `FastifyInstance` decorated in `server.ts`), not via a
   `this` binding. A write answers from what the backend returns (the validator,
   whether the write created the record, and the stored object as the write
-  stamped it), not from a read made after it. The status and body rules of each
-  write are in [docs/validators-and-stamps.md](docs/validators-and-stamps.md)
-  under "Write responses".
+  stamped it), not from a read made after it. Update Collection composes the
+  object it stores inside the backend's write, from the record read under the
+  lock, so a full replacement carries forward what that record holds. The status
+  and body rules of each write are in
+  [docs/validators-and-stamps.md](docs/validators-and-stamps.md) under "Write
+  responses".
 - **`src/auth-header-hooks.ts`** -- `requireAuthHeaders` (401 if missing) and
   `parseAuthHeaders` (parses `Authorization` / `Capability-Invocation` /
   `Digest` into `request.zcap`).

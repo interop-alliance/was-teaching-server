@@ -13,15 +13,11 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import {
   fetchCollectionAndBackend,
   getCollectionOrThrow,
-  governedDescriptorsOf,
   projectCollectionMetadata,
   resourceWriteOptions
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
-import {
-  assertCollectionMetadataTransition,
-  composeCollectionMetadata
-} from './collectionInput.js'
+import { composeCollectionMetadata } from './collectionInput.js'
 import { parseCollectionMetadataBody } from '../lib/collectionMetadataBody.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
@@ -39,9 +35,9 @@ import type {
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
   declaredIndexesOf,
+  declaredUniqueIndexesOf,
   parseEqualityQueryBody,
-  parseListFilter,
-  uniqueIndexesOf
+  parseListFilter
 } from '../lib/equalityIndex.js'
 import { resolveBackendDescriptor } from '../lib/backends.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
@@ -114,13 +110,13 @@ function newlyUniqueDeclarations({
   incoming: CollectionMetadata
 }): NormalizedIndexDeclaration[] {
   const existingUnique = new Set(
-    uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionMetadata: existing })
-    }).map(declaration => declaration.name)
+    declaredUniqueIndexesOf({ collectionMetadata: existing }).map(
+      declaration => declaration.name
+    )
   )
-  return uniqueIndexesOf({
-    indexes: declaredIndexesOf({ collectionMetadata: incoming })
-  }).filter(declaration => !existingUnique.has(declaration.name))
+  return declaredUniqueIndexesOf({ collectionMetadata: incoming }).filter(
+    declaration => !existingUnique.has(declaration.name)
+  )
 }
 
 export class CollectionRequest {
@@ -490,58 +486,24 @@ export class CollectionRequest {
       requestName
     })
 
-    // zCap checks out, continue. The stored object is read directly (not
-    // through `getCollectionOrThrow`), since the derived `encryption` and
-    // `revisions` of a log-governed Collection must not be re-persisted; the
-    // governed descriptors are resolved separately for the checks that need
-    // them.
-    const [existingCollection, logDescriptors] = await Promise.all([
-      storage.getCollectionMetadata({ spaceId, collectionId }),
-      governedDescriptorsOf({ storage, serverUrl, spaceId, collectionId })
-    ])
-    const governed = existingCollection ? logDescriptors : undefined
-    const collectionMetadata = await composeCollectionMetadata({
-      request,
-      spaceId,
-      collectionId,
-      parsed,
-      ...(existingCollection && {
-        existing: stripMetadataValidator(existingCollection)
-      }),
-      governed,
-      requestName
-    })
-
-    // Adding a `unique: true` claim for a name that was not unique before MUST
-    // be rejected if the Collection's already-stored Resources already violate
-    // it (spec "Collection Metadata Data Model"). Scan for a pre-existing
-    // conflict before acknowledging the update, when the data-plane backend
-    // supports the scan. Best-effort under concurrency (like the count-quota
-    // checks): a Resource write racing this update could still slip a
-    // conflicting value in, which the write-time uniqueness check then rejects.
-    const newlyUnique = newlyUniqueDeclarations({
-      existing: existingCollection,
-      incoming: collectionMetadata
-    })
-    if (newlyUnique.length > 0) {
-      const dataBackend = await resolveBackend({
-        request,
-        spaceId,
-        collectionId,
-        collectionMetadata
-      })
-      if (dataBackend.findEqualityUniqueViolation) {
-        const violation = await dataBackend.findEqualityUniqueViolation({
-          spaceId,
-          collectionId,
-          indexes: newlyUnique
-        })
-        if (violation) {
-          throw new UniqueAttributeConflictError({ variant: 'equality' })
-        }
-      }
-    }
-
+    // zCap checks out, continue. The object is composed inside the backend's
+    // write, from the stored object the backend reads under its lock: a full
+    // replacement carries an omitted `plaintext`, `backend` or `generator`
+    // forward from the stored object, and composed against a pre-lock read it
+    // would carry forward what that read saw and drop what a concurrent write
+    // added in between (a just-declared `unique` index, a `backend`
+    // selection) with a 204 to both writers. The descriptor checks
+    // (`encryption`, `revisions`, the `plaintext` / `encryption` exclusion)
+    // run inside the same callback, against the same record, so an appended
+    // epoch cannot be rolled back either. The guarantees hold
+    // unconditionally, not just under `If-Match`.
+    //
+    // The stored object is the backend's record (not `getCollectionOrThrow`),
+    // since the derived `encryption` and `revisions` of a log-governed
+    // Collection must not be re-persisted; the governed descriptors are
+    // derived from the log the backend hands over, read under the same lock,
+    // memoized by the log's validator so the log is parsed only if it moved.
+    //
     // `If-Match` (the `conditional-writes` feature) makes the write a
     // compare-and-swap on the object's current `ETag`, so two clients
     // concurrently editing it (e.g. both adding a recipient) cannot silently
@@ -549,8 +511,9 @@ export class CollectionRequest {
     // create (two clients racing to provision the same Collection cannot both
     // succeed, so the loser cannot overwrite the winner's `backend`). Both
     // opt-in: an unconditional PUT still upserts. Evaluated atomically with
-    // the write inside the backend; a stale validator or a present object
-    // surfaces as 412 `precondition-failed` (rethrown unchanged).
+    // the write inside the backend, before the composition, so a stale
+    // validator or a present object surfaces as 412 `precondition-failed`
+    // (rethrown unchanged) ahead of any refusal the body earns below.
     // Rethrow a typed ProblemError from the data-plane backend unchanged
     // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
     // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
@@ -558,25 +521,16 @@ export class CollectionRequest {
       storage.writeCollection({
         spaceId,
         collectionId,
-        collectionMetadata,
         createdBy: invokerDid(request),
         ...parseWritePreconditions(request.headers),
-        // Re-evaluate the descriptor checks (`encryption`, `revisions`) and the
-        // `plaintext` / `encryption` exclusion atomically with the write,
-        // against the prior
-        // the backend re-reads under its lock: the early checks ran against a
-        // pre-lock read, so without this a concurrent descriptor write in
-        // between could be silently clobbered (an appended epoch, or a
-        // just-added `plaintext`, dropped by this full replacement) even
-        // though both writers passed the checks -- the guarantees must hold
-        // unconditionally, not just under `If-Match`.
-        // The governed descriptors are derived from the log the backend
-        // hands over, read under that same lock; the derivation is memoized
-        // by the log's validator, so it is parsed again only if the log moved.
-        assertTransition: async ({ prior, log }) => {
-          assertCollectionMetadataTransition({
+        collectionMetadata: async ({ prior, log }) => {
+          const existing = prior && stripMetadataValidator(prior)
+          const collectionMetadata = await composeCollectionMetadata({
+            request,
+            spaceId,
+            collectionId,
             parsed,
-            existing: prior,
+            existing,
             governed: prior
               ? await getCachedGovernedDescriptors({
                   storage,
@@ -588,6 +542,41 @@ export class CollectionRequest {
               : undefined,
             requestName
           })
+
+          // Adding a `unique: true` claim for a name that was not unique
+          // before MUST be rejected if the Collection's already-stored
+          // Resources already violate it (spec "Collection Metadata Data
+          // Model"). Scan for a pre-existing conflict before acknowledging
+          // the update, when the data-plane backend supports the scan. The
+          // backend's write excludes the Space's Resource writes, and a
+          // Resource write reads the declaration under the lock this write
+          // holds, so one racing this update either finished before the scan
+          // or sees the declaration. A registered data-plane backend's writes
+          // do not pass through this server's lock, so there the scan stays
+          // best-effort and the write-time check catches what it missed.
+          const newlyUnique = newlyUniqueDeclarations({
+            existing,
+            incoming: collectionMetadata
+          })
+          if (newlyUnique.length > 0) {
+            const dataBackend = await resolveBackend({
+              request,
+              spaceId,
+              collectionId,
+              collectionMetadata
+            })
+            if (dataBackend.findEqualityUniqueViolation) {
+              const violation = await dataBackend.findEqualityUniqueViolation({
+                spaceId,
+                collectionId,
+                indexes: newlyUnique
+              })
+              if (violation) {
+                throw new UniqueAttributeConflictError({ variant: 'equality' })
+              }
+            }
+          }
+          return collectionMetadata
         }
       })
     )

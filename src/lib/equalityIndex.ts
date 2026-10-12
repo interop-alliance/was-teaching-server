@@ -177,7 +177,7 @@ export function declaredIndexesOf({
 /**
  * The normalized `unique: true` entries of a Collection's declared
  * `plaintext.indexes` (an absent or index-free declaration yields an empty
- * array). A write path passes these to the backend so it enforces the
+ * array). A backend reads these under its write lock so it enforces the
  * plaintext uniqueness claim atomically with the write
  * (`UniqueAttributeConflictError`, 409); a read path uses them to scope a
  * uniqueness scan. Because the existence-revealing 409 is raised only after a
@@ -198,6 +198,23 @@ export function uniqueIndexesOf({
   indexes?: Array<string | CollectionIndexDeclaration>
 }): NormalizedIndexDeclaration[] {
   return normalizeIndexes({ indexes }).filter(declaration => declaration.unique)
+}
+
+/**
+ * The `unique: true` declarations of a Collection Metadata object, the form a
+ * backend's Resource write derives from the object it read under its lock
+ * ({@link uniqueIndexesOf} over {@link declaredIndexesOf}). An absent object
+ * yields an empty array.
+ * @param options {object}
+ * @param [options.collectionMetadata] {CollectionMetadata}
+ * @returns {NormalizedIndexDeclaration[]}
+ */
+export function declaredUniqueIndexesOf({
+  collectionMetadata
+}: {
+  collectionMetadata?: Pick<CollectionMetadata, 'plaintext'>
+}): NormalizedIndexDeclaration[] {
+  return uniqueIndexesOf({ indexes: declaredIndexesOf({ collectionMetadata }) })
 }
 
 /**

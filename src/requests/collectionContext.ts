@@ -11,7 +11,6 @@ import type { FastifyRequest } from 'fastify'
 import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
-import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { stripMetadataValidator } from '../lib/metadataValidator.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
@@ -25,7 +24,6 @@ import type {
   ChunkMetadata,
   CollectionMetadata,
   ImmutableUnder,
-  NormalizedIndexDeclaration,
   ResourceMetadata,
   StorageBackend,
   StoredCollectionMetadata
@@ -216,27 +214,6 @@ export function writeOnceOptions({
 }
 
 /**
- * The `uniqueIndexes` write option: any `unique: true` index entries the
- * Collection declares ride along, so the backend enforces the uniqueness
- * claim atomically with the write (409). Empty when the Collection declares
- * none, so the backend receives no option at all.
- * @param options {object}
- * @param options.collectionMetadata {CollectionMetadata}   the Collection
- *   Metadata object as served
- * @returns {{ uniqueIndexes?: NormalizedIndexDeclaration[] }}
- */
-export function uniqueIndexOptions({
-  collectionMetadata
-}: {
-  collectionMetadata: Pick<CollectionMetadata, 'plaintext'>
-}): { uniqueIndexes?: NormalizedIndexDeclaration[] } {
-  const uniqueIndexes = uniqueIndexesOf({
-    indexes: declaredIndexesOf({ collectionMetadata })
-  })
-  return uniqueIndexes.length > 0 ? { uniqueIndexes } : {}
-}
-
-/**
  * The write options a Resource content write (Create Resource, Put Resource)
  * derives from the request and its Collection, beside the id, the input and
  * any precondition:
@@ -249,12 +226,15 @@ export function uniqueIndexOptions({
  * - `writerId`: the writer-attribution label (spec "Writer attribution") MAY
  *   be declared the same way, via the `Writer-Id` header; the server stores
  *   it opaquely and clears it when absent (declare-or-clear).
- * - `uniqueIndexes`: see {@link uniqueIndexOptions}.
  * - `immutable`: a write-once Collection (`revisions.immutable`): the backend
  *   refuses a write that would change a live Resource's bytes and answers a
  *   repeat of them with the current `ETag`, atomically with the write (see
  *   {@link writeOnceOptions}).
  * - `createdBy`: the invoker's DID (`invokerDid`).
+ *
+ * The Collection's `unique: true` plaintext index declarations are not an
+ * option: the backend reads them under its own lock, so a declaration landing
+ * between this read and the write still binds it.
  *
  * A malformed `Key-Epoch` or `Writer-Id` header is a 400, thrown here.
  * @param options {object}
@@ -277,11 +257,11 @@ export function resourceWriteOptions({
   request: FastifyRequest
   spaceId: string
   collectionId: string
-  collectionMetadata: Pick<CollectionMetadata, 'plaintext' | 'revisions'>
+  collectionMetadata: Pick<CollectionMetadata, 'revisions'>
   requestName: string
 }): Pick<
   Parameters<StorageBackend['writeResource']>[0],
-  'createdBy' | 'epoch' | 'writerId' | 'uniqueIndexes' | 'immutable'
+  'createdBy' | 'epoch' | 'writerId' | 'immutable'
 > {
   const { epoch } = parseKeyEpochHeader({
     headers: request.headers,
@@ -295,7 +275,6 @@ export function resourceWriteOptions({
     createdBy: invokerDid(request),
     epoch,
     writerId,
-    ...uniqueIndexOptions({ collectionMetadata }),
     ...writeOnceOptions({
       request,
       spaceId,

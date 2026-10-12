@@ -2,6 +2,25 @@
 
 ## 0.42.3 - TBD
 
+### Fixed
+
+- Update Collection composed the object it stored from a read made before the
+  backend's lock, so a full replacement racing another write carried forward
+  what that read saw: an unconditional rename could drop a just-declared
+  `unique` index, or revert a `backend` selection, with a 204 to both writers.
+  The composition now runs inside the backend's write, against the record read
+  under the lock (`writeCollection` takes a composition callback in place of
+  `assertTransition`). A Resource write now reads the Collection's `unique`
+  index declarations under the backend's lock instead of taking them from the
+  handler (the `uniqueIndexes` write option is gone), and a Collection Metadata
+  write runs with no Resource write of the Space in flight (on the filesystem
+  backend, the exclusive side of the Space gate), so a write racing a `unique`
+  declaration cannot land a duplicate its scan did not see. Since the backend
+  evaluates `If-Match` before the composition, a stale validator on Update
+  Collection now answers 412 ahead of a refusal the body earns (an unknown
+  `backend`, a `plaintext` beside an existing `encryption`), where the body's
+  refusal came first before.
+
 ### Changed
 
 - Codebase-wide cleanup pass with no change in behavior: duplicated logic in the

@@ -40,9 +40,9 @@ import type { CollectionMetadata } from '../types.js'
  * object may not carry both `plaintext` and `encryption` (400). On a
  * log-governed Collection a `revisions` the body carries is checked against
  * the derived descriptor, and an omitted one is not a change, since the log
- * holds it. Update Collection runs it twice, once against its pre-lock read
- * for a clean early rejection and again against the prior the backend
- * re-reads under its lock. A create (no `existing`) declares freely.
+ * holds it. Update Collection runs it inside the backend's write, against
+ * the prior the backend reads under its lock. A create (no `existing`)
+ * declares freely.
  * @param options {object}
  * @param options.parsed {ParsedCollectionMetadataBody}   the shape-checked body
  * @param [options.existing] {CollectionMetadata}   the stored object, on an
@@ -51,7 +51,7 @@ import type { CollectionMetadata } from '../types.js'
  *   from the Collection's history log, when it has one
  * @param options.requestName {string}   request name for error titles
  */
-export function assertCollectionMetadataTransition({
+function assertCollectionMetadataTransition({
   parsed,
   existing,
   governed,
@@ -174,8 +174,8 @@ export async function composeCollectionMetadata({
           backend: parsed.body.backend,
           requestName
         })
-  // Checked here for a clean early rejection and again by the caller's
-  // `assertTransition` under the backend's lock.
+  // Update Collection composes inside the backend's write, so this runs
+  // against the record the write replaces.
   assertCollectionMetadataTransition({
     parsed,
     existing,

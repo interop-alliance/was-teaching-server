@@ -338,6 +338,16 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
   it('a sidecar that does not parse leaves its Resource out of a unique claim, and fails its own write', async () => {
     const sidecarPath = path.join(collectionDir, '.meta.live.json')
     await writeFile(sidecarPath, '{not json')
+    // The backend reads the Collection's `unique` declaration itself.
+    await backend.writeCollection({
+      spaceId,
+      collectionId,
+      collectionMetadata: {
+        id: collectionId,
+        type: ['Collection'],
+        plaintext: { indexes: [{ name: 'tag', unique: true }] }
+      }
+    })
     // `live` holds `tag: x`, but its damaged sidecar leaves it out of the
     // scan, so the claim is admitted.
     await backend.writeResource({
@@ -348,8 +358,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
         kind: 'json',
         contentType: 'application/json',
         data: { tag: 'x' }
-      },
-      uniqueIndexes: [{ name: 'tag', source: 'content', unique: true }]
+      }
     })
     // The damaged Resource's own write still fails on it.
     await assert.rejects(writeJson({ resourceId: 'live', data: { tag: 'y' } }))

@@ -9,8 +9,7 @@ import {
   getCollectionOrThrow,
   getResourceMetadataOrThrow,
   isControlPlaneBackend,
-  resourceWriteOptions,
-  uniqueIndexOptions
+  resourceWriteOptions
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
@@ -537,10 +536,6 @@ export class ResourceRequest {
         resourceId,
         custom,
         epoch,
-        // Any `unique: true` index entries the Collection declares ride
-        // along, so the backend enforces the uniqueness claim for
-        // custom-sourced attributes atomically with this metadata write (409).
-        ...uniqueIndexOptions({ collectionMetadata }),
         ...parseWritePreconditions(request.headers)
       })
     )

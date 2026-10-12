@@ -2,8 +2,9 @@
  * Backend-agnostic normalization of a Space or Collection Metadata object
  * about to be persisted. Both storage backends run the same rules through
  * {@link normalizeMetadataWrite}, {@link stampSpaceMetadata},
- * {@link stampSpaceWrite}, {@link stampCollectionMetadata} and
- * {@link restampImportedMetadata} so their stored bodies cannot drift; only
+ * {@link stampSpaceWrite}, {@link stampCollectionMetadata},
+ * {@link resolveCollectionMetadataInput} and {@link restampImportedMetadata}
+ * so their stored bodies cannot drift; only
  * the storage of the generation and the local validator segment differs
  * downstream (`_generation` / `_local` members in the filesystem metadata
  * file vs Postgres columns). The write stamp (`updatedAt`,
@@ -11,7 +12,9 @@
  * wire member.
  */
 import type {
+  CollectionLogResult,
   CollectionMetadata,
+  CollectionMetadataInput,
   IDID,
   MetadataValidatorParts,
   SpaceMetadata,
@@ -317,4 +320,34 @@ export function stampCollectionMetadata({
     ...(hasCustom && { custom }),
     ...(epoch !== undefined && { epoch })
   }
+}
+
+/**
+ * The object a Collection Metadata write persists: the one the caller handed
+ * over, or the result of its composition callback, run under the write's lock
+ * against the prior object and, when the Collection exists, its governing
+ * history log. The log is read only when the callback will see it; a create
+ * has none, since the log goes with its Collection.
+ * @param options {object}
+ * @param options.input {CollectionMetadataInput}
+ * @param [options.prior] {StoredCollectionMetadata}   the object read under
+ *   the lock, absent on a create
+ * @param options.readLog {Function}   reads the Collection's governing history
+ *   log under the write's lock (`undefined` when it has none)
+ * @returns {Promise<CollectionMetadata>}
+ */
+export async function resolveCollectionMetadataInput({
+  input,
+  prior,
+  readLog
+}: {
+  input: CollectionMetadataInput
+  prior?: StoredCollectionMetadata
+  readLog: () => Promise<CollectionLogResult | undefined>
+}): Promise<CollectionMetadata> {
+  if (typeof input !== 'function') {
+    return input
+  }
+  const log = prior ? await readLog() : undefined
+  return input({ prior, log })
 }
