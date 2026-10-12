@@ -305,6 +305,7 @@ import { afterAll, beforeAll, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
+import { spacesUrl } from '@interop/was-client/paths'
 import { openTempBackend, startTestServer } from 'was-teaching-server/testing'
 
 let fastify: FastifyInstance
@@ -317,10 +318,14 @@ beforeAll(async () => {
   fastify = started.fastify
   serverUrl = started.serverUrl
 
-  // Clients come after the boot, from the serverUrl it returned.
+  // Clients come after the boot, from the serverUrl it returned. A WasClient
+  // takes the Spaces Repository URL, `<serverUrl>/spaces/`.
   const keyPair = await Ed25519VerificationKey.generate()
   did = `did:key:${keyPair.fingerprint()}`
-  was = WasClient.fromSigner({ serverUrl, signer: keyPair.didKeySigner() })
+  was = WasClient.fromSigner({
+    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    signer: keyPair.didKeySigner()
+  })
 })
 
 afterAll(async () => {
@@ -390,7 +395,10 @@ import { provisionWebvhIdentity } from 'was-teaching-server/testing'
 const ownerKey = await Ed25519VerificationKey.generate()
 const owner = {
   did: `did:key:${ownerKey.fingerprint()}`,
-  was: WasClient.fromSigner({ serverUrl, signer: ownerKey.didKeySigner() })
+  was: WasClient.fromSigner({
+    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    signer: ownerKey.didKeySigner()
+  })
 }
 const account = await provisionWebvhIdentity({
   owner,

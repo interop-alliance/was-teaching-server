@@ -18,6 +18,9 @@
   non-JSON blob bytes; the Postgres apply guard and governed-log writes use one
   statement each; `List Spaces` filters by controller before sorting.
 - `fs-json-store` is no longer a dependency.
+- Test helpers and the library-consumer docs follow `@interop/was-client`'s
+  convention that `WasClient`'s `serverUrl` is the Spaces Repository URL
+  (`<base>/spaces/`). `startTestServer` still returns the base `serverUrl`.
 - `pnpm conformance:local` runs the server over a fresh temp data dir, removed
   after the run, instead of the project `data/` directory. An explicit
   `WAS_DATA_DIR` still wins.

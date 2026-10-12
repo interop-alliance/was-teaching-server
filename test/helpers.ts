@@ -6,6 +6,7 @@ import pino from 'pino'
 import { vi } from 'vitest'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
+import { spacesUrl } from '@interop/was-client/paths'
 import { decodeSecretKeySeed } from '@interop/bnid'
 import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -409,7 +410,8 @@ export function client({ signer }: { signer: ISigner }): ZcapClient {
 
 /**
  * Builds a high-level WAS client wrapping a ZcapClient for the given signer.
- * The `serverUrl` is the base for both URL building and zcap invocationTargets.
+ * The `serverUrl` is the suite's base URL. The client takes the Spaces
+ * Repository URL and derives the base for Space paths and zcap targets.
  *
  * @param options {object}
  * @param options.signer {ISigner}
@@ -423,7 +425,10 @@ export function wasClient({
   signer: ISigner
   serverUrl: string
 }): WasClient {
-  return new WasClient({ serverUrl, zcapClient: client({ signer }) })
+  return new WasClient({
+    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    zcapClient: client({ signer })
+  })
 }
 
 /**
