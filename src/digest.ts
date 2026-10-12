@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto'
 import { isJsonContentType } from '@interop/storage-core'
 import { InvalidDigestError, MissingContentTypeError } from './errors.js'
 import { readBoundedBody } from './lib/bodyLimit.js'
+import { isMultipartFormData } from './lib/mediaType.js'
 
 /**
  * True for the body shapes `verifyBodyDigest` recomputes: JSON
@@ -191,9 +192,10 @@ export async function captureRawBody(
     if (!digestHeader) {
       return payload
     }
-    if (request.headers['content-type']?.startsWith('multipart/')) {
+    if (isMultipartFormData({ contentType: request.headers['content-type'] })) {
       // Read by `@fastify/multipart` off `request.raw`, not off the stream
       // returned here, so the digest is taken by a tap on that stream instead.
+      // Any other `multipart/*` type is an opaque blob, piped below.
       request.multipartDigest = verifyDigestOfTappedStream({
         payload,
         digestHeader

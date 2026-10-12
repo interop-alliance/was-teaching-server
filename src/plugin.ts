@@ -18,6 +18,7 @@ import type { FastifyBaseLogger, FastifyInstance } from 'fastify'
 import fp from 'fastify-plugin'
 import cors, { type FastifyCorsOptions } from '@fastify/cors'
 import Multipart from '@fastify/multipart'
+import { JSON_MEDIA_TYPE } from '@interop/storage-core'
 
 import {
   initCollectionRoutes,
@@ -511,35 +512,37 @@ async function wasPlugin(
   // through to the iterator to be caught and rejected with the correct error.
   //
   // `fileSize` bounds the in-memory buffer of the single permitted part to the
-  // backend's per-upload cap (`throwFileSizeLimit` makes `toBuffer()` throw at
-  // the boundary, which the request layer maps to `payload-too-large` (413)) --
-  // so an oversize multipart upload is rejected before it is fully buffered.
-  // The cap is default-on (the backend applies `DEFAULT_MAX_UPLOAD_BYTES` when
-  // none is configured), so `storage.maxUploadBytes` is `undefined` here only
-  // when the operator explicitly opted out (`MAX_UPLOAD_BYTES=unlimited`); the
-  // conditional spread then leaves multipart uncapped. Large binaries should
-  // use the streaming raw-body path, not multipart.
+  // buffered-body limit, the same bound the JSON and text parsers get: the
+  // backend's per-upload cap when one is configured, else the server's own
+  // buffered-body default (`MAX_UPLOAD_BYTES=unlimited` does not uncap an
+  // in-memory buffer). Left unset, `@fastify/multipart` would fall back to
+  // Fastify's 1 MiB `bodyLimit`. `throwFileSizeLimit` makes `toBuffer()` throw
+  // at the boundary, which the request layer maps to `payload-too-large` (413)
+  // naming the limit, so an oversize multipart upload is rejected before it is
+  // fully buffered. Large binaries should use the streaming raw-body path, not
+  // multipart.
   fastify.register(Multipart, {
     throwFileSizeLimit: true,
     limits: {
       files: 2,
-      ...(storage.maxUploadBytes !== undefined && {
-        fileSize: storage.maxUploadBytes
-      })
+      fileSize: bufferedBodyLimit(storage.maxUploadBytes)
     }
   })
 
-  // Parse `application/<suffix>+json` bodies (e.g. `application/jose+json` for
-  // EDV-over-WAS encrypted documents, `application/ld+json`, etc.) as JSON, the
-  // same as plain `application/json`. Fastify's built-in JSON parser only
-  // matches `application/json` exactly, so structured-suffix JSON media types
-  // would otherwise be rejected with a 415. The regex deliberately requires a
-  // non-`+` suffix before `+json`, so it never shadows the built-in parser for
-  // plain `application/json`. Registered on the root instance so every route
-  // group inherits it; `isJsonContentType()` already treats `+json` as JSON
-  // downstream (digest capture, resource-input resolution).
+  // Parse every JSON media type (`application/json` and the structured-suffix
+  // `application/<suffix>+json`, e.g. `application/jose+json` for EDV-over-WAS
+  // encrypted documents, `application/ld+json`, etc.) as JSON. Fastify's
+  // built-in JSON parser is registered under the exact media type
+  // `application/json`, and `getParser` resolves an exact media type ahead of
+  // the regex list, so this parser serves the suffix types while the built-in
+  // one keeps plain `application/json`. The expression is the one
+  // `isJsonContentType()` decides by downstream (digest capture, resource-input
+  // resolution), so a body it parses is one the request layer stores as a
+  // document, and a type it ends before (`+jsonl`, `+json-seq`) falls through
+  // to the catch-all below as a byte stream. Registered on the root instance
+  // so every route group inherits it.
   fastify.addContentTypeParser(
-    /^application\/[^+]+\+json/,
+    JSON_MEDIA_TYPE,
     { parseAs: 'string' },
     fastify.getDefaultJsonParser('error', 'error')
   )

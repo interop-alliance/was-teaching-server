@@ -13,7 +13,6 @@ import {
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { assertJsonObjectBody } from '../lib/requestBody.js'
@@ -120,18 +119,6 @@ export class ResourceRequest {
       requestName
     })
 
-    // Fail-closed encryption enforcement: if the Collection declares a recognized
-    // `encryption` scheme, the content write MUST be a conforming envelope of it
-    // (right media type + envelope shape), else `encryption-scheme-mismatch`
-    // (422). Runs after auth (above) and the 404, before the body is resolved --
-    // so a wrong content type is rejected without consuming the upload, and the
-    // 422 is only observable by a caller already authorized to write here.
-    assertEncryptedWriteConforms({
-      collectionMetadata,
-      contentType: request.headers['content-type'],
-      body: request.body
-    })
-
     // Route resource bytes to the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
       request,
@@ -139,7 +126,11 @@ export class ResourceRequest {
       collectionId,
       collectionMetadata
     })
-    const resolvedInput = await resolveResourceInput(request, dataBackend)
+    // Runs the encrypted-Collection conformance check (422) after auth and the
+    // 404 above, so it is only observable by a caller authorized to write here.
+    const resolvedInput = await resolveResourceInput(request, {
+      collectionMetadata
+    })
     // A `did.jsonl` in any Collection may be the history log a self-hosted
     // did:webvh controller resolves from, so its write must fast-forward the
     // stored log (412 otherwise), under preconditions pinned to the log read.

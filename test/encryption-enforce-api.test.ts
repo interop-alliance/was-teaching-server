@@ -18,7 +18,12 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
+import {
+  openTempBackend,
+  signedMultipart,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 const JSON_TYPE = 'application/json'
 /** A minimal structurally-valid flattened JWE-JSON envelope (the inner `jwe`). */
@@ -106,6 +111,50 @@ describe('Encryption enforcement API', () => {
       contentType: JSON_TYPE
     })
     assert.equal(response.status, 201)
+  })
+
+  /**
+   * PUTs a multipart body whose one file part carries `partType` and
+   * `partBody`, signed by Alice, and returns the fetch Response.
+   */
+  async function putMultipart({
+    resourceId,
+    partType,
+    partBody
+  }: {
+    resourceId: string
+    partType: string
+    partBody: string
+  }): Promise<Response> {
+    return signedMultipart({
+      signer: alice.signer,
+      url: `${serverUrl}/space/${spaceId}/${edvCollection}/${resourceId}`,
+      method: 'PUT',
+      partType,
+      partBody
+    })
+  }
+
+  it('accepts a conforming EDV Document as the file part of a multipart PUT', async () => {
+    // The check runs on the stored representation (the file part), not on
+    // the `multipart/form-data` envelope.
+    const response = await putMultipart({
+      resourceId: 'doc-multipart',
+      partType: JSON_TYPE,
+      partBody: JSON.stringify(envelope)
+    })
+    assert.equal(response.status, 201, await response.text())
+  })
+
+  it('rejects a non-conforming file part of a multipart PUT (422)', async () => {
+    const response = await putMultipart({
+      resourceId: 'doc-multipart-plain',
+      partType: JSON_TYPE,
+      partBody: JSON.stringify({ hello: 'world' })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 422, text)
+    assert.match(JSON.parse(text).type, /#encryption-scheme-mismatch/)
   })
 
   it('rejects a plaintext JSON body into an edv Collection (422 scheme-mismatch)', async () => {

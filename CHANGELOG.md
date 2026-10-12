@@ -25,6 +25,24 @@
   `#/plaintext/indexes`), as is selecting an external backend on a Collection
   that declares one. The adapter never receives the declaration, so the claim
   went unenforced there.
+- Media types on a write. The `application/<suffix>+json` parser ends at the
+  media type, so `application/ld+jsonl` and `application/ld+json-seq` are stored
+  as byte streams instead of answering 500. The multipart write path matches
+  `multipart/form-data` alone, case-insensitively; any other `multipart/*` body
+  is stored as a blob. A chunk `PUT` declaring a JSON or text media type is
+  stored byte-verbatim (a chunk is a range of a stream, not a document), and an
+  empty chunk body under such a type is stored as a zero-byte chunk, as under
+  `application/octet-stream`, instead of answering 400. The chunk URL's
+  slash-form redirect answers 308 before any parser reads the body. The
+  multipart buffer is bounded by the buffered-body limit under every
+  `MAX_UPLOAD_BYTES` setting (it fell back to Fastify's 1 MiB default under
+  `unlimited`), and its `payload-too-large` names that limit, and the server
+  backend when the limit is its `maxUploadBytes`. A multipart create's 201 names
+  the stored content type (the file part's), not the request envelope's, and a
+  multipart write into an encrypted Collection is checked on the file part, not
+  on the `multipart/form-data` envelope. The JSON body parser is registered
+  under `@interop/storage-core`'s `JSON_MEDIA_TYPE`, the rule
+  `isJsonContentType` decides by.
 
 ### Changed
 

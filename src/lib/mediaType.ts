@@ -28,3 +28,20 @@ export function sameMediaType(stored: string, incoming: string): boolean {
     bareMediaType({ contentType: incoming })
   )
 }
+
+/**
+ * Whether a `Content-Type` names `multipart/form-data`, the one multipart type
+ * `@fastify/multipart` parses. Parameters (the `boundary`) and case are
+ * ignored. Any other `multipart/*` type is an opaque representation the server
+ * stores as a blob.
+ * @param options {object}
+ * @param [options.contentType] {string}
+ * @returns {boolean}
+ */
+export function isMultipartFormData({
+  contentType
+}: {
+  contentType?: string
+}): boolean {
+  return bareMediaType({ contentType }) === 'multipart/form-data'
+}

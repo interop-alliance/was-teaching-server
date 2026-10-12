@@ -170,7 +170,9 @@ export class ChunkRequest {
         requestName
       }
     )
-    const input = await resolveResourceInput(request, dataBackend)
+    // The route scope removed the JSON and text parsers, so the body arrives
+    // as a stream and is stored as received whatever media type it declares.
+    const input = await resolveResourceInput(request)
     // Surface any `If-Match` / `If-None-Match` write precondition to the
     // storage layer, which evaluates it against the chunk's own validator
     // atomically with the write (412 `precondition-failed` on a mismatch).

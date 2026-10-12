@@ -38,6 +38,7 @@ import { handleError, MethodNotAllowedError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { ChunkRequest } from './requests/ChunkRequest.js'
 import { sandboxHostedPage } from './lib/hostedPageSandbox.js'
+import { JSON_MEDIA_TYPE } from '@interop/storage-core'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest, type PolicyParams } from './requests/PolicyRequest.js'
 import { BackendRequest } from './requests/BackendRequest.js'
@@ -930,20 +931,32 @@ export async function initResourceRoutes(
   // below the Resource level, so it needs no reserved-id entry (`meta` does,
   // because it is also addressed one level up, on a Collection and a Space).
 
-  // A chunk URL carries no trailing slash either; the slash form redirects to
-  // it for every WAS method.
-  app.route({
-    method: STRIP_SLASH_METHODS,
-    url: '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex/',
-    ...noAuthRoute,
-    handler: redirectStripSlash
+  // Store a chunk by index. A chunk is a range of a stream, not a document,
+  // so its bytes are stored as received whatever media type they declare.
+  // This encapsulated scope drops the JSON and text parsers, so every
+  // non-multipart body reaches the handler as a raw stream through the
+  // catch-all. The slash-form redirect sits in the same scope so no parser
+  // can refuse the body ahead of it. The registration is awaited so the
+  // routes are in the router when the group's 405 refusals are derived below.
+  await app.register(async chunkWrites => {
+    chunkWrites.removeContentTypeParser([
+      'application/json',
+      'text/plain',
+      JSON_MEDIA_TYPE
+    ])
+    // A chunk URL carries no trailing slash either; the slash form redirects
+    // to it for every WAS method.
+    chunkWrites.route({
+      method: STRIP_SLASH_METHODS,
+      url: '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex/',
+      ...noAuthRoute,
+      handler: redirectStripSlash
+    })
+    chunkWrites.put(
+      '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
+      ChunkRequest.put
+    )
   })
-
-  // Store a chunk by index
-  app.put(
-    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
-    ChunkRequest.put
-  )
 
   // Head Chunk. Declared before the GET route for the same reason as Head
   // Resource: serve Content-Type/Content-Length from stored metadata without
