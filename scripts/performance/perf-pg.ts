@@ -33,6 +33,11 @@
  * Last, one client writes `--writes` new Resources in a row into the smallest
  * and the largest size.
  *
+ * Then the payload matrix (`scripts/performance/perf-matrix-run.ts`): a read
+ * and a write test of a JSON credential, a 100 KiB file and a 10 MiB file, in a
+ * public, a private plaintext and a private encrypted Collection, each
+ * counted in whole files. It is reported as a table of its own.
+ *
  * The seeded schema is left in place after the run, so it can be inspected or
  * reused for another run without reseeding; `pnpm perf:pg:seed` is what resets
  * it. The server's other settings come from the environment as usual, e.g.
@@ -64,6 +69,8 @@ import {
   deleteLoad,
   estimateMinutes,
   formatMachine,
+  formatMatrixProgressLine,
+  formatMatrixTable,
   formatPivotedTable,
   formatProgressLine,
   formatScalingSummary,
@@ -71,9 +78,12 @@ import {
   pivotRows,
   positiveInteger,
   serialWriteLoad,
+  type MatrixPayload,
+  type MatrixRow,
   type Measurement,
   type Row
 } from './perf-lib.js'
+import { runMatrix } from './perf-matrix-run.js'
 
 const port = process.env.PORT ?? '4455'
 const serverUrl = `http://localhost:${port}`
@@ -262,7 +272,7 @@ async function stopServer(server: ChildProcess): Promise<void> {
  * missing or not a seed.
  * @returns {Promise<{
  *   seed: string, sizes: number[], edgeSizes: number[], schema: string,
- *   databaseUrl: string
+ *   databaseUrl: string, encryptedIds: Record<MatrixPayload, string>
  * }>}
  */
 async function readSeedMeta(): Promise<{
@@ -271,6 +281,7 @@ async function readSeedMeta(): Promise<{
   edgeSizes: number[]
   schema: string
   databaseUrl: string
+  encryptedIds: Record<MatrixPayload, string>
 }> {
   const metaPath = join(seedDir, 'seed-meta.json')
   let text: string
@@ -290,7 +301,10 @@ async function readSeedMeta(): Promise<{
     !Array.isArray(meta.sizes) ||
     !Array.isArray(meta.edgeSizes) ||
     typeof meta.schema !== 'string' ||
-    typeof meta.databaseUrl !== 'string'
+    typeof meta.databaseUrl !== 'string' ||
+    typeof meta.encryptedIds?.json !== 'string' ||
+    typeof meta.encryptedIds?.small !== 'string' ||
+    typeof meta.encryptedIds?.large !== 'string'
   ) {
     throw new Error(
       `${metaPath} is not a seed-meta.json. Reseed with \`pnpm perf:pg:seed\`.`
@@ -577,16 +591,39 @@ async function main(): Promise<void> {
     warmUpWrites,
     pauseMs,
     withK6: k6Version !== undefined,
-    filling: false
+    filling: false,
+    matrix: true
   })
   console.log(`Note: this run takes about ${minutes} minutes (an estimate).\n`)
 
   let rows: Row[]
+  let matrixRows: MatrixRow[]
   try {
     await waitForHealth(server)
     const was = await connect({ seed })
     const targets = targetsFromSeed({ was, edgeSizes })
     rows = await runTests({ outDir, k6Version, was, sizes, targets })
+    console.log('\nRunning the payload matrix...')
+    let k6Runs = 0
+    matrixRows = await runMatrix({
+      was,
+      clients,
+      durationSeconds,
+      encryptedIds: meta.encryptedIds,
+      publicRead: async path =>
+        k6Version
+          ? k6Get({
+              path,
+              summaryPath: join(outDir, `k6-matrix-${k6Runs++}.json`)
+            })
+          : 'skipped (no k6)',
+      report: async result => {
+        console.log(formatMatrixProgressLine(result))
+        if (typeof result.result !== 'string') {
+          await sleep(pauseMs)
+        }
+      }
+    })
   } catch (err) {
     throw new Error(`${(err as Error).message}\nServer log: ${logPath}`, {
       cause: err
@@ -602,7 +639,14 @@ async function main(): Promise<void> {
     '',
     '## Summary',
     '',
-    ...formatScalingSummary({ sizes, pivoted })
+    ...formatScalingSummary({ sizes, pivoted }),
+    '',
+    '## Payload matrix',
+    '',
+    'Each cell counts whole files: an encrypted 10 MiB file is one document ' +
+      'plus 10 chunks, written in 12 requests and read in 11.',
+    '',
+    formatMatrixTable(matrixRows)
   ].join('\n')
   const summaryPath = join(outDir, 'summary.md')
   await writeFile(summaryPath, `${report}\n`)

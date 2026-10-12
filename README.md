@@ -461,8 +461,9 @@ a local Postgres container the repo's `docker-compose.yml` defines
 # Start Postgres once:
 docker compose up -d
 # Seed a fixed schema (`perf`) with Collections of 1, 500 and 2,000 Resources
-# (pass `--sizes` for others) -- this always resets the schema, so reseed after
-# a size change or whenever you want a clean baseline:
+# (pass `--sizes` for others), the payload matrix below, and 100 MiB of binary
+# ballast (pass `--binary-total-mib` for more or less) -- this always resets the
+# schema, so reseed after a size change or whenever you want a clean baseline:
 pnpm perf:pg:seed
 # Then run against it, as many times as you like; the seeded data is left in
 # place afterward:
@@ -470,11 +471,36 @@ pnpm perf:pg --duration 20 --writes 300
 ```
 
 Unlike `pnpm perf:fs`, there is no over-HTTP seeding fallback: `pnpm perf:pg`
-always reads the sizes and signing identity `pnpm perf:pg:seed` recorded in
-`.perf-pg-seed/seed-meta.json`, since seeding Postgres one signed HTTP request
-at a time is much slower than writing straight through `PostgresBackend`.
+always reads the sizes, the signing identity and the encrypted read targets' ids
+that `pnpm perf:pg:seed` recorded in `.perf-pg-seed/seed-meta.json`. The seed
+writes the Collection-size data straight through `PostgresBackend`, since
+seeding thousands of Resources one signed HTTP request at a time is much slower.
 Override the connection string with `--database-url` (or `DATABASE_URL`) if
 Postgres is not at the default `postgres://was:was@localhost:5433/was`.
+
+After the Collection-size tests, `pnpm perf:pg` runs a payload matrix and
+reports it as a second table. It reads and writes three payloads (a JSON
+credential, a 100 KiB file and a 10 MiB file) in three kinds of Collection: a
+public one (`PublicCanRead`, read unsigned through k6), a private plaintext one,
+and a private encrypted one (`edv`). Each cell counts whole files. In the
+encrypted Collection a 100 KiB file is one EDV document, while a 10 MiB file is
+one document plus ten 1 MiB chunks, so one write is 12 requests (the document,
+each chunk, the document again) and one read is 11.
+
+The encrypted Collection is set up the way freewallet sets up its own: the seed
+uses `@interop/was-client` with a throwaway X25519 key, installs the key epoch
+with a blinded-index key, and writes real EDV envelopes and chunks. That part of
+the seed runs over signed HTTP, through an in-process server on the same
+backend, because was-client is what makes the envelopes. Timed encrypted writes
+send copies of the stored envelopes and chunks at fresh ids, and no read
+decrypts, so the numbers measure the server rather than client-side crypto.
+Binary writes in every Collection create a file, timed, then delete it, untimed,
+so repeated runs don't fill the database. JSON writes create a new Resource each
+time.
+
+The ballast is extra 10 MiB files in a `perf-ballast` Space that no test reads.
+It grows the database past what Postgres keeps in its own cache, so the binary
+reads aren't served purely from memory.
 
 ## Security
 
