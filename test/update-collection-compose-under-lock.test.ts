@@ -37,6 +37,25 @@ describe('Update Collection composes under the lock', () => {
     `/space/${alice.space1.id}/${collectionId}/${resourceId}`
 
   /**
+   * Resolves when a spied backend method is first called, which then runs as
+   * it would unspied.
+   */
+  function firstCallStarted(method: 'writeResource'): Promise<void> {
+    const original = backend[method].bind(backend) as (
+      ...args: unknown[]
+    ) => Promise<unknown>
+    let started!: () => void
+    const startedOnce = new Promise<void>(resolve => (started = resolve))
+    vi.spyOn(backend, method).mockImplementation((async (
+      ...args: unknown[]
+    ) => {
+      started()
+      return original(...args)
+    }) as any)
+    return startedOnce
+  }
+
+  /**
    * A gate that holds the first call of a spied backend method until released,
    * running every later call at once.
    */
@@ -156,7 +175,10 @@ describe('Update Collection composes under the lock', () => {
 
     // A duplicate claim arriving mid-scan. The gate keeps it out until the
     // declaration has landed, so it cannot settle while the scan is held, and
-    // once admitted it reads the declaration and is refused.
+    // once admitted it reads the declaration and is refused. The claimant is
+    // known to have reached the backend's write (and so the gate) before the
+    // check, rather than to be still in request handling.
+    const writeStarted = firstCallStarted('writeResource')
     let claimantSettled = false
     const claimant = requestError(
       alice.was.request({
@@ -168,6 +190,7 @@ describe('Update Collection composes under the lock', () => {
       claimantSettled = true
       return err
     })
+    await writeStarted
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.equal(claimantSettled, false)
 
