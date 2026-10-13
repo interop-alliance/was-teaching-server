@@ -1,9 +1,6 @@
 # History
 
-<<<<<<< HEAD
 ## 0.42.3 - TBD
-=======
-## TBD
 
 ### Added
 
@@ -28,7 +25,28 @@
   files untimed so repeated runs don't fill the database. The seed's new
   `--binary-total-mib` (default 100) adds that much extra binary data in a
   `perf-ballast` Space, to grow the database past Postgres's own cache.
->>>>>>> 9168cf1 (Add a payload matrix to perf:pg: JSON and binary files in public, plaintext and encrypted Collections)
+- `pnpm perf:fs` runs the same payload matrix, so the two backends' tables
+  compare directly. A fresh run seeds it over signed HTTP against the server
+  under test, and `pnpm perf:fs:seed` seeds it through an in-process server and
+  records the encrypted read targets' ids in `seed-meta.json`, so a seed dir
+  from before this release must be reseeded. No binary ballast is seeded, since
+  the filesystem backend's cache is the OS page cache.
+- `pnpm perf:fs` and `pnpm perf:fs:seed` default to Collection sizes of 1, 500
+  and 2,000 Resources (`--sizes 1,500,2000`), the same as `pnpm perf:pg:seed`,
+  so the two backends' default runs cover the same sizes. With the payload
+  matrix, the default run now takes about 15 minutes filling fresh (8 from a
+  seed), and the full run (`--duration 20 --writes 300`) about 22 (15 from a
+  seed).
+- Like `pnpm perf:pg`, `pnpm perf:fs` uses the seed `pnpm perf:fs:seed` wrote
+  (`.perf-fs-seed`) whenever it exists, with no `--seed-dir` needed. It fills
+  fresh over signed HTTP when there is no seed, or when `--sizes` is given.
+  `--seed-dir <path>` still names a seed elsewhere, and each run prints which it
+  used.
+- `pnpm perf:fs` and `pnpm perf:pg` stop whatever listens on their port (4455,
+  or `PORT`) before starting their server, instead of refusing to run, naming
+  each process they stop. A run also fails as soon as its own server exits:
+  before, two runs started together could leave one measuring the other's
+  server.
 
 ### Fixed
 
@@ -100,6 +118,15 @@
   `no-restricted-syntax`, and runs `jscpd` (`pnpm run lint:dup`) as a copy-paste
   detector over `src/`. A project `.claude/settings.json` hook runs ESLint on
   every `src/` file an agent edits.
+- `PostgresBackend` refuses an invalid `schema` option with the new
+  `InvalidSchemaNameError` (from `src/errors.ts`) instead of a plain `Error`;
+  the message is unchanged. `assertValidSchemaName` throws the same error.
+
+### Fixed
+
+- `pnpm perf:fs` works again: it now passes `@interop/was-client` 0.97 the
+  Spaces Repository URL (`<base>/spaces/`) it requires, where it failed at its
+  first signed request before.
 
 ## 0.42.2 - 2026-10-09
 

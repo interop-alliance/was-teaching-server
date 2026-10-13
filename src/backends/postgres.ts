@@ -43,6 +43,7 @@ import {
   PayloadTooLargeError,
   PreconditionFailedError,
   IdConflictError,
+  InvalidSchemaNameError,
   KeystoreStateConflictError,
   KeyIdConflictError,
   DuplicateRevocationError
@@ -719,8 +720,8 @@ function resourceFeedDocument(
 
 /**
  * Validates a Postgres schema name against the identifier charset this
- * backend accepts for `PostgresBackendOptions.schema`, throwing if it
- * doesn't match. Exported so a caller that must act on the schema before
+ * backend accepts for `PostgresBackendOptions.schema`, throwing
+ * `InvalidSchemaNameError` if it doesn't match. Exported so a caller that must act on the schema before
  * `PostgresBackend.open()` runs -- e.g. dropping it first -- validates
  * against the same rule rather than its own copy.
  * @param schema {string}
@@ -728,7 +729,7 @@ function resourceFeedDocument(
  */
 export function assertValidSchemaName(schema: string): void {
   if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) {
-    throw new Error(`Invalid Postgres schema name: "${schema}".`)
+    throw new InvalidSchemaNameError({ schema })
   }
 }
 

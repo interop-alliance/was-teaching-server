@@ -2,10 +2,11 @@
  * Pure and injectable-dependency logic shared by `pnpm perf:fs` and
  * `pnpm perf:pg` (`perf-fs.ts`, `perf-pg.ts`) and their seed scripts: CLI
  * argument parsing, the run-length estimate, the Markdown table formatting,
- * and the three load-aggregation harnesses. Kept
- * free of side effects at import time so it can be unit tested without
- * spawning a server, k6, or any network request.
+ * the load-aggregation harnesses, and the Collection-size seeding over an
+ * injected backend. Kept free of side effects at import time so it can be
+ * unit tested without spawning a server, k6, or any network request.
  */
+import type { StorageBackend } from '../../src/types.js'
 
 /**
  * Parses a command-line value as a positive integer.
@@ -38,6 +39,40 @@ export function parseSizes(value: string): {
     (_size, index) => index === 0 || index === sizes.length - 1
   )
   return { sizes, edgeSizes }
+}
+
+/**
+ * The settings every load test reads, from the shared CLI options
+ * (`--clients`, `--duration`, `--writes`).
+ */
+export interface LoadSettings {
+  clients: number
+  durationSeconds: number
+  serialWrites: number
+}
+
+/**
+ * Parses the shared load-test CLI values into `LoadSettings`.
+ * @param options {object}
+ * @param options.clients {string}
+ * @param options.duration {string}
+ * @param options.writes {string}
+ * @returns {LoadSettings}
+ */
+export function parseLoadSettings({
+  clients,
+  duration,
+  writes
+}: {
+  clients: string
+  duration: string
+  writes: string
+}): LoadSettings {
+  return {
+    clients: positiveInteger(clients),
+    durationSeconds: positiveInteger(duration),
+    serialWrites: positiveInteger(writes)
+  }
 }
 
 export interface Measurement {
@@ -272,7 +307,9 @@ export function formatMatrixTable(rows: MatrixRow[]): string {
   ].join('\n')
 }
 
-/** How close a largest/smallest rate ratio has to be to 1 to read as flat. */
+/**
+ * How close a largest/smallest rate ratio has to be to 1 to read as flat.
+ */
 const flatRatioBand = 0.15
 
 /**
@@ -463,6 +500,24 @@ export const matrixPayloads = ['json', 'small', 'large'] as const
 export type MatrixPayload = (typeof matrixPayloads)[number]
 
 /**
+ * Whether a value read back from a `seed-meta.json` is the encrypted read
+ * targets' EDV ids: a string per matrix payload.
+ * @param value {unknown}
+ * @returns {boolean}
+ */
+export function isEncryptedIds(
+  value: unknown
+): value is Record<MatrixPayload, string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    matrixPayloads.every(
+      payload => typeof (value as Record<string, unknown>)[payload] === 'string'
+    )
+  )
+}
+
+/**
  * The small binary payload: under was-client's 512 KiB threshold, so in an
  * encrypted Collection it is one EDV document.
  */
@@ -473,6 +528,51 @@ export const smallFileBytes = 100 * 1024
  * Collection it is one EDV document plus ten 1 MiB chunks.
  */
 export const largeFileBytes = 10 * 1024 * 1024
+
+/**
+ * How many writes a seed runs at once, over signed HTTP or through a backend.
+ */
+export const seedConcurrency = 10
+
+/**
+ * The three Spaces each edge size gets, as `<label>-<size>`, by the test that
+ * uses it: the signed write test, the signed delete test, and the serial
+ * writes.
+ */
+export const edgeSpaceLabels = {
+  write: 'perf-write',
+  remove: 'perf-delete',
+  serial: 'perf-serial'
+} as const
+
+/**
+ * What a seed script is about to write, printed before it starts: where, then
+ * the Collection sizes, the payload matrix and the ballast, each with the flag
+ * that changes it.
+ * @param options {object}
+ * @param options.target {string}   where the seed goes, with its flags
+ * @param options.sizes {number[]}
+ * @param options.ballast {string}   the ballast line
+ * @returns {string}
+ */
+export function formatSeedPlan({
+  target,
+  sizes,
+  ballast
+}: {
+  target: string
+  sizes: number[]
+  ballast: string
+}): string {
+  return [
+    `Seeding ${target}, replacing what it holds:`,
+    `- Collection sizes: ${sizes.join(', ')} Resources (--sizes)`,
+    '- Payload matrix: a JSON credential, a 100 KiB file and a 10 MiB file, ' +
+      'in public, plaintext and encrypted Collections',
+    `- Binary ballast: ${ballast}`,
+    ''
+  ].join('\n')
+}
 
 /**
  * The ids `vc-1` to `vc-<count>`.
@@ -532,6 +632,56 @@ export async function fillConcurrently({
 }
 
 /**
+ * The running count behind every load harness: completed and failed
+ * requests, and the summed latency of the completed ones.
+ */
+class Tally {
+  #completed = 0
+  #failed = 0
+  #totalMs = 0
+
+  /**
+   * Runs `op`, counting it as completed (with its latency) or failed.
+   * @param op {() => Promise<unknown>}
+   * @returns {Promise<boolean>} whether it completed
+   */
+  async time(op: () => Promise<unknown>): Promise<boolean> {
+    const sent = performance.now()
+    try {
+      await op()
+      this.#completed++
+      this.#totalMs += performance.now() - sent
+      return true
+    } catch {
+      this.#failed++
+      return false
+    }
+  }
+
+  /**
+   * The tally as a measurement over `elapsedMs` of timed work.
+   * @param elapsedMs {number}
+   * @returns {Measurement}
+   */
+  measurement(elapsedMs: number): Measurement {
+    return {
+      rate: this.#completed / (elapsedMs / 1000),
+      avgMs: this.#completed ? this.#totalMs / this.#completed : undefined,
+      failed: this.#failed
+    }
+  }
+}
+
+/**
+ * The worker indexes `0` to `clients - 1`.
+ * @param clients {number}
+ * @returns {number[]}
+ */
+function workerIndexes(clients: number): number[] {
+  return Array.from({ length: clients }, (_unused, worker) => worker)
+}
+
+/**
  * Runs `op` from `clients` concurrent clients until `durationSeconds` have
  * elapsed, reporting requests per second, average latency, and failures. Each
  * client sends one request at a time, moving to the next as soon as the
@@ -551,31 +701,17 @@ export async function load({
   durationSeconds: number
   op: (worker: number, count: number) => Promise<unknown>
 }): Promise<Measurement> {
-  let completed = 0
-  let failed = 0
-  let totalMs = 0
+  const tally = new Tally()
   const started = performance.now()
   const deadline = started + durationSeconds * 1000
   await Promise.all(
-    Array.from({ length: clients }, async (_unused, worker) => {
+    workerIndexes(clients).map(async worker => {
       for (let count = 0; performance.now() < deadline; count++) {
-        const sent = performance.now()
-        try {
-          await op(worker, count)
-          completed++
-          totalMs += performance.now() - sent
-        } catch {
-          failed++
-        }
+        await tally.time(() => op(worker, count))
       }
     })
   )
-  const elapsedSeconds = (performance.now() - started) / 1000
-  return {
-    rate: completed / elapsedSeconds,
-    avgMs: completed ? totalMs / completed : undefined,
-    failed
-  }
+  return tally.measurement(performance.now() - started)
 }
 
 /**
@@ -588,6 +724,29 @@ export interface RequestingClient {
     method: string
     json?: object
   }): Promise<unknown>
+}
+
+/**
+ * Timed work from `clients` concurrent clients, in rounds: each round runs
+ * `round` once, which returns how long its timed part took. Rounds repeat
+ * until the timed parts add up to `durationSeconds`.
+ * @param options {object}
+ * @param options.durationSeconds {number}
+ * @param options.round {(round: number) => Promise<number>}
+ * @returns {Promise<number>} the summed timed milliseconds
+ */
+async function timedRounds({
+  durationSeconds,
+  round
+}: {
+  durationSeconds: number
+  round: (round: number) => Promise<number>
+}): Promise<number> {
+  let timedMs = 0
+  for (let index = 0; timedMs < durationSeconds * 1000; index++) {
+    timedMs += await round(index)
+  }
+  return timedMs
 }
 
 /**
@@ -626,41 +785,32 @@ export async function deleteLoad({
       { length: deleteRoundSize },
       (_unused, index) => `del-${worker}-${index}`
     )
-  const workers = Array.from({ length: clients }, (_unused, worker) => worker)
-  let completed = 0
-  let failed = 0
-  let totalMs = 0
-  let timedMs = 0
-  while (timedMs < durationSeconds * 1000) {
-    await Promise.all(
-      workers.map(worker =>
-        Promise.all(
-          idsOf(worker).map(id => collection.put(id, { resourceId: id }))
+  const workers = workerIndexes(clients)
+  const tally = new Tally()
+  const timedMs = await timedRounds({
+    durationSeconds,
+    round: async () => {
+      await Promise.all(
+        workers.map(worker =>
+          Promise.all(
+            idsOf(worker).map(id => collection.put(id, { resourceId: id }))
+          )
         )
       )
-    )
-    const started = performance.now()
-    await Promise.all(
-      workers.map(async worker => {
-        for (const id of idsOf(worker)) {
-          const sent = performance.now()
-          try {
-            await was.request({ path: `${path}/${id}`, method: 'DELETE' })
-            completed++
-            totalMs += performance.now() - sent
-          } catch {
-            failed++
+      const started = performance.now()
+      await Promise.all(
+        workers.map(async worker => {
+          for (const id of idsOf(worker)) {
+            await tally.time(() =>
+              was.request({ path: `${path}/${id}`, method: 'DELETE' })
+            )
           }
-        }
-      })
-    )
-    timedMs += performance.now() - started
-  }
-  return {
-    rate: completed / (timedMs / 1000),
-    avgMs: completed ? totalMs / completed : undefined,
-    failed
-  }
+        })
+      )
+      return performance.now() - started
+    }
+  })
+  return tally.measurement(timedMs)
 }
 
 /**
@@ -688,37 +838,28 @@ export async function createDeleteLoad({
   create: (worker: number, round: number) => Promise<unknown>
   remove: (worker: number, round: number) => Promise<unknown>
 }): Promise<Measurement> {
-  const workers = Array.from({ length: clients }, (_unused, worker) => worker)
-  let completed = 0
-  let failed = 0
-  let totalMs = 0
-  let timedMs = 0
-  for (let round = 0; timedMs < durationSeconds * 1000; round++) {
-    const created: number[] = []
-    const started = performance.now()
-    await Promise.all(
-      workers.map(async worker => {
-        const sent = performance.now()
-        try {
-          await create(worker, round)
-          completed++
-          totalMs += performance.now() - sent
-          created.push(worker)
-        } catch {
-          failed++
-        }
-      })
-    )
-    timedMs += performance.now() - started
-    await Promise.all(
-      created.map(worker => remove(worker, round).catch(() => undefined))
-    )
-  }
-  return {
-    rate: completed / (timedMs / 1000),
-    avgMs: completed ? totalMs / completed : undefined,
-    failed
-  }
+  const workers = workerIndexes(clients)
+  const tally = new Tally()
+  const timedMs = await timedRounds({
+    durationSeconds,
+    round: async round => {
+      const created: number[] = []
+      const started = performance.now()
+      await Promise.all(
+        workers.map(async worker => {
+          if (await tally.time(() => create(worker, round))) {
+            created.push(worker)
+          }
+        })
+      )
+      const elapsedMs = performance.now() - started
+      await Promise.all(
+        created.map(worker => remove(worker, round).catch(() => undefined))
+      )
+      return elapsedMs
+    }
+  })
+  return tally.measurement(timedMs)
 }
 
 /**
@@ -749,28 +890,169 @@ export async function serialWriteLoad({
       json: { index }
     })
   }
-  let completed = 0
-  let failed = 0
-  let totalMs = 0
+  const tally = new Tally()
   const started = performance.now()
   for (let index = 0; index < serialWrites; index++) {
-    const requestStarted = performance.now()
-    try {
-      await was.request({
+    await tally.time(() =>
+      was.request({
         path: `${path}/s-${index}`,
         method: 'PUT',
         json: { index }
       })
-      completed++
-      totalMs += performance.now() - requestStarted
-    } catch {
-      failed++
+    )
+  }
+  return tally.measurement(performance.now() - started)
+}
+
+/**
+ * Writes one Resource per id directly through the backend, several at a
+ * time, under `createdBy`.
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.ids {string[]}
+ * @param options.createdBy {`did:${string}`}
+ * @returns {Promise<void>}
+ */
+async function fillThroughBackend({
+  backend,
+  spaceId,
+  collectionId,
+  ids,
+  createdBy
+}: {
+  backend: StorageBackend
+  spaceId: string
+  collectionId: string
+  ids: string[]
+  createdBy: `did:${string}`
+}): Promise<void> {
+  await fillConcurrently({
+    ids,
+    concurrency: seedConcurrency,
+    write: id =>
+      backend.writeResource({
+        spaceId,
+        collectionId,
+        resourceId: id,
+        input: {
+          kind: 'json',
+          contentType: 'application/json',
+          data: credential(id)
+        },
+        createdBy
+      })
+  })
+}
+
+/**
+ * Creates one Space with one Collection, filled to `size`, directly through
+ * the backend.
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.size {number}
+ * @param options.controller {`did:${string}`}
+ * @param options.makePublic {boolean}
+ * @returns {Promise<void>}
+ */
+async function seedSpaceThroughBackend({
+  backend,
+  spaceId,
+  collectionId,
+  size,
+  controller,
+  makePublic
+}: {
+  backend: StorageBackend
+  spaceId: string
+  collectionId: string
+  size: number
+  controller: `did:${string}`
+  makePublic: boolean
+}): Promise<void> {
+  await backend.writeSpace({
+    spaceId,
+    spaceMetadata: { id: spaceId, type: ['Space'], controller },
+    createdBy: controller
+  })
+  await backend.writeCollection({
+    spaceId,
+    collectionId,
+    collectionMetadata: { id: collectionId, type: ['Collection'] },
+    createdBy: controller
+  })
+  await fillThroughBackend({
+    backend,
+    spaceId,
+    collectionId,
+    ids: itemIds(size),
+    createdBy: controller
+  })
+  if (makePublic) {
+    await backend.writePolicy({
+      spaceId,
+      collectionId,
+      policy: { type: 'PublicCanRead' }
+    })
+  }
+}
+
+/**
+ * Seeds, directly through `backend`, every Collection-size Space the runners
+ * test, under the fixed ids `seededTargets` (in `perf-runner.ts`) reads back:
+ * a `perf-public` Space (one public Collection per size), a `perf-private`
+ * Space (one private Collection per size), and three Spaces per edge size
+ * (`perf-write-<size>`, `perf-delete-<size>`, `perf-serial-<size>`), each
+ * with a single `items` Collection. Every record is written under
+ * `controller`, which is what a real signed write over HTTP would have
+ * produced: `createdBy` and `controller` match what the request handlers set
+ * from `invokerDid(request)`.
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.sizes {number[]}
+ * @param options.edgeSizes {number[]}
+ * @param options.controller {`did:${string}`}
+ * @returns {Promise<void>}
+ */
+export async function seedSizeSpaces({
+  backend,
+  sizes,
+  edgeSizes,
+  controller
+}: {
+  backend: StorageBackend
+  sizes: number[]
+  edgeSizes: number[]
+  controller: `did:${string}`
+}): Promise<void> {
+  for (const size of sizes) {
+    for (const [spaceId, makePublic] of [
+      ['perf-public', true],
+      ['perf-private', false]
+    ] as const) {
+      await seedSpaceThroughBackend({
+        backend,
+        spaceId,
+        collectionId: `c-${size}`,
+        size,
+        controller,
+        makePublic
+      })
     }
   }
-  const elapsedMs = performance.now() - started
-  return {
-    rate: completed / (elapsedMs / 1000),
-    avgMs: completed ? totalMs / completed : undefined,
-    failed
+  for (const size of edgeSizes) {
+    for (const label of Object.values(edgeSpaceLabels)) {
+      await seedSpaceThroughBackend({
+        backend,
+        spaceId: `${label}-${size}`,
+        collectionId: 'items',
+        size,
+        controller,
+        makePublic: false
+      })
+    }
   }
 }
