@@ -1,7 +1,7 @@
 /**
- * k6 script for `pnpm perf:fs` (scripts/perf-fs.ts): unsigned GETs of one URL
- * from VUS virtual users for DURATION, counting any non-200 answer as a
- * failure. Writes k6's end-of-test summary to SUMMARY_PATH as JSON, for the
+ * k6 script for `pnpm perf:fs` and `pnpm perf:pg` (`perf-runner.ts`'s
+ * `k6Get`): unsigned GETs of one URL from VUS virtual users for DURATION,
+ * counting any non-200 answer as a failure. Writes k6's end-of-test summary to SUMMARY_PATH as JSON, for the
  * runner to read, and nothing to stdout.
  */
 import http from 'k6/http'

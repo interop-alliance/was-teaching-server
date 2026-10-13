@@ -1,9 +1,9 @@
 /**
- * Tests for the pure/injectable-dependency logic behind `pnpm perf:fs`
- * (`scripts/perf-fs-lib.ts`): CLI argument parsing, the run-length estimate,
- * the Markdown table formatting, and the three load-aggregation harnesses.
- * The subprocess/k6/WasClient wiring itself is verified by running
- * `pnpm perf:fs` once end to end, not by unit tests.
+ * Tests for the pure/injectable-dependency logic behind `pnpm perf:fs` and
+ * `pnpm perf:pg` (`scripts/performance/perf-lib.ts`): CLI argument parsing,
+ * the run-length estimate, the Markdown table formatting, and the
+ * load-aggregation harnesses. The subprocess/k6/WasClient wiring itself is
+ * verified by running `pnpm perf:fs` once end to end, not by unit tests.
  */
 import { describe, it } from 'vitest'
 import assert from 'node:assert'
@@ -19,7 +19,7 @@ import {
   pivotRows,
   positiveInteger,
   serialWriteLoad
-} from '../scripts/perf-fs-lib.js'
+} from '../scripts/performance/perf-lib.js'
 
 describe('positiveInteger', () => {
   it('parses a valid positive integer string', () => {

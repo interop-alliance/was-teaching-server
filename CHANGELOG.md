@@ -2,6 +2,52 @@
 
 ## 0.42.3 - TBD
 
+### Added
+
+- `pnpm perf:pg` runs the same local load-performance check as `pnpm perf:fs`
+  (see 0.42.2's entry) against the Postgres backend instead, so the two are
+  directly comparable. A new `docker-compose.yml` defines a local Postgres
+  container matching `pnpm test:pg`'s existing connection convention
+  (`postgres://was:was@localhost:5433/was`). `pnpm perf:pg:seed` resets a fixed
+  schema (`perf`) and fills it directly through `PostgresBackend`'s own write
+  methods; `pnpm perf:pg` always runs against that pre-seeded schema (there is
+  no over-HTTP seeding fallback, since seeding Postgres one signed request at a
+  time is far slower than writing straight through the backend), and leaves the
+  seeded data in place afterward for inspection or reuse.
+- `pnpm perf:pg` also runs a payload matrix, reported as its own table: reads
+  and writes of a JSON credential, a 100 KiB file and a 10 MiB file in a public,
+  a private plaintext and a private encrypted (`edv`) Collection, each counted
+  in whole files. `pnpm perf:pg:seed` sets up the encrypted Collection the way
+  freewallet does, with a key epoch, a blinded-index key, and real EDV envelopes
+  and chunks written through `@interop/was-client` over an in-process server.
+  Timed encrypted writes send copies of the stored envelopes and chunks, so
+  client-side crypto stays out of the numbers, and binary writes delete their
+  files untimed so repeated runs don't fill the database. The seed's new
+  `--binary-total-mib` (default 100) adds that much extra binary data in a
+  `perf-ballast` Space, to grow the database past Postgres's own cache.
+- `pnpm perf:fs` runs the same payload matrix, so the two backends' tables
+  compare directly. A fresh run seeds it over signed HTTP against the server
+  under test, and `pnpm perf:fs:seed` seeds it through an in-process server and
+  records the encrypted read targets' ids in `seed-meta.json`, so a seed dir
+  from before this release must be reseeded. No binary ballast is seeded, since
+  the filesystem backend's cache is the OS page cache.
+- `pnpm perf:fs` and `pnpm perf:fs:seed` default to Collection sizes of 1, 500
+  and 2,000 Resources (`--sizes 1,500,2000`), the same as `pnpm perf:pg:seed`,
+  so the two backends' default runs cover the same sizes. With the payload
+  matrix, the default run now takes about 15 minutes filling fresh (8 from a
+  seed), and the full run (`--duration 20 --writes 300`) about 22 (15 from a
+  seed).
+- Like `pnpm perf:pg`, `pnpm perf:fs` uses the seed `pnpm perf:fs:seed` wrote
+  (`.perf-fs-seed`) whenever it exists, with no `--seed-dir` needed. It fills
+  fresh over signed HTTP when there is no seed, or when `--sizes` is given.
+  `--seed-dir <path>` still names a seed elsewhere, and each run prints which it
+  used.
+- `pnpm perf:fs` and `pnpm perf:pg` stop whatever listens on their port (4455,
+  or `PORT`) before starting their server, instead of refusing to run, naming
+  each process they stop. A run also fails as soon as its own server exits:
+  before, two runs started together could leave one measuring the other's
+  server.
+
 ### Fixed
 
 - Update Collection composed the object it stored from a read made before the
@@ -43,6 +89,9 @@
   on the `multipart/form-data` envelope. The JSON body parser is registered
   under `@interop/storage-core`'s `JSON_MEDIA_TYPE`, the rule
   `isJsonContentType` decides by.
+- `pnpm perf:fs` works again: it now passes `@interop/was-client` 0.97 the
+  Spaces Repository URL (`<base>/spaces/`) it requires, where it failed at its
+  first signed request before.
 
 ### Changed
 
@@ -72,6 +121,9 @@
   `no-restricted-syntax`, and runs `jscpd` (`pnpm run lint:dup`) as a copy-paste
   detector over `src/`. A project `.claude/settings.json` hook runs ESLint on
   every `src/` file an agent edits.
+- `PostgresBackend` refuses an invalid `schema` option with the new
+  `InvalidSchemaNameError` (from `src/errors.ts`) instead of a plain `Error`;
+  the message is unchanged. `assertValidSchemaName` throws the same error.
 
 ## 0.42.2 - 2026-10-09
 
