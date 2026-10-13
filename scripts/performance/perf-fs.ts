@@ -4,8 +4,9 @@
  * Starts the server from this checkout as its own process, on a fresh temp
  * data dir and with `DATABASE_URL` and `WAS_ONBOARDING_TOKEN` cleared, so the
  * filesystem backend is always the one measured and Space creation is open.
- * It fills Collections of each size, runs the tests below, prints one table
- * (Markdown, ready to paste), and stops the server. It measures the
+ * It fills Collections of each size, runs the tests below, prints two tables
+ * (the Collection-size tests and the payload matrix; Markdown, ready to
+ * paste), and stops the server. It measures the
  * checked-out code only: to compare two versions, run it on each.
  *
  * Each load test runs `--clients` concurrent clients for `--duration` seconds,

@@ -89,6 +89,9 @@
   on the `multipart/form-data` envelope. The JSON body parser is registered
   under `@interop/storage-core`'s `JSON_MEDIA_TYPE`, the rule
   `isJsonContentType` decides by.
+- `pnpm perf:fs` works again: it now passes `@interop/was-client` 0.97 the
+  Spaces Repository URL (`<base>/spaces/`) it requires, where it failed at its
+  first signed request before.
 
 ### Changed
 
@@ -121,12 +124,6 @@
 - `PostgresBackend` refuses an invalid `schema` option with the new
   `InvalidSchemaNameError` (from `src/errors.ts`) instead of a plain `Error`;
   the message is unchanged. `assertValidSchemaName` throws the same error.
-
-### Fixed
-
-- `pnpm perf:fs` works again: it now passes `@interop/was-client` 0.97 the
-  Spaces Repository URL (`<base>/spaces/`) it requires, where it failed at its
-  first signed request before.
 
 ## 0.42.2 - 2026-10-09
 
