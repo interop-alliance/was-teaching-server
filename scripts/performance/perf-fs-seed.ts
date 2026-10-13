@@ -1,6 +1,8 @@
 /**
- * Pre-seeds a filesystem data dir for `pnpm perf:fs --seed-dir <path>`, so a
- * run can skip refilling Collections over signed HTTP every time.
+ * Pre-seeds a filesystem data dir for `pnpm perf:fs`, so a run can skip
+ * refilling Collections over signed HTTP every time. `pnpm perf:fs` uses the
+ * default seed dir (`.perf-fs-seed`) whenever it exists; `--seed-dir <path>`
+ * names one elsewhere.
  *
  * Writes directly through `FileSystemBackend`'s own write methods (the same
  * class the server uses), under a throwaway `did:key` whose private key it
@@ -10,8 +12,8 @@
  * `createdBy` and `controller` are explicitly set to that same `did:key`,
  * matching what the request handlers set from `invokerDid(request)`.
  *
- * The seeded layout matches what `pnpm perf:fs` builds for itself when no
- * `--seed-dir` is given: a `perf-public` Space (one public Collection per
+ * The seeded layout matches what `pnpm perf:fs` builds for itself when it
+ * fills fresh: a `perf-public` Space (one public Collection per
  * size), a `perf-private` Space (one private Collection per size), and three
  * Spaces per edge size (`perf-write-<size>`, `perf-delete-<size>`,
  * `perf-serial-<size>`), each with a single `items` Collection.

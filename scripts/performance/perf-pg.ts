@@ -5,8 +5,9 @@
  * `DATABASE_URL` pointed at the schema `pnpm perf:pg:seed` already filled
  * (see `scripts/performance/perf-pg-seed.ts`), so the Postgres backend is
  * always the one measured. Runs the same load tests as `pnpm perf:fs` (see
- * `scripts/performance/perf-fs.ts`) against that pre-seeded data, prints one
- * table (Markdown, ready to paste), and stops the server. It measures the
+ * `scripts/performance/perf-fs.ts`) against that pre-seeded data, prints two
+ * tables (the Collection-size tests and the payload matrix; Markdown, ready
+ * to paste), and stops the server. It measures the
  * checked-out code only: to compare two versions, run it on each; to compare
  * against the filesystem backend, run `pnpm perf:fs` with the same sizes and
  * read the two reports side by side.
