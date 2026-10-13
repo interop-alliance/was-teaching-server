@@ -12,8 +12,9 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
+import { spacesUrl } from '@interop/was-client/paths'
 import type { Collection, JsonObject } from '@interop/was-client'
 import {
   createEdvEncryption,
@@ -21,6 +22,9 @@ import {
   type RecipientPublicKey
 } from '@interop/was-client/edv'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+
+import { startTestServer } from '../../src/testing.js'
+import type { StorageBackend } from '../../src/types.js'
 
 import {
   credential,
@@ -106,24 +110,26 @@ async function seedBallast({
 
 /**
  * Seeds the read and write Spaces (a Collection per category in each), the
- * read targets in the read Space, and the ballast.
+ * read targets in the read Space, and, when `binaryTotalMib` is above 0, the
+ * ballast.
  * @param options {object}
- * @param options.serverUrl {string}
- * @param options.signerKey {Ed25519VerificationKey}   the seed's identity;
- *   the Spaces' controller
- * @param options.binaryTotalMib {number}
+ * @param options.serverUrl {string}   the server's base URL
+ * @param options.seed {Uint8Array}   the seed's identity, whose `did:key`
+ *   controls the Spaces
+ * @param [options.binaryTotalMib] {number}   0 (no ballast Space) by default
  * @returns {Promise<Record<MatrixPayload, string>>} the encrypted read
  *   targets' EDV ids, by payload
  */
 export async function seedMatrix({
   serverUrl,
-  signerKey,
-  binaryTotalMib
+  seed,
+  binaryTotalMib = 0
 }: {
   serverUrl: string
-  signerKey: Ed25519VerificationKey
-  binaryTotalMib: number
+  seed: Uint8Array
+  binaryTotalMib?: number
 }): Promise<Record<MatrixPayload, string>> {
+  const signerKey = await Ed25519VerificationKey.generate({ seed })
   const generated = await X25519KeyAgreementKey2020.generate({
     controller: `did:key:${signerKey.fingerprint()}`
   })
@@ -135,7 +141,7 @@ export async function seedMatrix({
   const keyAgreementKey = generated as IKeyAgreementKey
   const keyResolver: IKeyResolver = async () => recipient
   const was = WasClient.fromSigner({
-    serverUrl,
+    serverUrl: spacesUrl({ baseUrl: serverUrl }),
     signer: signerKey.didKeySigner(),
     encryption: createEdvEncryption({
       resolveKeys: async () => ({ keyAgreementKey, keyResolver })
@@ -169,6 +175,38 @@ export async function seedMatrix({
     encryptedIds[payload] = id
   }
 
-  await seedBallast({ was, binaryTotalMib })
+  if (binaryTotalMib > 0) {
+    await seedBallast({ was, binaryTotalMib })
+  }
   return encryptedIds
+}
+
+/**
+ * Seeds the payload matrix (see `seedMatrix`) over signed HTTP through an
+ * in-process server on `backend`, for a seed script that writes the rest of
+ * its data straight through that backend. The server owns the backend from
+ * the start: closing the server closes it, and a failed boot closes it before
+ * rethrowing, so the caller must not use or close it afterward.
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.seed {Uint8Array}
+ * @param [options.binaryTotalMib] {number}
+ * @returns {Promise<Record<MatrixPayload, string>>} the encrypted read
+ *   targets' EDV ids, by payload
+ */
+export async function seedMatrixInProcess({
+  backend,
+  seed,
+  binaryTotalMib
+}: {
+  backend: StorageBackend
+  seed: Uint8Array
+  binaryTotalMib?: number
+}): Promise<Record<MatrixPayload, string>> {
+  const { fastify, serverUrl } = await startTestServer({ backend })
+  try {
+    return await seedMatrix({ serverUrl, seed, binaryTotalMib })
+  } finally {
+    await fastify.close()
+  }
 }

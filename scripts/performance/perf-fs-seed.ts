@@ -16,194 +16,74 @@
  * Spaces per edge size (`perf-write-<size>`, `perf-delete-<size>`,
  * `perf-serial-<size>`), each with a single `items` Collection.
  *
- * Usage: pnpm perf:fs:seed [--sizes 1,500] [--out .perf-fs-seed]
+ * It then seeds the payload matrix (`scripts/performance/perf-matrix-seed.ts`)
+ * over signed HTTP, through an in-process server on the same backend, since
+ * an encrypted Collection's key epoch and EDV envelopes are made by
+ * was-client: the `perf-matrix-read` and `perf-matrix-write` Spaces. The
+ * encrypted read targets' EDV ids go into `seed-meta.json` too. No binary
+ * ballast: see `scripts/performance/perf-fs.ts`.
+ *
+ * Usage: pnpm perf:fs:seed [--sizes 1,500,2000] [--out .perf-fs-seed]
  */
-import { randomBytes } from 'node:crypto'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import process from 'node:process'
+import { mkdir, rm } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 
-import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-
 import { FileSystemBackend } from '../../src/backends/filesystem.js'
+import { formatSeedPlan, parseSizes, seedSizeSpaces } from './perf-lib.js'
+import { seedMatrixInProcess } from './perf-matrix-seed.js'
 import {
-  credential,
-  fillConcurrently,
-  itemIds,
-  parseSizes
-} from './perf-lib.js'
-
-const seedConcurrency = 10
+  createSeedIdentity,
+  defaultSeedDirs,
+  writeSeedMeta
+} from './perf-seed-meta.js'
 
 const { values: args } = parseArgs({
   options: {
-    sizes: { type: 'string', default: '1,500' },
-    out: { type: 'string', default: '.perf-fs-seed' }
+    sizes: { type: 'string', default: '1,500,2000' },
+    out: { type: 'string', default: defaultSeedDirs.fs }
   }
 })
 const { sizes, edgeSizes } = parseSizes(args.sizes)
 
 /**
- * Writes one Resource per id directly through the backend, several at a
- * time, under `createdBy`.
- * @param options {object}
- * @param options.backend {FileSystemBackend}
- * @param options.spaceId {string}
- * @param options.collectionId {string}
- * @param options.ids {string[]}
- * @param options.createdBy {`did:${string}`}
- * @returns {Promise<void>}
- */
-async function fill({
-  backend,
-  spaceId,
-  collectionId,
-  ids,
-  createdBy
-}: {
-  backend: FileSystemBackend
-  spaceId: string
-  collectionId: string
-  ids: string[]
-  createdBy: `did:${string}`
-}): Promise<void> {
-  await fillConcurrently({
-    ids,
-    concurrency: seedConcurrency,
-    write: id =>
-      backend.writeResource({
-        spaceId,
-        collectionId,
-        resourceId: id,
-        input: {
-          kind: 'json',
-          contentType: 'application/json',
-          data: credential(id)
-        },
-        createdBy
-      })
-  })
-}
-
-/**
- * Creates one Space with one Collection, filled to `size`, directly through
- * the backend.
- * @param options {object}
- * @param options.backend {FileSystemBackend}
- * @param options.spaceId {string}
- * @param options.collectionId {string}
- * @param options.size {number}
- * @param options.controller {`did:${string}`}
- * @param options.makePublic {boolean}
- * @returns {Promise<void>}
- */
-async function seedSpace({
-  backend,
-  spaceId,
-  collectionId,
-  size,
-  controller,
-  makePublic
-}: {
-  backend: FileSystemBackend
-  spaceId: string
-  collectionId: string
-  size: number
-  controller: `did:${string}`
-  makePublic: boolean
-}): Promise<void> {
-  await backend.writeSpace({
-    spaceId,
-    spaceMetadata: { id: spaceId, type: ['Space'], controller },
-    createdBy: controller
-  })
-  await backend.writeCollection({
-    spaceId,
-    collectionId,
-    collectionMetadata: { id: collectionId, type: ['Collection'] },
-    createdBy: controller
-  })
-  await fill({
-    backend,
-    spaceId,
-    collectionId,
-    ids: itemIds(size),
-    createdBy: controller
-  })
-  if (makePublic) {
-    await backend.writePolicy({
-      spaceId,
-      collectionId,
-      policy: { type: 'PublicCanRead' }
-    })
-  }
-}
-
-/**
  * Opens a backend on `args.out`, seeds every Space `pnpm perf:fs --seed-dir`
- * expects, persists the signing identity and the sizes alongside it, and
- * closes the backend.
+ * expects (the Collection-size Spaces directly, then the payload matrix over
+ * HTTP), persists the signing identity, the sizes and the encrypted read
+ * targets' ids alongside it, and closes the backend.
  * @returns {Promise<void>}
  */
 async function main(): Promise<void> {
+  console.log(
+    formatSeedPlan({
+      target: `${args.out} (--out)`,
+      sizes,
+      ballast: 'none (the OS page cache would hold it all; see perf-fs.ts)'
+    })
+  )
   // A reseed replaces the previous one in full, so Collections of a size no
   // longer listed do not linger beside the new `seed-meta.json`.
   await rm(args.out, { recursive: true, force: true })
   await mkdir(args.out, { recursive: true })
-  const seed = Uint8Array.from(randomBytes(32))
-  const keyPair = await Ed25519VerificationKey.generate({ seed })
-  const controller = `did:key:${keyPair.fingerprint()}` as const
+  const { seed, controller } = await createSeedIdentity()
 
   const backend = await FileSystemBackend.open({ dataDir: args.out })
   try {
-    for (const size of sizes) {
-      await seedSpace({
-        backend,
-        spaceId: 'perf-public',
-        collectionId: `c-${size}`,
-        size,
-        controller,
-        makePublic: true
-      })
-      await seedSpace({
-        backend,
-        spaceId: 'perf-private',
-        collectionId: `c-${size}`,
-        size,
-        controller,
-        makePublic: false
-      })
-    }
-    for (const size of edgeSizes) {
-      for (const label of ['perf-write', 'perf-delete', 'perf-serial']) {
-        await seedSpace({
-          backend,
-          spaceId: `${label}-${size}`,
-          collectionId: 'items',
-          size,
-          controller,
-          makePublic: false
-        })
-      }
-    }
-  } finally {
+    await seedSizeSpaces({ backend, sizes, edgeSizes, controller })
+  } catch (err) {
     await backend.close()
+    throw err
   }
 
-  await writeFile(
-    join(args.out, 'seed-meta.json'),
-    JSON.stringify(
-      {
-        seed: Buffer.from(seed).toString('base64'),
-        sizes,
-        edgeSizes
-      },
-      null,
-      2
-    )
+  console.log('Seeding the payload matrix...')
+  const encryptedIds = await seedMatrixInProcess({ backend, seed })
+
+  await writeSeedMeta({
+    seedDir: args.out,
+    meta: { seed, sizes, edgeSizes, encryptedIds }
+  })
+  console.log(
+    `Seeded ${args.out} (sizes: ${sizes.join(', ')}; matrix, no ballast)`
   )
-  console.log(`Seeded ${args.out} (sizes: ${sizes.join(', ')})`)
 }
 
 main().catch(err => {
