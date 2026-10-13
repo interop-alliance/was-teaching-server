@@ -645,6 +645,21 @@ export class StoreVersionError extends Error {
 }
 
 /**
+ * Startup refusal: a Postgres schema name, given as the backend's `schema`
+ * option or to a caller that acts on the schema before the backend opens, is
+ * not a plain identifier (an ASCII letter or `_`, then ASCII letters, digits
+ * or `_`). Never sent over the wire.
+ * @param options {object}
+ * @param options.schema {string}   the offending name
+ */
+export class InvalidSchemaNameError extends Error {
+  constructor({ schema }: { schema: string }) {
+    super(`Invalid Postgres schema name: "${schema}".`)
+    this.name = 'InvalidSchemaNameError'
+  }
+}
+
+/**
  * Startup refusal about the store's origin id: `WAS_ORIGIN_ID` names an id
  * other than the one the store already carries (`mismatch`), or the stored id
  * is malformed. The stored id is permanent for the store's life, so neither
