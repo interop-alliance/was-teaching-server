@@ -23,6 +23,7 @@ import {
   matrixPayloads,
   matrixSpaceIds,
   smallFileBytes,
+  type EncryptedReadIds,
   type LoadSettings,
   type MatrixCategory,
   type MatrixPayload,
@@ -129,19 +130,23 @@ async function readFile({
  * count in its cleartext `stream`; an inline one has no `stream`.
  * @param options {object}
  * @param options.was {WasClient}
- * @param options.encryptedIds {Record<MatrixPayload, string>}
- * @returns {Promise<Record<MatrixPayload, EncryptedTarget>>}
+ * @param options.encryptedIds {EncryptedReadIds}
+ * @returns {Promise<Map<MatrixPayload, EncryptedTarget>>} a target for each
+ *   payload `encryptedIds` names, in the matrix's payload order
  */
 async function loadEncryptedTargets({
   was,
   encryptedIds
 }: {
   was: WasClient
-  encryptedIds: Record<MatrixPayload, string>
-}): Promise<Record<MatrixPayload, EncryptedTarget>> {
-  const targets = {} as Record<MatrixPayload, EncryptedTarget>
+  encryptedIds: EncryptedReadIds
+}): Promise<Map<MatrixPayload, EncryptedTarget>> {
+  const targets = new Map<MatrixPayload, EncryptedTarget>()
   for (const payload of matrixPayloads) {
     const id = encryptedIds[payload]
+    if (id === undefined) {
+      continue
+    }
     const path = matrixPath({ space: 'read', category: 'encrypted', id })
     const envelope = (await readBody({ was, path })) as JsonObject
     const stream = envelope.stream as { chunks: number } | undefined
@@ -150,7 +155,7 @@ async function loadEncryptedTargets({
       path,
       chunkCount: stream?.chunks ?? 0
     })
-    targets[payload] = { id, envelope, chunks: chunks as Uint8Array[] }
+    targets.set(payload, { id, envelope, chunks: chunks as Uint8Array[] })
   }
   return targets
 }
@@ -190,64 +195,61 @@ function plaintextFiles({
 }
 
 /**
- * The encrypted files: each read target's id is its EDV id, a read fetches
- * its chunks too, and a write sends a copy of the stored envelope -- a chunked
+ * An encrypted file: its read target's id is its EDV id, a read fetches its
+ * chunks too, and a write sends a copy of the stored envelope -- a chunked
  * one the way was-client writes it: the document guarded with
  * `If-None-Match: *`, each chunk, then the document again.
  * @param options {object}
  * @param options.was {WasClient}
- * @param options.targets {Record<MatrixPayload, EncryptedTarget>}
- * @returns {Record<MatrixPayload, MatrixFile>}
+ * @param options.target {EncryptedTarget}
+ * @returns {MatrixFile}
  */
-function encryptedFiles({
+function encryptedFile({
   was,
-  targets
+  target
 }: {
   was: WasClient
-  targets: Record<MatrixPayload, EncryptedTarget>
-}): Record<MatrixPayload, MatrixFile> {
-  const files = {} as Record<MatrixPayload, MatrixFile>
-  for (const payload of matrixPayloads) {
-    const { id: readId, envelope, chunks } = targets[payload]
-    files[payload] = {
-      readId,
-      chunkCount: chunks.length,
-      create: async ({ path, id }) => {
-        const document = { ...envelope, id }
-        if (chunks.length === 0) {
-          await was.request({ path, method: 'PUT', json: document })
-          return
-        }
-        await was.request({
-          path,
-          method: 'PUT',
-          headers: { 'if-none-match': '*' },
-          json: document
-        })
-        for (const [index, chunk] of chunks.entries()) {
-          await was.request({
-            path: `${path}/chunks/${index}`,
-            method: 'PUT',
-            headers: octetStream,
-            body: chunk
-          })
-        }
+  target: EncryptedTarget
+}): MatrixFile {
+  const { id: readId, envelope, chunks } = target
+  return {
+    readId,
+    chunkCount: chunks.length,
+    create: async ({ path, id }) => {
+      const document = { ...envelope, id }
+      if (chunks.length === 0) {
         await was.request({ path, method: 'PUT', json: document })
+        return
       }
+      await was.request({
+        path,
+        method: 'PUT',
+        headers: { 'if-none-match': '*' },
+        json: document
+      })
+      for (const [index, chunk] of chunks.entries()) {
+        await was.request({
+          path: `${path}/chunks/${index}`,
+          method: 'PUT',
+          headers: octetStream,
+          body: chunk
+        })
+      }
+      await was.request({ path, method: 'PUT', json: document })
     }
   }
-  return files
 }
 
 /**
  * Runs every matrix test, category by category, reporting each result as it
- * completes. JSON writes create a new Resource each time; binary writes
+ * completes. It runs the payloads the seed wrote, the ones `encryptedIds`
+ * names. JSON writes create a new Resource each time; binary writes
  * create and then delete, untimed, so the write Space stays near empty
  * across runs.
  * @param options {object}
  * @param options.was {WasClient}
  * @param options.settings {LoadSettings}
- * @param options.encryptedIds {Record<MatrixPayload, string>}
+ * @param options.encryptedIds {EncryptedReadIds}
  * @param options.publicRead {(path: string) => Promise<Measurement | string>}
  *   the unsigned read of a public read target (k6), or a skip string
  * @param options.report {(result: object) => Promise<void>}   called with each
@@ -263,7 +265,7 @@ export async function runMatrix({
 }: {
   was: WasClient
   settings: LoadSettings
-  encryptedIds: Record<MatrixPayload, string>
+  encryptedIds: EncryptedReadIds
   publicRead: (path: string) => Promise<Measurement | string>
   report: (result: {
     category: MatrixCategory
@@ -277,15 +279,14 @@ export async function runMatrix({
   // test measures creating a file, not replacing one.
   const runTag = randomBytes(4).toString('hex')
   const plaintext = plaintextFiles({ was })
-  const encrypted = encryptedFiles({
-    was,
-    targets: await loadEncryptedTargets({ was, encryptedIds })
-  })
+  const encryptedTargets = await loadEncryptedTargets({ was, encryptedIds })
   const rows: MatrixRow[] = []
   for (const category of matrixCategories) {
-    const files = category === 'encrypted' ? encrypted : plaintext
-    for (const payload of matrixPayloads) {
-      const { readId, chunkCount, create } = files[payload]
+    for (const [payload, target] of encryptedTargets) {
+      const { readId, chunkCount, create } =
+        category === 'encrypted'
+          ? encryptedFile({ was, target })
+          : plaintext[payload]
       const readPath = matrixPath({ space: 'read', category, id: readId })
       const read =
         category === 'public'

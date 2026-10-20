@@ -65,24 +65,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import type { Collection, JsonObject, WasClient } from '@interop/was-client'
-
 import {
-  credential,
-  edgeSpaceLabels,
-  fillConcurrently,
   isEncryptedIds,
-  itemIds,
   parseLoadSettings,
   parseSizes,
-  seedConcurrency,
   type MatrixPayload
 } from './perf-lib.js'
-import { seedMatrix } from './perf-matrix-seed.js'
+import { seedViaHttp } from './perf-http-seed.js'
 import {
   connect,
   findK6,
   loadTestOptions,
+  localServerUrl,
   matrixReport,
   printEstimate,
   reportHeader,
@@ -91,10 +85,8 @@ import {
   runTests,
   saveReport,
   seededTargets,
-  serverUrl,
   sizeReport,
-  unsignedReader,
-  type TestTargets
+  unsignedReader
 } from './perf-runner.js'
 import {
   defaultSeedDirs,
@@ -112,119 +104,6 @@ const { values: args } = parseArgs({
 })
 let { sizes, edgeSizes } = parseSizes(args.sizes ?? '1,500,2000')
 const settings = parseLoadSettings(args)
-
-/**
- * Writes one Resource per id into the Collection over signed HTTP, several
- * at a time.
- * @param options {object}
- * @param options.collection {Collection}
- * @param options.ids {string[]}
- * @returns {Promise<void>}
- */
-async function fillViaHttp({
-  collection,
-  ids
-}: {
-  collection: Collection
-  ids: string[]
-}): Promise<void> {
-  await fillConcurrently({
-    ids,
-    concurrency: seedConcurrency,
-    write: id => collection.put(id, credential(id) as JsonObject)
-  })
-}
-
-/**
- * Creates a Space holding one Collection of `size` Resources over signed
- * HTTP.
- * @param options {object}
- * @param options.was {WasClient}
- * @param options.name {string}
- * @param options.size {number}
- * @returns {Promise<{ path: string, collection: Collection }>} the
- *   Collection's path, with no trailing slash, and its handle
- */
-async function seedSpaceViaHttp({
-  was,
-  name,
-  size
-}: {
-  was: WasClient
-  name: string
-  size: number
-}): Promise<{ path: string; collection: Collection }> {
-  const space = await was.createSpace({ name })
-  const collection = await space.createCollection({ id: 'items', name })
-  await fillViaHttp({ collection, ids: itemIds(size) })
-  return { path: `/space/${space.id}/items`, collection }
-}
-
-/**
- * Seeds every Space the tests need, fresh, over signed HTTP: the
- * Collection-size Spaces, then the payload matrix.
- * @param options {object}
- * @param options.was {WasClient}
- * @param options.seed {Uint8Array}   the identity `was` signs with
- * @param options.sizes {number[]}
- * @param options.edgeSizes {number[]}
- * @returns {Promise<{
- *   targets: TestTargets, encryptedIds: Record<MatrixPayload, string>
- * }>}
- */
-async function seedViaHttp({
-  was,
-  seed,
-  sizes,
-  edgeSizes
-}: {
-  was: WasClient
-  seed: Uint8Array
-  sizes: number[]
-  edgeSizes: number[]
-}): Promise<{
-  targets: TestTargets
-  encryptedIds: Record<MatrixPayload, string>
-}> {
-  const seedStarted = performance.now()
-  console.log('Filling Collections and the payload matrix...')
-
-  const publicSpace = await was.createSpace({ name: 'perf-public' })
-  const privateSpace = await was.createSpace({ name: 'perf-private' })
-  for (const size of sizes) {
-    const publicCollection = await publicSpace.createCollection({
-      id: `c-${size}`
-    })
-    await fillViaHttp({ collection: publicCollection, ids: itemIds(size) })
-    await publicCollection.setPublic()
-    const privateCollection = await privateSpace.createCollection({
-      id: `c-${size}`
-    })
-    await fillViaHttp({ collection: privateCollection, ids: itemIds(size) })
-  }
-  const edgeSpaces = []
-  for (const size of edgeSizes) {
-    const seed = (label: string) =>
-      seedSpaceViaHttp({ was, name: `${label}-${size}`, size })
-    edgeSpaces.push({
-      size,
-      write: await seed(edgeSpaceLabels.write),
-      remove: await seed(edgeSpaceLabels.remove),
-      serial: await seed(edgeSpaceLabels.serial)
-    })
-  }
-  const encryptedIds = await seedMatrix({ serverUrl, seed })
-  const seedSeconds = (performance.now() - seedStarted) / 1000
-  console.log(`Filled in ${seedSeconds.toFixed(0)}s. Running tests...\n`)
-  return {
-    targets: {
-      publicSpaceId: publicSpace.id,
-      privateSpaceId: privateSpace.id,
-      edgeSpaces
-    },
-    encryptedIds
-  }
-}
 
 /**
  * Picks the seed this run uses: `--seed-dir` when given; else the default
@@ -314,19 +193,30 @@ async function main(): Promise<void> {
       filter: source => !source.endsWith(seedMetaFile)
     })
   }
-  const publicRead = unsignedReader({ outDir, k6Version, settings })
+  const publicRead = unsignedReader({
+    serverUrl: localServerUrl,
+    outDir,
+    k6Version,
+    settings
+  })
   const { rows, matrixRows } = await runAgainstServer({
     outDir,
     env: { DATABASE_URL: undefined, WAS_DATA_DIR: dataDir },
     afterStop: () => rm(dataDir, { recursive: true, force: true }),
     run: async () => {
-      const was = await connect({ seed })
+      const was = await connect({ serverUrl: localServerUrl, seed })
       const { targets, encryptedIds } = seededIds
         ? {
             targets: seededTargets({ was, edgeSizes }),
             encryptedIds: seededIds
           }
-        : await seedViaHttp({ was, seed, sizes, edgeSizes })
+        : await seedViaHttp({
+            was,
+            serverUrl: localServerUrl,
+            seed,
+            sizes,
+            edgeSizes
+          })
       const rows = await runTests({
         was,
         sizes,
