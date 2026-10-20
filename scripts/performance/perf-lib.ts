@@ -500,6 +500,31 @@ export const matrixPayloads = ['json', 'small', 'large'] as const
 export type MatrixPayload = (typeof matrixPayloads)[number]
 
 /**
+ * The encrypted read targets' EDV ids, by payload, for each payload the seed
+ * wrote. The seed writes the same payloads in every category, so these keys
+ * are also the payloads the matrix runs.
+ */
+export type EncryptedReadIds = Partial<Record<MatrixPayload, string>>
+
+/**
+ * Parses a `--payloads` value (comma-separated payload names) into the
+ * matrix payloads it names, in the matrix's own order.
+ * @param value {string}
+ * @returns {MatrixPayload[]}
+ */
+export function parsePayloads(value: string): MatrixPayload[] {
+  const names = value.split(',').map(name => name.trim())
+  for (const name of names) {
+    if (!(matrixPayloads as readonly string[]).includes(name)) {
+      throw new Error(
+        `Unknown payload "${name}"; expected some of ${matrixPayloads.join(', ')}.`
+      )
+    }
+  }
+  return matrixPayloads.filter(payload => names.includes(payload))
+}
+
+/**
  * Whether a value read back from a `seed-meta.json` is the encrypted read
  * targets' EDV ids: a string per matrix payload.
  * @param value {unknown}
@@ -632,6 +657,36 @@ export async function fillConcurrently({
 }
 
 /**
+ * Runs an untimed, idempotent setup write (a seed write, a refill, a warm-up),
+ * running it again when it times out, up to `attempts` times in all. Over a
+ * long network path, a response now and then never arrives although the
+ * server answered it, and was-client gives a request 10 s (ky's
+ * `TimeoutError`). Any other error, and a timeout on the last attempt, is
+ * thrown. A timed request is never retried: it counts as a failure.
+ * @param options {object}
+ * @param options.op {() => Promise<Result>}
+ * @param [options.attempts] {number}   3 by default
+ * @returns {Promise<Result>}
+ */
+export async function retryOnTimeout<Result>({
+  op,
+  attempts = 3
+}: {
+  op: () => Promise<Result>
+  attempts?: number
+}): Promise<Result> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await op()
+    } catch (err) {
+      if ((err as Error).name !== 'TimeoutError' || attempt >= attempts) {
+        throw err
+      }
+    }
+  }
+}
+
+/**
  * The running count behind every load harness: completed and failed
  * requests, and the summed latency of the completed ones.
  */
@@ -751,7 +806,9 @@ async function timedRounds({
 
 /**
  * Signed deletes from `clients` concurrent clients, in rounds: each round
- * re-creates every client's `deleteRoundSize` Resources (untimed), then each
+ * re-creates every client's `deleteRoundSize` Resources (untimed,
+ * `seedConcurrency` at a time, so many clients don't burst the server with
+ * `clients * deleteRoundSize` writes at once), then each
  * client deletes its own (timed). Rounds repeat until the timed part reaches
  * `durationSeconds`. The ids repeat every round, so the Collection stays
  * within `clients * deleteRoundSize` Resources of its starting size.
@@ -790,13 +847,14 @@ export async function deleteLoad({
   const timedMs = await timedRounds({
     durationSeconds,
     round: async () => {
-      await Promise.all(
-        workers.map(worker =>
-          Promise.all(
-            idsOf(worker).map(id => collection.put(id, { resourceId: id }))
-          )
-        )
-      )
+      await fillConcurrently({
+        ids: workers.flatMap(idsOf),
+        concurrency: seedConcurrency,
+        write: id =>
+          retryOnTimeout({
+            op: () => collection.put(id, { resourceId: id })
+          })
+      })
       const started = performance.now()
       await Promise.all(
         workers.map(async worker => {
@@ -884,10 +942,13 @@ export async function serialWriteLoad({
   serialWrites: number
 }): Promise<Measurement> {
   for (let index = 0; index < warmUpWrites; index++) {
-    await was.request({
-      path: `${path}/warm-${index}`,
-      method: 'PUT',
-      json: { index }
+    await retryOnTimeout({
+      op: () =>
+        was.request({
+          path: `${path}/warm-${index}`,
+          method: 'PUT',
+          json: { index }
+        })
     })
   }
   const tally = new Tally()

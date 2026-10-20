@@ -66,6 +66,7 @@ import {
   connect,
   findK6,
   loadTestOptions,
+  localServerUrl,
   matrixReport,
   printEstimate,
   reportHeader,
@@ -154,12 +155,17 @@ async function main(): Promise<void> {
     matrix: true
   })
 
-  const publicRead = unsignedReader({ outDir, k6Version, settings })
+  const publicRead = unsignedReader({
+    serverUrl: localServerUrl,
+    outDir,
+    k6Version,
+    settings
+  })
   const { rows, matrixRows } = await runAgainstServer({
     outDir,
     env: { DATABASE_URL: databaseUrl },
     run: async () => {
-      const was = await connect({ seed })
+      const was = await connect({ serverUrl: localServerUrl, seed })
       const targets = seededTargets({ was, edgeSizes })
       const rows = await runTests({
         was,

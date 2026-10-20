@@ -32,6 +32,7 @@ import {
   matrixPayloads,
   matrixSpaceIds,
   smallFileBytes,
+  type EncryptedReadIds,
   type MatrixCategory,
   type MatrixPayload
 } from './perf-lib.js'
@@ -117,18 +118,22 @@ async function seedBallast({
  * @param options.seed {Uint8Array}   the seed's identity, whose `did:key`
  *   controls the Spaces
  * @param [options.binaryTotalMib] {number}   0 (no ballast Space) by default
- * @returns {Promise<Record<MatrixPayload, string>>} the encrypted read
- *   targets' EDV ids, by payload
+ * @param [options.payloads] {MatrixPayload[]}   the read targets to seed;
+ *   every payload by default
+ * @returns {Promise<EncryptedReadIds>} the encrypted read targets' EDV ids,
+ *   by payload, for the seeded payloads only
  */
 export async function seedMatrix({
   serverUrl,
   seed,
-  binaryTotalMib = 0
+  binaryTotalMib = 0,
+  payloads = matrixPayloads
 }: {
   serverUrl: string
   seed: Uint8Array
   binaryTotalMib?: number
-}): Promise<Record<MatrixPayload, string>> {
+  payloads?: readonly MatrixPayload[]
+}): Promise<EncryptedReadIds> {
   const signerKey = await Ed25519VerificationKey.generate({ seed })
   const generated = await X25519KeyAgreementKey2020.generate({
     controller: `did:key:${signerKey.fingerprint()}`
@@ -165,12 +170,12 @@ export async function seedMatrix({
     large: randomFile(largeFileBytes)
   }
   for (const collection of [read.public, read.plaintext]) {
-    for (const payload of matrixPayloads) {
+    for (const payload of payloads) {
       await collection.put(payload, files[payload])
     }
   }
-  const encryptedIds = {} as Record<MatrixPayload, string>
-  for (const payload of matrixPayloads) {
+  const encryptedIds: EncryptedReadIds = {}
+  for (const payload of payloads) {
     const { id } = await read.encrypted.add(files[payload])
     encryptedIds[payload] = id
   }
@@ -191,8 +196,8 @@ export async function seedMatrix({
  * @param options.backend {StorageBackend}
  * @param options.seed {Uint8Array}
  * @param [options.binaryTotalMib] {number}
- * @returns {Promise<Record<MatrixPayload, string>>} the encrypted read
- *   targets' EDV ids, by payload
+ * @returns {Promise<EncryptedReadIds>} the encrypted read targets' EDV ids,
+ *   by payload
  */
 export async function seedMatrixInProcess({
   backend,
@@ -202,7 +207,7 @@ export async function seedMatrixInProcess({
   backend: StorageBackend
   seed: Uint8Array
   binaryTotalMib?: number
-}): Promise<Record<MatrixPayload, string>> {
+}): Promise<EncryptedReadIds> {
   const { fastify, serverUrl } = await startTestServer({ backend })
   try {
     return await seedMatrix({ serverUrl, seed, binaryTotalMib })

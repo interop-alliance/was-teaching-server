@@ -3,7 +3,8 @@
  * CLI options, running the server under test as its own process, k6, the
  * Collection-size tests themselves, and the printed and saved report. Each
  * runner supplies only how its backend is prepared, pointed at, and torn
- * down.
+ * down. `pnpm perf:remote` reuses the tests and the report against a deployed
+ * server, with no process of its own to start.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -32,8 +33,8 @@ import {
   load,
   pivotRows,
   serialWriteLoad,
+  type EncryptedReadIds,
   type LoadSettings,
-  type MatrixPayload,
   type MatrixRow,
   type Measurement,
   type Row
@@ -41,7 +42,9 @@ import {
 import { runMatrix } from './perf-matrix-run.js'
 
 export const port = process.env.PORT ?? '4455'
-export const serverUrl = `http://localhost:${port}`
+// The server `runAgainstServer` starts. A run against a deployed server
+// (`pnpm perf:remote`) passes its own URL to `connect` and `unsignedReader`.
+export const localServerUrl = `http://localhost:${port}`
 const healthTimeoutMs = 30_000
 const pauseMs = 2_000
 const deleteRoundSize = 20
@@ -345,7 +348,7 @@ function startServer({
 }): ChildProcess {
   const serverEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    SERVER_URL: serverUrl,
+    SERVER_URL: localServerUrl,
     PORT: port,
     ...env
   }
@@ -374,7 +377,7 @@ async function waitForHealth(server: ChildProcess): Promise<void> {
       throw new Error(`The server exited with code ${server.exitCode}.`)
     }
     try {
-      const response = await fetch(`${serverUrl}/health`)
+      const response = await fetch(`${localServerUrl}/health`)
       if (response.ok) {
         return
       }
@@ -475,15 +478,18 @@ export async function runAgainstServer<Result>({
 }
 
 /**
- * Makes a client signing with the `did:key` `seed` derives: the identity the
- * seeded Spaces were written under.
+ * Makes a client of the server at `serverUrl`, signing with the `did:key`
+ * `seed` derives: the identity the seeded Spaces were written under.
  * @param options {object}
+ * @param options.serverUrl {string}   the server's base URL
  * @param options.seed {Uint8Array}
  * @returns {Promise<WasClient>}
  */
 export async function connect({
+  serverUrl,
   seed
 }: {
+  serverUrl: string
   seed: Uint8Array
 }): Promise<WasClient> {
   const keyPair = await Ed25519VerificationKey.generate({ seed })
@@ -496,16 +502,19 @@ export async function connect({
 /**
  * Runs k6 against one public URL and reads its summary.
  * @param options {object}
+ * @param options.serverUrl {string}   the server's base URL
  * @param options.path {string}
  * @param options.summaryPath {string}
  * @param options.settings {LoadSettings}
  * @returns {Promise<Measurement>}
  */
 async function k6Get({
+  serverUrl,
   path,
   summaryPath,
   settings
 }: {
+  serverUrl: string
   path: string
   summaryPath: string
   settings: LoadSettings
@@ -549,16 +558,19 @@ async function k6Get({
  * it is installed, each run keeping its summary in `outDir`, or else the skip
  * string.
  * @param options {object}
+ * @param options.serverUrl {string}   the server's base URL
  * @param options.outDir {string}
  * @param options.k6Version {string | undefined}
  * @param options.settings {LoadSettings}
  * @returns {(path: string) => Promise<Measurement | string>}
  */
 export function unsignedReader({
+  serverUrl,
   outDir,
   k6Version,
   settings
 }: {
+  serverUrl: string
   outDir: string
   k6Version: string | undefined
   settings: LoadSettings
@@ -569,7 +581,7 @@ export function unsignedReader({
       return 'skipped (no k6)'
     }
     const summaryPath = join(outDir, `k6-${runs++}.json`)
-    return k6Get({ path, summaryPath, settings })
+    return k6Get({ serverUrl, path, summaryPath, settings })
   }
 }
 
@@ -776,7 +788,7 @@ export function sizeReport({
  * @param options {object}
  * @param options.was {WasClient}
  * @param options.settings {LoadSettings}
- * @param options.encryptedIds {Record<MatrixPayload, string>}
+ * @param options.encryptedIds {EncryptedReadIds}
  * @param options.publicRead {(path: string) => Promise<Measurement | string>}
  *   see `unsignedReader`
  * @returns {Promise<MatrixRow[]>}
@@ -789,7 +801,7 @@ export async function runPayloadMatrix({
 }: {
   was: WasClient
   settings: LoadSettings
-  encryptedIds: Record<MatrixPayload, string>
+  encryptedIds: EncryptedReadIds
   publicRead: (path: string) => Promise<Measurement | string>
 }): Promise<MatrixRow[]> {
   console.log('\nRunning the payload matrix...')
@@ -827,18 +839,26 @@ export function matrixReport(matrixRows: MatrixRow[]): string[] {
  * @param options {object}
  * @param options.outDir {string}
  * @param options.lines {string[]}
+ * @param [options.serverLog] {boolean}   whether this run spawned a server
+ *   whose log is in `outDir`; default true
  * @returns {Promise<void>}
  */
 export async function saveReport({
   outDir,
-  lines
+  lines,
+  serverLog = true
 }: {
   outDir: string
   lines: string[]
+  serverLog?: boolean
 }): Promise<void> {
   const report = lines.join('\n')
   const summaryPath = join(outDir, 'summary.md')
   await writeFile(summaryPath, `${report}\n`)
   console.log(`\n${report}\n`)
-  console.log(`Saved to ${summaryPath} (server log: ${serverLogPath(outDir)})`)
+  console.log(
+    serverLog
+      ? `Saved to ${summaryPath} (server log: ${serverLogPath(outDir)})`
+      : `Saved to ${summaryPath}`
+  )
 }

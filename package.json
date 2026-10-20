@@ -46,6 +46,7 @@
     "perf:fs:seed": "tsx scripts/performance/perf-fs-seed.ts",
     "perf:pg": "tsx scripts/performance/perf-pg.ts",
     "perf:pg:seed": "tsx scripts/performance/perf-pg-seed.ts",
+    "perf:remote": "tsx scripts/performance/perf-remote.ts",
     "roadmap": "node scripts/roadmap-order.mjs"
   },
   "dependencies": {

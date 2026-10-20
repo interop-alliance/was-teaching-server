@@ -18,6 +18,7 @@ import {
   parseSizes,
   pivotRows,
   positiveInteger,
+  retryOnTimeout,
   serialWriteLoad
 } from '../scripts/performance/perf-lib.js'
 
@@ -497,5 +498,61 @@ describe('formatScalingSummary', () => {
       !lines.some(line => line.includes('Public read')),
       `expected the skipped test to be left out entirely, got: ${JSON.stringify(lines)}`
     )
+  })
+})
+
+describe('retryOnTimeout', () => {
+  /**
+   * An error shaped like ky's `TimeoutError`, which was-client rethrows.
+   * @returns {Error}
+   */
+  function timeoutError(): Error {
+    const err = new Error('Request timed out.')
+    err.name = 'TimeoutError'
+    return err
+  }
+
+  it('runs the write again after a timeout, and returns its result', async () => {
+    let calls = 0
+    const result = await retryOnTimeout({
+      op: async () => {
+        calls++
+        if (calls === 1) {
+          throw timeoutError()
+        }
+        return 'stored'
+      }
+    })
+    assert.equal(result, 'stored')
+    assert.equal(calls, 2)
+  })
+
+  it('throws the timeout once every attempt timed out', async () => {
+    let calls = 0
+    await assert.rejects(
+      retryOnTimeout({
+        attempts: 3,
+        op: async () => {
+          calls++
+          throw timeoutError()
+        }
+      }),
+      { name: 'TimeoutError' }
+    )
+    assert.equal(calls, 3)
+  })
+
+  it('does not retry any other error', async () => {
+    let calls = 0
+    await assert.rejects(
+      retryOnTimeout({
+        op: async () => {
+          calls++
+          throw new Error('403 Forbidden')
+        }
+      }),
+      /403/
+    )
+    assert.equal(calls, 1)
   })
 })
