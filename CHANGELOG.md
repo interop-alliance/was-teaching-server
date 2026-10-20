@@ -47,6 +47,20 @@
   each process they stop. A run also fails as soon as its own server exits:
   before, two runs started together could leave one measuring the other's
   server.
+- `pnpm perf:remote --url <https://host>` runs the same load tests against an
+  already-deployed server, so the filesystem and Postgres backends can be
+  compared on two staging hosts. It spawns no server and fills fresh over signed
+  HTTP under a throwaway `did:key`, then deletes the Spaces it created, even
+  when a test fails or the run is stopped with Ctrl-C (a second Ctrl-C exits at
+  once, skipping the cleanup). The target must allow Space creation (no
+  onboarding token). `--payloads` narrows the payload matrix (`json`, `small`,
+  `large`), for a machine whose upload is too slow to send 10 MiB within
+  was-client's 10 s request timeout, and `--label` titles the report.
+- The perf runs retry an untimed setup write (a seed write over HTTP, a delete
+  test's refill, a serial-write warm-up) that times out, up to three attempts,
+  so one response lost on a long network path no longer ends a run. A timed
+  request is still never retried and counts as a failure. A delete test's refill
+  now writes 10 at a time instead of every client's Resources at once.
 - Chunk replication. A pull loop that applies a chunked Resource now reads the
   source server's chunk listing, stages each listed chunk it does not hold under
   the `etag` the listing names, and applies the parent and its chunk set in one

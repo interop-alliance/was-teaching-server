@@ -551,6 +551,35 @@ than client-side crypto. Binary writes in every Collection create a file, timed,
 then delete it, untimed, so repeated runs don't fill the database. JSON writes
 create a new Resource each time.
 
+`pnpm perf:remote` runs the same tests against a server that is already
+deployed, such as a staging host, instead of a local one. It starts no server
+and nothing can be seeded behind the server's back, so it fills fresh over
+signed HTTP under a throwaway `did:key`, and deletes the Spaces it created when
+the run ends, even when a test fails or you stop it with Ctrl-C. A second Ctrl-C
+exits at once and skips that cleanup; the identity's key is never saved, so
+Spaces left that way can only be removed on the server itself. The server must
+allow Space creation (no `WAS_ONBOARDING_TOKEN`).
+
+```bash
+# Compare two deployed backends from the same machine, one after the other.
+# `--payloads json,small` leaves out the 10 MiB file, which an uplink slower
+# than about 1 MB/s can't send within was-client's 10 s request timeout:
+pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem" --payloads json,small
+pnpm perf:remote --url https://postgres.staging.freewallet.me --label "Postgres" --payloads json,small
+# From a fast uplink, leave `--payloads` out to run all three payloads, the
+# same matrix as `pnpm perf:fs` and `pnpm perf:pg`:
+pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem"
+# From far away, use more clients so the round trip doesn't cap every rate
+# (5 clients / 185 ms is about 27 req/s):
+pnpm perf:remote --url https://staging.freewallet.me --clients 25 --payloads json,small
+```
+
+Every number includes the round trip from the machine running it, so compare
+runs made from the same machine against hosts in the same region. Without
+`--payloads json,small`, a run from a slow uplink stops while filling, with
+`Request to ".../space/perf-matrix-read/public/large" timed out.`, and deletes
+the Spaces it created so far.
+
 The ballast, seeded by `pnpm perf:pg:seed` only, is extra 10 MiB files in a
 `perf-ballast` Space that no test reads. It grows the database past what
 Postgres keeps in its own cache, so the binary reads aren't served purely from
