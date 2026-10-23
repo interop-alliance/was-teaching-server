@@ -5,8 +5,10 @@
  * Collection's Resources, listing and `changes` feed to the backend its
  * `backend.id` selects, the copy of the Space and Collection Metadata objects
  * that backend keeps (and the `unique` index declaration it enforces from
- * it), the per-backend quota report, the delete cascades, Export and Import
- * of a Space spanning both, the refusal of an archive naming a backend a
+ * it), the per-backend quota report, the policy and log copies that give the
+ * `changes` feed served there one position sequence under the control plane's
+ * validators, the delete cascades, Export and Import of a Space spanning
+ * both, the refusal of an archive naming a backend a
  * server does not configure, and a deployment whose default is Postgres.
  *
  * OPT-IN: requires a disposable Postgres reachable via `WAS_TEST_DATABASE_URL`
@@ -108,6 +110,18 @@ describe.skipIf(!connectionString)(
         method: 'PUT',
         json
       })
+    }
+
+    // A `PublicCanRead` policy at the level `policyPath` names
+    // (`/space/<s>/<c>/policy` or `/space/<s>/<c>/<r>/policy`).
+    async function putPublicRead(policyPath: string) {
+      const written = await alice.was.request({
+        url: url(policyPath),
+        method: 'PUT',
+        json: { type: 'PublicCanRead' }
+      })
+      assert.equal(written.status, 201)
+      return written
     }
 
     /**
@@ -305,6 +319,8 @@ describe.skipIf(!connectionString)(
       const sourceId = await freshSpace('Export Source')
       await createCollection(sourceId, 'on-pg', { backend: { id: 'postgres' } })
       await putResource(sourceId, 'on-pg', 'p1', { from: 'pg' })
+      await putPublicRead(`/space/${sourceId}/on-pg/policy`)
+      await putPublicRead(`/space/${sourceId}/on-pg/p1/policy`)
       await createCollection(sourceId, 'on-fs')
       await putResource(sourceId, 'on-fs', 'f1', { from: 'fs' })
 
@@ -346,6 +362,21 @@ describe.skipIf(!connectionString)(
         method: 'GET'
       })
       assert.deepStrictEqual(read.data, { from: 'pg' })
+      // The imported policies reach the Postgres copy under the control
+      // plane's validators, so its feed lists them.
+      for (const resourceId of [undefined, 'p1']) {
+        const level = {
+          spaceId: destinationId,
+          collectionId: 'on-pg',
+          resourceId
+        }
+        const [onControl, onPg] = await Promise.all([
+          fsBackend.getPolicyRecord(level),
+          pgBackend.getPolicyRecord(level)
+        ])
+        assert.equal(onControl?.deleted, false)
+        assert.deepEqual(onPg?.validator, onControl?.validator)
+      }
 
       // A server configuring the filesystem backend alone refuses the
       // archive before writing anything.
@@ -556,6 +587,98 @@ describe.skipIf(!connectionString)(
         ResourceImmutableError
       )
       assert.equal(handed, true)
+    })
+
+    it("the feed of a Collection on the other backend carries its policies and log under the control plane's validators", async () => {
+      const spaceId = await freshSpace('Feed Space')
+      await createCollection(spaceId, 'feed', { backend: { id: 'postgres' } })
+      const resource = await putResource(spaceId, 'feed', 'r1', { v: 1 })
+      assert.equal(resource.status, 201)
+
+      const collectionPolicy = await putPublicRead(
+        `/space/${spaceId}/feed/policy`
+      )
+      await putPublicRead(`/space/${spaceId}/feed/r1/policy`)
+      const resourcePolicyGone = await alice.was.request({
+        url: url(`/space/${spaceId}/feed/r1/policy`),
+        method: 'DELETE'
+      })
+      assert.equal(resourcePolicyGone.status, 204)
+      const governed = await alice.was.request({
+        url: url(`/space/${spaceId}/feed/meta/log`),
+        method: 'PUT',
+        body: new TextEncoder().encode(genesisLine(oneEpoch) + '\n'),
+        headers: { 'content-type': 'text/jsonl', 'if-none-match': '*' }
+      })
+      assert.equal(governed.status, 204)
+
+      // The copies took positions in the Postgres feed: the Collection
+      // policy live, the Resource policy a tombstone.
+      const policyCopy = await pgBackend.getPolicyRecord({
+        spaceId,
+        collectionId: 'feed'
+      })
+      assert.equal(policyCopy?.deleted, false)
+      const tombstoneCopy = await pgBackend.getPolicyRecord({
+        spaceId,
+        collectionId: 'feed',
+        resourceId: 'r1'
+      })
+      assert.equal(tombstoneCopy?.deleted, true)
+
+      // Each document's `etag` is the one a GET of the record answers from
+      // the control plane, not the copy's.
+      const [meta, log] = await Promise.all([
+        alice.was.request({ url: url(`/space/${spaceId}/feed/meta`) }),
+        alice.was.request({ url: url(`/space/${spaceId}/feed/meta/log`) })
+      ])
+      const feed = await alice.was.request({
+        url: url(`/space/${spaceId}/feed/query`),
+        method: 'POST',
+        json: { profile: 'changes' }
+      })
+      assert.equal(feed.status, 200)
+      const byKind = (kind: string) =>
+        feed.data.documents.filter(
+          (document: { kind: string }) => document.kind === kind
+        )
+      assert.equal(byKind('resource').length, 1)
+      assert.deepEqual(
+        byKind('collection-metadata').map((document: any) => [
+          document.id,
+          document.etag
+        ]),
+        [[url(`/space/${spaceId}/feed/meta`), meta.headers.get('etag')]]
+      )
+      assert.deepEqual(
+        byKind('log').map((document: any) => [document.id, document.etag]),
+        [[url(`/space/${spaceId}/feed/meta/log`), log.headers.get('etag')]]
+      )
+      assert.deepEqual(
+        byKind('policy').map((document: any) => [
+          document.id,
+          document.deleted,
+          document.etag
+        ]),
+        [
+          [
+            url(`/space/${spaceId}/feed/policy`),
+            false,
+            collectionPolicy.headers.get('etag')
+          ],
+          [
+            url(`/space/${spaceId}/feed/r1/policy`),
+            true,
+            resourcePolicyGone.headers.get('etag')
+          ]
+        ]
+      )
+      // One position sequence: every document resumes after the one before.
+      const checkpoints = feed.data.documents.map(
+        (document: { checkpoint: string }) => document.checkpoint
+      )
+      assert.equal(new Set(checkpoints).size, checkpoints.length)
+      assert.equal(feed.data.checkpoint, checkpoints.at(-1))
     })
 
     it('a Delete Collection whose copy removal faulted removes the copy on the retry', async () => {

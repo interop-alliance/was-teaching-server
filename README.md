@@ -302,13 +302,13 @@ Space's registered external backends. Registering an external backend under
 A Collection on the non-default backend has its Resources, chunks, listings and
 `changes` feed served by that backend. That backend refuses a write whose Space
 or Collection Metadata object is absent from its own store, so the server keeps
-a copy (a mirror) of each there, and of the Collection's governing history log
-once it has one. Reads never consult the copy, and the Delete calls remove it.
-The copy takes that backend's own stamp, so the Collection's `changes` feed
-carries the copy's validator on its `collection-metadata` and `collection-log`
-documents and has no `policy` documents. The write-through to the copy is not
-atomic, and a fault is brought level by the next write or a retried request. A
-Collection's `backend` cannot change once set (409 `backend-immutable`).
+a copy (a mirror) of each there, of the Collection's governing history log once
+it has one, and of each policy in the Collection. Reads never consult the copy,
+and the Delete calls remove it. The Collection's `changes` feed serves its
+`collection-metadata`, `log` and `policy` documents under the control plane's
+validator, the one a GET of the record answers. The write-through to the copy is
+not atomic, and a fault is brought level by the next write or a retried request.
+A Collection's `backend` cannot change once set (409 `backend-immutable`).
 `GET /space/:id/quotas` returns one `backends` entry per server backend under
 its fixed id, and each enforces `STORAGE_LIMIT_PER_SPACE` against its own
 per-Space usage. Export Space composes one archive across the backends, and

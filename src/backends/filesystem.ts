@@ -2878,6 +2878,7 @@ export class FileSystemBackend implements StorageBackend {
             collectionLog,
             resources,
             resourcePolicies,
+            detachedResourcePolicies,
             resourceMetadata,
             chunkFiles
           } of collections) {
@@ -3063,6 +3064,22 @@ export class FileSystemBackend implements StorageBackend {
                   })
                 )
               }
+            }
+
+            // The policies of Resources another server backend imports are
+            // written as the Collection's own policy is.
+            for (const [
+              resourceId,
+              resourcePolicy
+            ] of detachedResourcePolicies) {
+              tallyPolicy(
+                await this.#importPolicy({
+                  spaceId,
+                  collectionId,
+                  resourceId,
+                  imported: resourcePolicy
+                })
+              )
             }
 
             // Carry tombstones: a soft-deleted Resource (see `deleteResource`) exports
@@ -8288,7 +8305,7 @@ export class FileSystemBackend implements StorageBackend {
     run
   }: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     stamps: WriteStamp[]
     lockKeys: string[]
     exclusive?: boolean
@@ -8297,12 +8314,15 @@ export class FileSystemBackend implements StorageBackend {
     }) => Promise<ApplyResult>
   }): Promise<ApplyResult> {
     const checkedApply = async (): Promise<ApplyResult> => {
-      const [replica, spaceMetadata] = await Promise.all([
-        this.getReplica({ spaceId, replicaId }),
-        this.getSpaceMetadata({ spaceId })
-      ])
+      const spaceMetadata = await this.getSpaceMetadata({ spaceId })
+      // A copy of a control-plane record (no `replicaId`) runs under no
+      // registration; the Space must still hold a Metadata object.
+      const registeredUnder =
+        replicaId === undefined
+          ? spaceMetadata?.metaGeneration
+          : (await this.getReplica({ spaceId, replicaId }))?.spaceGeneration
       const stopped = guardApply({
-        registeredUnder: replica?.spaceGeneration,
+        registeredUnder,
         spaceGeneration: spaceMetadata?.metaGeneration,
         clock: this.#clock,
         stamps
@@ -8875,7 +8895,8 @@ export class FileSystemBackend implements StorageBackend {
    * policy write takes.
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.replicaId {string}
+   * @param [options.replicaId] {string}   absent for a copy of a
+   *   control-plane record, which runs under no registration
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param options.generation {string}
@@ -8893,7 +8914,7 @@ export class FileSystemBackend implements StorageBackend {
     policy
   }: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId?: string
     resourceId?: string
     generation: string

@@ -6167,3 +6167,27 @@ the contract, `src/lib/exportArchive.ts`) and Import splits the plan
 backend stays stalled (WAS-218); the feed of such a Collection carries no policy
 or log documents (WAS-217); a change of `backend.id` on an existing Collection
 is WAS-219.
+
+### WAS-217: [M] (*) Policies and the governing log of a Collection on a non-default server backend in its `changes` feed
+
+- status: done
+- done: 2026-10-22
+- priority: medium
+- backend: *
+- labels: backend, changes-feed
+- discovered-from: WAS-216 (2026-10-22)
+- acceptance:
+  - [x] The `changes` feed of a Collection whose `backend.id` names a server
+        backend other than the default carries its Collection- and
+        Resource-level policy documents and its governing-log documents, with
+        the validator the control plane serves for each
+  - [x] The `collection-metadata` document of such a feed carries the control
+        plane's validator rather than the copy's
+  - [x] A test over `WAS_TEST_DATABASE_URL` pins each document kind
+
+The feed is served by the Collection's data backend, which holds a copy of the
+Collection Metadata object (under its own stamp) and no policies or log, since
+those stay on the default backend. Either the control-plane writes of those
+records take a position in the data backend's feed, or the feed is composed from
+both stores. Whichever is picked has to keep one per-Collection position
+sequence.

@@ -5148,7 +5148,8 @@ export class PostgresBackend implements StorageBackend {
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
-   * @param options.replicaId {string}
+   * @param [options.replicaId] {string}   absent for a copy of a
+   *   control-plane record, which runs under no registration
    * @param [options.collectionId] {string}   a Collection that must be live
    * @param options.stamps {WriteStamp[]}   every stamp the record carries
    * @returns {Promise<ApplyResult | undefined>}
@@ -5164,7 +5165,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     client: pg.PoolClient
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId?: string
     stamps: unknown[]
   }): Promise<ApplyResult | undefined> {
@@ -5182,10 +5183,16 @@ export class PostgresBackend implements StorageBackend {
            ON r.space_id = s.space_id AND r.replica_id = $2
         WHERE s.space_id = $1 AND s.metadata IS NOT NULL
           FOR UPDATE OF s`,
-      [spaceId, replicaId]
+      [spaceId, replicaId ?? null]
     )
+    // A copy of a control-plane record (no `replicaId`) runs under no
+    // registration; the Space must still hold a Metadata object.
+    const registeredUnder =
+      replicaId === undefined
+        ? spaceRows[0]?.meta_generation
+        : spaceRows[0]?.space_generation
     const stopped = guardApply({
-      registeredUnder: spaceRows[0]?.space_generation ?? undefined,
+      registeredUnder: registeredUnder ?? undefined,
       spaceGeneration: spaceRows[0]?.meta_generation,
       clock: this.#clock,
       stamps
@@ -5723,7 +5730,8 @@ export class PostgresBackend implements StorageBackend {
    * Resource-level one takes the Collection's next feed position.
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.replicaId {string}
+   * @param [options.replicaId] {string}   absent for a copy of a
+   *   control-plane record, which runs under no registration
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param options.generation {string}
@@ -5741,7 +5749,7 @@ export class PostgresBackend implements StorageBackend {
     policy
   }: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId?: string
     resourceId?: string
     generation: string
@@ -6830,6 +6838,7 @@ export class PostgresBackend implements StorageBackend {
         collectionLog,
         resources,
         resourcePolicies,
+        detachedResourcePolicies,
         resourceMetadata
       } of collections) {
         const collectionExisted = Boolean(metadataById.get(collectionId))
@@ -6957,6 +6966,20 @@ export class PostgresBackend implements StorageBackend {
               })
             )
           }
+        }
+
+        // The policies of Resources another server backend imports are
+        // written as the Collection's own policy is.
+        for (const [resourceId, resourcePolicy] of detachedResourcePolicies) {
+          tallyPolicy(
+            await this.#importPolicy({
+              client,
+              spaceId,
+              collectionId,
+              resourceId,
+              imported: resourcePolicy
+            })
+          )
         }
 
         // Carry tombstones: an orphan `.meta.` sidecar that is a tombstone

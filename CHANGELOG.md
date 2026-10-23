@@ -19,21 +19,25 @@
   with `backend.id` naming the non-default server backend has its Resources,
   listings and `changes` feed served there, while its Metadata object, policies
   and log stay on the default backend, with a copy of the Space and Collection
-  Metadata objects kept on the selected backend (its own stamp; the feed's
-  `collection-metadata` document carries the copy's validator, and the feed
-  carries no `policy` or `log` documents). Export Space composes the archive
-  across the backends, and Import Space restores each Collection onto the
-  backend its archived Metadata object names, refusing an archive naming an
-  unconfigured one with `unsupported-backend` (409) before writing anything.
-  Registering an external backend under `default`, `fs` or `postgres` is
-  refused. The plugin takes `backends` (a list) beside the one-backend
-  `backend`, and `defaultBackend`; it decorates `serverBackends`. An Update
-  Collection body naming a backend other than the stored one is refused with
-  `backend-immutable` (409, pointer `#/backend`); restating the selection under
-  another id of the same backend is stored as sent. The selected backend also
-  keeps a copy of the Collection's governing history log, written after each log
-  write, so the write-once recheck under its lock reads it; its feed carries a
-  `collection-log` document. Update Space refreshes the Space copy's
+  Metadata objects kept on the selected backend under its own stamp. Export
+  Space composes the archive across the backends, and Import Space restores each
+  Collection onto the backend its archived Metadata object names, refusing an
+  archive naming an unconfigured one with `unsupported-backend` (409) before
+  writing anything. Registering an external backend under `default`, `fs` or
+  `postgres` is refused. The plugin takes `backends` (a list) beside the
+  one-backend `backend`, and `defaultBackend`; it decorates `serverBackends`. An
+  Update Collection body naming a backend other than the stored one is refused
+  with `backend-immutable` (409, pointer `#/backend`); restating the selection
+  under another id of the same backend is stored as sent. The selected backend
+  also keeps a copy of the Collection's governing history log, written after
+  each log write, so the write-once recheck under its lock reads it, and a copy
+  of each Collection- and Resource-level policy, written after every policy
+  write and delete, so its `changes` feed holds the Collection's
+  `collection-metadata`, `log` and `policy` documents in one position sequence.
+  Those documents carry the control plane's stamp and `etag`, the ones a GET of
+  each record answers; a policy copy is stored under them, and Import Space
+  copies the policies of such a Collection after the default backend's import,
+  its Resource policies included. Update Space refreshes the Space copy's
   `controller` and `name`. Delete Collection sweeps the other server backends
   for a copy on every attempt, so a copy a faulted first attempt left behind
   goes on the retry. Import routes an existing Collection's Resources by the

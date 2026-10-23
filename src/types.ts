@@ -1770,7 +1770,9 @@ export interface StorageBackend {
    * request route reaches these methods. Each stores the received record
    * under the stamp the peer served, verbatim, after the one comparison
    * `lib/replicaApply.ts` defines, and resolves an `ApplyResult` saying what
-   * it did.
+   * it did. One other caller is the policy copy a non-default server backend
+   * keeps (`lib/backendMirror.ts`), which hands `applyPolicy` the stamp and
+   * generation the control plane's own write minted, with no `replicaId`.
    *
    * Every apply method runs inside the critical section the matching
    * request-layer write takes, and makes these checks there, in this order:
@@ -1890,11 +1892,14 @@ export interface StorageBackend {
    * Applies an access-control policy, live or a tombstone, at the level the
    * ids select, when `stamp` wins over the held policy record's (a held
    * tombstone's included). The record is stored under `generation` and
-   * `stamp`. An absent `policy` is a tombstone.
+   * `stamp`. An absent `policy` is a tombstone. An absent `replicaId` is
+   * the copy of a control-plane record this server writes to one of its own
+   * backends: the registration check is skipped, and the Space must still
+   * hold a Metadata object.
    */
   applyPolicy(options: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId?: string
     resourceId?: string
     generation: string

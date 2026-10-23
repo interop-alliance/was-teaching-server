@@ -66,13 +66,16 @@ Import splits the plan (`src/lib/importAcrossBackends.ts`). The default backend
 takes the whole plan less the Resources of Collections on another server
 backend. Each such backend imports its own Collections over a Space copy written
 first: Resources, sidecars and chunks, plus the Metadata object and the
-governing log as its copies, and no policies. A Collection the destination
-already holds is routed by the live object's `backend.id`, since import keeps
-that object; the archive's selection decides only for a Collection the import
-creates. The other backends import first and the default backend last, so a
-fault in one of them leaves the default backend untouched and a retry skips what
-landed. Resource counts add up, and the Collection count is the default
-backend's. An archived Collection that names a backend absent from the
+governing log as its copies, and no policies. The default backend writes a
+Resource policy of such a Collection beside no Resource, since the plan carries
+none, and once its import lands the policies it stored are copied to the
+Collection's backend from its records, under its own validators. A Collection
+the destination already holds is routed by the live object's `backend.id`, since
+import keeps that object; the archive's selection decides only for a Collection
+the import creates. The other backends import first and the default backend
+last, so a fault in one of them leaves the default backend untouched and a retry
+skips what landed. Resource counts add up, and the Collection count is the
+default backend's. An archived Collection that names a backend absent from the
 destination Space's backends listing, an unconfigured server backend or an
 unregistered external id, is refused with 409 `unsupported-backend` before
 anything is written.
