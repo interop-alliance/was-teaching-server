@@ -47,6 +47,7 @@ import {
   encodeChangesCheckpoint
 } from '../lib/changesCheckpoint.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
+import { restampFeedFromControlPlane } from '../lib/backendMirror.js'
 import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
 import { invalidateCollectionPolicies } from '../lib/policyCache.js'
 import {
@@ -922,6 +923,7 @@ export class CollectionRequest {
       return CollectionRequest.#queryChanges({
         reply,
         serverUrl: request.server.serverUrl,
+        controlPlane: request.server.storage,
         dataBackend,
         spaceId,
         collectionId,
@@ -1022,6 +1024,7 @@ export class CollectionRequest {
     return CollectionRequest.#queryChanges({
       reply,
       serverUrl: request.server.serverUrl,
+      controlPlane: request.server.storage,
       dataBackend,
       spaceId,
       collectionId,
@@ -1098,7 +1101,9 @@ export class CollectionRequest {
    * @param options {object}
    * @param options.reply {import('fastify').FastifyReply}
    * @param options.serverUrl {string}   this server's base URL
-   * @param options.dataBackend {StorageBackend}
+   * @param options.controlPlane {StorageBackend}   the default backend
+   * @param options.dataBackend {StorageBackend}   the backend the feed is
+   *   served from
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.body {object}   the query POST body
@@ -1108,6 +1113,7 @@ export class CollectionRequest {
   static async #queryChanges({
     reply,
     serverUrl,
+    controlPlane,
     dataBackend,
     spaceId,
     collectionId,
@@ -1116,6 +1122,7 @@ export class CollectionRequest {
   }: {
     reply: FastifyReply
     serverUrl: string
+    controlPlane: StorageBackend
     dataBackend: StorageBackend
     spaceId: string
     collectionId: string
@@ -1216,7 +1223,20 @@ export class CollectionRequest {
       })}`,
       log: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
     }
-    const documents: ChangeDocument[] = result.documents.map(doc => {
+    // A Collection on another server backend is fed from there, where its
+    // Metadata object and log are copies under that backend's own stamps;
+    // their documents take the control plane's stamp and validator, the ones
+    // a GET of each record answers.
+    const feedDocuments =
+      dataBackend === controlPlane
+        ? result.documents
+        : await restampFeedFromControlPlane({
+            controlPlane,
+            spaceId,
+            collectionId,
+            documents: result.documents
+          })
+    const documents: ChangeDocument[] = feedDocuments.map(doc => {
       const etag = doc.validator && formatEtag(doc.validator)
       const base = {
         updatedAt: doc.updatedAt,

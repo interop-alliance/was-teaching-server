@@ -207,20 +207,28 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   id. A Collection's `backend.id` is stored as sent and resolves through the
   alias on every read.
 - **`src/lib/backendMirror.ts`** -- the copies of the Space and Collection
-  Metadata objects and of the Collection's governing history log kept in a
-  non-default server backend, so that backend accepts a Resource write and reads
-  the `unique` declarations and the write-once rule under its own lock. The
+  Metadata objects, of the Collection's governing history log and of its
+  policies kept in a non-default server backend, so that backend accepts a
+  Resource write, reads the `unique` declarations and the write-once rule under
+  its own lock, and serves a `changes` feed with one position sequence. The
   copies follow the write: the set serves the default backend wrapped by
   `mirroringControlPlane`, and each write, delete or replicated apply of a
-  container object through it is followed by the copy it calls for, so the
-  handlers and the pull loop keep them alike. The Space copy is written on the
-  first Collection the backend serves and refreshed by Update Space, the
-  Collection copy after every Create and Update Collection, and the log copy
-  after every governed-log write. Reads never consult a copy. Delete Collection
-  sweeps every other server backend for a copy after the control plane's delete,
-  on a repeat delete too, and Delete Space removes the Space copies. A
-  Collection's `backend` cannot change once set (`backend-immutable`, 409); it
-  may be restated under another id of the same backend.
+  container object or a Collection- or Resource-level policy through it is
+  followed by the copy it calls for, so the handlers and the pull loop keep them
+  alike. The Space copy is written on the first Collection the backend serves
+  and refreshed by Update Space, the Collection copy after every Create and
+  Update Collection, the log copy after every governed-log write, and a policy
+  copy after every policy write and delete, and Import Space copies the policies
+  it stored after the control plane's import. Reads never consult a copy. The
+  feed's `collection-metadata` and `log` documents are restamped from the
+  control plane's records (`restampFeedFromControlPlane`, two reads per page at
+  most), while a policy copy is written through `applyPolicy` under the control
+  plane's own generation and stamp, with no registration, so its feed document
+  is served as is and a tombstone copy lands over an absent copy too. Delete
+  Collection sweeps every other server backend for a copy after the control
+  plane's delete, on a repeat delete too, and Delete Space removes the Space
+  copies. A Collection's `backend` cannot change once set (`backend-immutable`,
+  409); it may be restated under another id of the same backend.
 - **`src/lib/exportArchive.ts`**, **`src/lib/importAcrossBackends.ts`** --
   Export and Import Space across the set. Export composes one entry tree from
   the control plane and the other backend, signs provenance over it and packs
@@ -365,12 +373,15 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
   `WAS_DEFAULT_BACKEND` names, and that backend is the control plane. A
   Collection selects one with `backend: { id }`. Avoid: dual mode, primary
   backend.
-- **Mirror** -- the copy of a Space or Collection Metadata object, or of a
-  Collection's governing history log, that the server keeps in a non-default
-  server backend, so that backend accepts the Collection's Resource writes and
-  decides the write-once rule under its own lock. It carries that backend's own
-  stamp and generation and is never read for an answer. Avoid: replica (reserved
-  for replica registrations), shadow copy.
+- **Mirror** -- the copy of a Space or Collection Metadata object, of a
+  Collection's governing history log, or of a Collection- or Resource-level
+  policy, that the server keeps in a non-default server backend, so that backend
+  accepts the Collection's Resource writes, decides the write-once rule under
+  its own lock, and holds every record kind of the Collection in its `changes`
+  feed. It is never read for an answer. A Metadata or log copy carries that
+  backend's own stamp and generation, and its feed document is restamped from
+  the control plane's record; a policy copy carries the control plane's. Avoid:
+  replica (reserved for replica registrations), shadow copy.
 - **Collection tombstone** -- what Delete Collection leaves in place of the
   Collection Metadata object: `deleted: true`, the Collection's generation, and
   the delete's write stamp, and nothing else of the old body. It reads as absent

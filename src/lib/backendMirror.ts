@@ -12,15 +12,23 @@
  * control-plane write of it, because the write-once recheck a Resource write
  * runs inside the data backend's lock reads the log from that backend's own
  * store; the copy is what closes the race with a guarded log create there.
- * Reads never consult a copy. A copy takes the data backend's own write stamp
- * and generation, so the `changes` feed served from that backend carries the
- * copy's validator on its `collection-metadata` and `collection-log`
- * documents; the pull loop reads the objects themselves from the control
- * plane and never the feed's.
+ * The Collection's own policy and each Resource policy are copied too, with
+ * every write and every delete, so the `changes` feed that backend serves
+ * holds one position sequence for every record kind of the Collection.
+ * Reads never consult a copy. A copy of a Metadata object or of the log takes
+ * the data backend's own write stamp and generation; the `changes` feed
+ * served from that backend carries the control plane's stamp and validator
+ * instead on its `collection-metadata` and `log` documents, which
+ * `restampFeedFromControlPlane` reads off the control plane once each per
+ * page. A policy copy is written through `applyPolicy` under the control
+ * plane's own generation and stamp, so its feed document is served as is.
+ * Either way a feed document's `etag` is the one a GET of the record
+ * answers.
  *
  * The copies follow the write itself: `mirroringControlPlane` wraps the
- * default backend so each write or delete of a container object, and each
- * replicated apply of one, is followed by the copy it calls for. The set
+ * default backend so each write or delete of a container object or of a
+ * Collection- or Resource-level policy, and each replicated apply of one, is
+ * followed by the copy it calls for. The set
  * exposes the wrapped backend as `default`, which is what the handlers, the
  * import path and the pull loop write through, so no writer has to remember
  * the copy.
@@ -34,13 +42,18 @@
  * backend for a copy after the control plane's delete, on a retry too, so a
  * fault between the two leaves nothing behind for good.
  */
-import { SpaceNotFoundError } from '../errors.js'
+import { isWriteStamp } from '@interop/storage-core'
+
+import { SpaceNotFoundError, StorageError } from '../errors.js'
 import type { ApplyResult } from './replicaApply.js'
-import { withoutStampMembers } from './hlc.js'
+import { containerFeedDocument, type EtagValidator } from './etag.js'
+import { stampOf, withoutStampMembers } from './hlc.js'
 import { stripMetadataValidator } from './metadataValidator.js'
 import type { ServerBackends } from './serverBackends.js'
 import type {
   CollectionMetadata,
+  FeedDocument,
+  PolicyDocument,
   SpaceMetadata,
   StorageBackend
 } from '../types.js'
@@ -195,13 +208,45 @@ export async function mirrorCollectionLog({
   collectionId: string
   body: string
 }): Promise<void> {
+  const backend = await collectionCopyBackend({
+    serverBackends,
+    spaceId,
+    collectionId
+  })
+  if (backend === undefined) {
+    return
+  }
+  await backend.writeCollectionLog({ spaceId, collectionId, body })
+}
+
+/**
+ * The server backend a Collection's copies go to: the one its `backend.id`
+ * selects when that is another server backend, with the copy of the
+ * Collection Metadata object brought level first, so a copy an earlier fault
+ * left out is written here. `undefined` when the Collection is absent on the
+ * control plane or on the default backend.
+ * @param options {object}
+ * @param options.serverBackends {ServerBackends}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {Promise<StorageBackend | undefined>}
+ */
+async function collectionCopyBackend({
+  serverBackends,
+  spaceId,
+  collectionId
+}: {
+  serverBackends: ServerBackends
+  spaceId: string
+  collectionId: string
+}): Promise<StorageBackend | undefined> {
   const metadata = await serverBackends.default.getCollectionMetadata({
     spaceId,
     collectionId
   })
   const backend = serverBackends.resolveOther(metadata?.backend?.id)
   if (metadata === undefined || backend === undefined) {
-    return
+    return undefined
   }
   if (!(await backend.getCollectionMetadata({ spaceId, collectionId }))) {
     await mirrorCollectionMetadata({
@@ -211,7 +256,227 @@ export async function mirrorCollectionLog({
       metadata
     })
   }
-  await backend.writeCollectionLog({ spaceId, collectionId, body })
+  return backend
+}
+
+/**
+ * Writes through a Collection- or Resource-level policy record the control
+ * plane holds, live or a tombstone, to the server backend the Collection
+ * selects, when that is another server backend, so the write takes a
+ * position in that backend's `changes` feed. The copy goes through
+ * `applyPolicy` under the control plane's own generation and stamp, so the
+ * copy's validator is the record's and the feed serves it as is. The stamp
+ * comparison there orders two copies of one record however they land, and
+ * a tombstone is written over no record too, so a copy a fault left out is
+ * brought level by the next write of the record.
+ * @param options {object}
+ * @param options.serverBackends {ServerBackends}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.resourceId] {string}
+ * @param options.validator {EtagValidator}   the record's generation and
+ *   stamp, as the control-plane write minted them
+ * @param [options.policy] {PolicyDocument}   the policy as the control-plane
+ *   write stored it; absent for a tombstone
+ * @returns {Promise<void>}
+ * @throws {StorageError}   the backend refused the copy
+ */
+export async function mirrorPolicy({
+  serverBackends,
+  spaceId,
+  collectionId,
+  resourceId,
+  validator,
+  policy
+}: {
+  serverBackends: ServerBackends
+  spaceId: string
+  collectionId: string
+  resourceId?: string
+  validator: EtagValidator
+  policy?: PolicyDocument
+}): Promise<void> {
+  const backend = await collectionCopyBackend({
+    serverBackends,
+    spaceId,
+    collectionId
+  })
+  if (backend === undefined) {
+    return
+  }
+  await copyPolicy({
+    backend,
+    spaceId,
+    collectionId,
+    resourceId,
+    validator,
+    policy
+  })
+}
+
+/**
+ * Writes one policy record, live or a tombstone, to the backend its
+ * Collection's copies go to, through `applyPolicy` under the record's own
+ * generation and stamp.
+ * @param options {object}
+ * @param options.backend {StorageBackend}   the backend the copy goes to
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param [options.resourceId] {string}
+ * @param options.validator {EtagValidator}
+ * @param [options.policy] {PolicyDocument}   absent for a tombstone
+ * @returns {Promise<void>}
+ * @throws {StorageError}   the backend refused the copy
+ */
+async function copyPolicy({
+  backend,
+  spaceId,
+  collectionId,
+  resourceId,
+  validator,
+  policy
+}: {
+  backend: StorageBackend
+  spaceId: string
+  collectionId: string
+  resourceId?: string
+  validator: EtagValidator
+  policy?: PolicyDocument
+}): Promise<void> {
+  const result = await backend.applyPolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    generation: validator.generation,
+    stamp: validator.stamp,
+    policy: policy && (withoutStampMembers(policy) as PolicyDocument)
+  })
+  if (result.outcome === 'refused') {
+    throw new StorageError({
+      cause: new Error(
+        `The copy of a policy was refused (${result.reason}): ${result.detail}`
+      )
+    })
+  }
+}
+
+/**
+ * Writes through the policy records the control plane holds for a
+ * Collection, its own and one per named Resource, to the server backend the
+ * Collection selects. Import Space calls it after the control plane's
+ * import, since that import stores its policies inside the backend, past
+ * the write-through. A level the control plane holds no record at is left
+ * alone.
+ * @param options {object}
+ * @param options.serverBackends {ServerBackends}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceIds {Iterable<string>}   the Resources whose policy
+ *   records to copy
+ * @returns {Promise<void>}
+ */
+export async function mirrorCollectionPolicies({
+  serverBackends,
+  spaceId,
+  collectionId,
+  resourceIds
+}: {
+  serverBackends: ServerBackends
+  spaceId: string
+  collectionId: string
+  resourceIds: Iterable<string>
+}): Promise<void> {
+  const backend = await collectionCopyBackend({
+    serverBackends,
+    spaceId,
+    collectionId
+  })
+  if (backend === undefined) {
+    return
+  }
+  for (const resourceId of [undefined, ...resourceIds]) {
+    const stored = await serverBackends.default.getPolicyRecord({
+      spaceId,
+      collectionId,
+      resourceId
+    })
+    if (stored?.validator === undefined) {
+      continue
+    }
+    await copyPolicy({
+      backend,
+      spaceId,
+      collectionId,
+      resourceId,
+      validator: stored.validator,
+      policy: stored.deleted ? undefined : stored.policy
+    })
+  }
+}
+
+/**
+ * The `changes` feed page of a Collection on a non-default server backend,
+ * with its `collection-metadata` and `log` documents carrying the control
+ * plane's stamp and validator in place of the copy's, read off the control
+ * plane once each per page. The feed position stays the data backend's,
+ * since the copies take their positions in its one sequence. A `resource`
+ * document is that backend's own, and a `policy` document already carries
+ * the control plane's validator, which its copy was written under. A record
+ * the control plane does not hold (a copy a fault left behind) keeps the
+ * copy's stamp.
+ * @param options {object}
+ * @param options.controlPlane {StorageBackend}   the default backend
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.documents {FeedDocument[]}   the page as the data backend
+ *   served it
+ * @returns {Promise<FeedDocument[]>}
+ */
+export async function restampFeedFromControlPlane({
+  controlPlane,
+  spaceId,
+  collectionId,
+  documents
+}: {
+  controlPlane: StorageBackend
+  spaceId: string
+  collectionId: string
+  documents: FeedDocument[]
+}): Promise<FeedDocument[]> {
+  const kinds = new Set(documents.map(doc => doc.kind))
+  const [metadata, log] = await Promise.all([
+    kinds.has('collection-metadata')
+      ? controlPlane.getCollectionMetadata({ spaceId, collectionId })
+      : undefined,
+    kinds.has('log')
+      ? controlPlane.getCollectionLog({ spaceId, collectionId })
+      : undefined
+  ])
+  const metadataStamp = stampOf(metadata)
+  return documents.map(doc => {
+    if (
+      doc.kind === 'collection-metadata' &&
+      metadata !== undefined &&
+      isWriteStamp(metadataStamp)
+    ) {
+      return containerFeedDocument({
+        kind: doc.kind,
+        feedPosition: doc.feedPosition,
+        stamp: metadataStamp,
+        generation: metadata.metaGeneration,
+        local: metadata.metaLocal ?? 0
+      })
+    }
+    if (doc.kind === 'log' && log !== undefined) {
+      return containerFeedDocument({
+        kind: doc.kind,
+        feedPosition: doc.feedPosition,
+        stamp: log.validator.stamp,
+        generation: log.validator.generation
+      })
+    }
+    return doc
+  })
 }
 
 /**
@@ -272,9 +537,12 @@ export function mirroringControlPlane({
     | 'writeCollectionLog'
     | 'deleteCollection'
     | 'deleteSpace'
+    | 'writePolicy'
+    | 'deletePolicy'
     | 'applySpaceName'
     | 'applyCollection'
     | 'applyCollectionLog'
+    | 'applyPolicy'
   > = {
     async writeSpace(options) {
       const result = await backend.writeSpace(options)
@@ -323,6 +591,34 @@ export function mirroringControlPlane({
     async deleteSpace(options) {
       await backend.deleteSpace(options)
       await mirrorSpaceDelete({ serverBackends, spaceId: options.spaceId })
+    },
+    async writePolicy(options) {
+      const result = await backend.writePolicy(options)
+      // A Space policy is in no Collection, so it has no copy.
+      if (options.collectionId !== undefined) {
+        await mirrorPolicy({
+          serverBackends,
+          spaceId: options.spaceId,
+          collectionId: options.collectionId,
+          resourceId: options.resourceId,
+          validator: result.validator,
+          policy: result.policy
+        })
+      }
+      return result
+    },
+    async deletePolicy(options) {
+      const validator = await backend.deletePolicy(options)
+      if (validator !== undefined && options.collectionId !== undefined) {
+        await mirrorPolicy({
+          serverBackends,
+          spaceId: options.spaceId,
+          collectionId: options.collectionId,
+          resourceId: options.resourceId,
+          validator
+        })
+      }
+      return validator
     },
     async applySpaceName(options) {
       const result = await backend.applySpaceName(options)
@@ -373,6 +669,21 @@ export function mirroringControlPlane({
           spaceId: options.spaceId,
           collectionId: options.collectionId,
           body: options.body
+        })
+      }
+      return result
+    },
+    async applyPolicy(options) {
+      const result = await backend.applyPolicy(options)
+      if (result.outcome === 'applied' && options.collectionId !== undefined) {
+        const { spaceId, collectionId, resourceId, generation, stamp } = options
+        await mirrorPolicy({
+          serverBackends,
+          spaceId,
+          collectionId,
+          resourceId,
+          validator: { generation, stamp },
+          policy: options.policy
         })
       }
       return result

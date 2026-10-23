@@ -175,9 +175,12 @@ records no `createdBy`.
 `src/lib/replicaApply.ts` holds the rules the apply path stores a replicated
 record by. A storage backend's `apply*` methods take a record a pull loop read
 from a peer and store it under the peer's write stamp and generation, so the
-record's `ETag` here equals the peer's. No request route reaches them. Both
-backends decide through this module. The write stamp and the clock are described
-in [validators-and-stamps.md](validators-and-stamps.md).
+record's `ETag` here equals the peer's. No request route reaches them. The one
+other caller is the policy copy a non-default server backend keeps
+(`src/lib/backendMirror.ts`), which hands `applyPolicy` the stamp and generation
+the control plane's own write minted, with no registration. Both backends decide
+through this module. The write stamp and the clock are described in
+[validators-and-stamps.md](validators-and-stamps.md).
 
 A record is applied when its stamp sorts above the held one by
 `(ms, counter, originId)`, and skipped otherwise. An equal stamp is a record

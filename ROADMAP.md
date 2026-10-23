@@ -55,8 +55,6 @@ Ready:
 - WAS-73 [M] (*) Periodic sweep of Spaces and keystores whose did:webvh
   controller no longer resolves
 - WAS-195 [M] (*) Store the content digest of each Resource and chunk
-- WAS-217 [M] (*) Policies and the governing log of a Collection on a
-  non-default server backend in its `changes` feed
 
 Chains:
 
@@ -718,10 +716,21 @@ its Collections encrypted from birth.
   - [ ] Decision recorded: an Update Collection that changes `backend.id` on a
         Collection holding Resources is refused, or moves the Resources
   - [ ] The server implements the decision and the spec text says so
+  - [ ] A Resource-level policy write on a Collection served by another server
+        backend checks that the Resource is live on that backend, under its lock
+        where possible, before the control plane stores the policy
 
 Today the selection may change freely; the Resources already written stay on the
 backend they were written to and are no longer served, on a registered external
 backend as on a server backend.
+
+Related gap, from the feed work of 2026-10-22: Update Policy passes
+`requireLiveResource: false` whenever the Collection's data backend is not the
+control plane, so a Resource policy can be written over an absent or tombstoned
+Resource there, and the copy the data backend keeps is written under the same
+flag so the copy cannot fail after the control-plane write. Both the server
+backends can check liveness in their own store; only a registered external
+backend cannot. The check belongs with the data-plane routing this item settles.
 
 ## Features
 
@@ -993,29 +1002,6 @@ provenance digests each Resource at export time and reads it twice. Whether
 export signs the stored digest or keeps hashing the archived bytes is open,
 since a stored value does not detect damaged bytes. The write-time statements of
 WAS-184 need a digest at write time and would read this one.
-
-### WAS-217: [M] (*) Policies and the governing log of a Collection on a non-default server backend in its `changes` feed
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: backend, changes-feed
-- discovered-from: WAS-216 (2026-10-22)
-- acceptance:
-  - [ ] The `changes` feed of a Collection whose `backend.id` names a server
-        backend other than the default carries its Collection- and
-        Resource-level policy documents and its governing-log documents, with
-        the validator the control plane serves for each
-  - [ ] The `collection-metadata` document of such a feed carries the control
-        plane's validator rather than the copy's
-  - [ ] A test over `WAS_TEST_DATABASE_URL` pins each document kind
-
-The feed is served by the Collection's data backend, which holds a copy of the
-Collection Metadata object (under its own stamp) and no policies or log, since
-those stay on the default backend. Either the control-plane writes of those
-records take a position in the data backend's feed, or the feed is composed from
-both stores. Whichever is picked has to keep one per-Collection position
-sequence.
 
 ### WAS-5: [L] (*) [after WAS-1] Drive API ToS use-case clearance
 

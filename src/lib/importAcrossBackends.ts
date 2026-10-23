@@ -7,7 +7,10 @@
  * Resources, sidecars, chunks and governing log and no policy (the Metadata
  * object and the log travel with it as the copies that backend keeps,
  * lib/backendMirror.ts), over a copy of the Space Metadata object written
- * first. The counts add up across the imports; `collectionsCreated` and
+ * first. The policy copies follow the control plane's import, read back from
+ * its records, since that import stores them inside the backend, past the
+ * write-through, and a copy carries the control plane's own validator. The
+ * counts add up across the imports; `collectionsCreated` and
  * `collectionsSkipped` count the control plane's alone.
  *
  * A Collection the control plane already holds is routed by the live
@@ -30,7 +33,10 @@
  * served them.
  */
 import { UnsupportedBackendError } from '../errors.js'
-import { ensureMirroredSpace } from './backendMirror.js'
+import {
+  ensureMirroredSpace,
+  mirrorCollectionPolicies
+} from './backendMirror.js'
 import type { ImportPlan, ImportPlanCollection } from './importTar.js'
 import { DEFAULT_BACKEND_ID, type ServerBackends } from './serverBackends.js'
 import type { ImportStats, StorageBackend } from '../types.js'
@@ -63,6 +69,7 @@ export async function importSpaceAcrossBackends({
   const control = serverBackends.default
   const byBackend = new Map<StorageBackend, ImportPlanCollection[]>()
   const controlCollections: ImportPlanCollection[] = []
+  const routed: ImportPlanCollection[] = []
   const liveMetadata = await Promise.all(
     plan.collections.map(({ collectionId }) =>
       control.getCollectionMetadata({ spaceId, collectionId })
@@ -91,9 +98,12 @@ export async function importSpaceAcrossBackends({
       controlCollections.push(collection)
       continue
     }
+    routed.push(collection)
     controlCollections.push({
       ...collection,
       resources: [],
+      resourcePolicies: new Map(),
+      detachedResourcePolicies: collection.resourcePolicies,
       resourceMetadata: new Map(),
       chunkFiles: []
     })
@@ -133,6 +143,14 @@ export async function importSpaceAcrossBackends({
     provenance,
     restoreSpaceMetadata
   })
+  for (const { collectionId, resourcePolicies } of routed) {
+    await mirrorCollectionPolicies({
+      serverBackends,
+      spaceId,
+      collectionId,
+      resourceIds: resourcePolicies.keys()
+    })
+  }
   stats.resourcesCreated += resources.created
   stats.resourcesSkipped += resources.skipped
   return stats

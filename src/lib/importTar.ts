@@ -457,6 +457,15 @@ export interface ImportPlanCollection {
   resources: ImportPlanResource[]
   /** Resource-level policies, keyed by resourceId. */
   resourcePolicies: Map<string, ImportedPolicy>
+  /**
+   * Resource-level policies of Resources another server backend imports,
+   * keyed by resourceId. Empty as the archive is read; the import across
+   * backends (lib/importAcrossBackends.ts) moves a routed Collection's
+   * `resourcePolicies` here on the control plane's plan, which writes each
+   * as it writes the Collection's own policy, with no Resource to attach
+   * it to.
+   */
+  detachedResourcePolicies: Map<string, ImportedPolicy>
   /** Resource metadata sidecars (raw `.meta.<id>.json` bytes), keyed by resourceId. */
   resourceMetadata: Map<string, Buffer>
   /**
@@ -918,6 +927,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       ...(collectionLog !== undefined && { collectionLog }),
       resources,
       resourcePolicies,
+      detachedResourcePolicies: new Map(),
       resourceMetadata,
       chunkFiles
     }

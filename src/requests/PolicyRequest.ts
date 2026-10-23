@@ -23,10 +23,14 @@ import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
 import { invalidatePolicy } from '../lib/policyCache.js'
 import { hasPolicyType } from '../lib/policyRecord.js'
-import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  type EtagValidator,
+  formatEtag,
+  parseWritePreconditions
+} from '../lib/etag.js'
 import { parseIncludeSections } from '../lib/pagination.js'
 import { InvalidPolicyError, PolicyNotFoundError } from '../errors.js'
-import type { PolicyDocument } from '../types.js'
+import type { PolicyDocument, PolicyWriteResult } from '../types.js'
 
 /** Path params shared by the three policy route shapes. */
 export interface PolicyParams {
@@ -157,21 +161,24 @@ export class PolicyRequest {
       requireLiveResource = isControlPlaneBackend({ request, dataBackend })
     }
 
-    const {
-      validator,
-      created,
-      policy: stored
-    } = await storage.writePolicy({
-      spaceId,
-      collectionId,
-      resourceId,
-      policy,
-      requireLiveResource,
-      ...parseWritePreconditions(request.headers)
-    })
     // Bust the cached policy at this exact level so the next read sees this
     // write (and does not keep serving a stale cached "no policy" negative).
-    invalidatePolicy({ storage, spaceId, collectionId, resourceId })
+    // The bust runs whatever the write's outcome: the control plane may hold
+    // the policy when the copy another server backend keeps faulted.
+    let result: PolicyWriteResult
+    try {
+      result = await storage.writePolicy({
+        spaceId,
+        collectionId,
+        resourceId,
+        policy,
+        requireLiveResource,
+        ...parseWritePreconditions(request.headers)
+      })
+    } finally {
+      invalidatePolicy({ storage, spaceId, collectionId, resourceId })
+    }
+    const { validator, created, policy: stored } = result
 
     reply.header('Location', policyUrl).header('etag', formatEtag(validator))
     if (!created) {
@@ -214,15 +221,21 @@ export class PolicyRequest {
       requestName
     })
 
-    const validator = await storage.deletePolicy({
-      spaceId,
-      collectionId,
-      resourceId,
-      ...parseWritePreconditions(request.headers)
-    })
     // Bust the cached policy at this exact level so the next read sees it gone
-    // rather than a stale cached grant.
-    invalidatePolicy({ storage, spaceId, collectionId, resourceId })
+    // rather than a stale cached grant, whatever the write's outcome: the
+    // control plane may hold the tombstone when the copy another server
+    // backend keeps faulted.
+    let validator: EtagValidator | undefined
+    try {
+      validator = await storage.deletePolicy({
+        spaceId,
+        collectionId,
+        resourceId,
+        ...parseWritePreconditions(request.headers)
+      })
+    } finally {
+      invalidatePolicy({ storage, spaceId, collectionId, resourceId })
+    }
     return withEtag({
       reply,
       etag: validator === undefined ? undefined : formatEtag(validator)
