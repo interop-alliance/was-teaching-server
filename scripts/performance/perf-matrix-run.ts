@@ -250,8 +250,9 @@ function encryptedFile({
  * @param options.was {WasClient}
  * @param options.settings {LoadSettings}
  * @param options.encryptedIds {EncryptedReadIds}
- * @param options.publicRead {(path: string) => Promise<Measurement | string>}
- *   the unsigned read of a public read target (k6), or a skip string
+ * @param options.publicRead {(path: string, clients?: number) => Promise<Measurement | string>}
+ *   the unsigned read of a public read target (k6) by that many clients, or a
+ *   skip string
  * @param options.report {(result: object) => Promise<void>}   called with each
  *   `{ category, payload, operation, result }` as it completes
  * @returns {Promise<MatrixRow[]>}
@@ -266,7 +267,7 @@ export async function runMatrix({
   was: WasClient
   settings: LoadSettings
   encryptedIds: EncryptedReadIds
-  publicRead: (path: string) => Promise<Measurement | string>
+  publicRead: (path: string, clients?: number) => Promise<Measurement | string>
   report: (result: {
     category: MatrixCategory
     payload: MatrixPayload
@@ -274,7 +275,7 @@ export async function runMatrix({
     result: Measurement | string
   }) => Promise<void>
 }): Promise<MatrixRow[]> {
-  const { clients, durationSeconds } = settings
+  const { durationSeconds } = settings
   // Fresh ids each run: the seeded schema persists across runs, and a write
   // test measures creating a file, not replacing one.
   const runTag = randomBytes(4).toString('hex')
@@ -287,10 +288,12 @@ export async function runMatrix({
         category === 'encrypted'
           ? encryptedFile({ was, target })
           : plaintext[payload]
+      const clients =
+        payload === 'large' ? settings.largeFileClients : settings.clients
       const readPath = matrixPath({ space: 'read', category, id: readId })
       const read =
         category === 'public'
-          ? await publicRead(readPath)
+          ? await publicRead(readPath, clients)
           : await load({
               clients,
               durationSeconds,

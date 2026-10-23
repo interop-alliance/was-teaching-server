@@ -43,10 +43,13 @@ export function parseSizes(value: string): {
 
 /**
  * The settings every load test reads, from the shared CLI options
- * (`--clients`, `--duration`, `--writes`).
+ * (`--clients`, `--duration`, `--writes`, `--large-file-clients`).
  */
 export interface LoadSettings {
   clients: number
+  // The clients the payload matrix's 10 MiB tests run with, `clients` unless
+  // capped: five clients sending 10 MiB each outgrow a 512 MB machine.
+  largeFileClients: number
   durationSeconds: number
   serialWrites: number
 }
@@ -57,19 +60,23 @@ export interface LoadSettings {
  * @param options.clients {string}
  * @param options.duration {string}
  * @param options.writes {string}
+ * @param [options.large-file-clients] {string}   defaults to `clients`
  * @returns {LoadSettings}
  */
 export function parseLoadSettings({
   clients,
   duration,
-  writes
+  writes,
+  'large-file-clients': largeFileClients
 }: {
   clients: string
   duration: string
   writes: string
+  'large-file-clients'?: string
 }): LoadSettings {
   return {
     clients: positiveInteger(clients),
+    largeFileClients: positiveInteger(largeFileClients ?? clients),
     durationSeconds: positiveInteger(duration),
     serialWrites: positiveInteger(writes)
   }
