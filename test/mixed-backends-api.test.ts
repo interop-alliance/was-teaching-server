@@ -67,8 +67,11 @@ describe.skipIf(!connectionString)(
       ;({ backend: pgBackend, dropSchema } = await openTempPostgres({
         originId: fsBackend.originId
       }))
+      // The filesystem backend is both the default and the control plane
+      // here, so Postgres is the other backend throughout.
       ;({ fastify, serverUrl } = await startTestServer({
-        backends: [fsBackend, pgBackend]
+        backends: [fsBackend, pgBackend],
+        controlPlaneBackend: 'fs'
       }))
       ;({ alice } = await zcapClients({ serverUrl }))
     })

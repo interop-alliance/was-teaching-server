@@ -66,9 +66,9 @@
  * naming the DID as invoker. Every other caller passes no grant, so for it a
  * foreign DID stays refused. A DID with a stored log never takes that path.
  *
- * NOTE: the log is read through the control-plane `storage` (the default data
- * plane). Pointing a log Collection at a non-default data-plane backend is out
- * of scope; such a log would not be found here.
+ * The log is read from the backend that serves its Collection's data plane,
+ * found through the resolver context's `serverBackends`; the control plane
+ * `storage` alone locates it and keys the caches.
  */
 import { text } from 'node:stream/consumers'
 import { LRUCache } from 'lru-cache'
@@ -92,18 +92,25 @@ import {
   selfHostedLogLocation
 } from './webvhLogLocation.js'
 import type { StorageBackend } from '../types.js'
+import type { ServerBackends } from './serverBackends.js'
 import { etagOf } from './etag.js'
 import type { PeerWebvhResolver } from './peerWebvh.js'
 
 /**
- * What the resolver needs from the request layer: the storage backend the log
- * is read from, and this server's base URL (which tells a self-hosted DID's
- * host from a peer's). Threaded through the verification path rather than
- * held in module state, so two backends in one process never resolve against
- * each other.
+ * What the resolver needs from the request layer: the control plane, which
+ * locates a log and keys the caches, the set it belongs to, which serves the
+ * log's bytes from the Collection's data plane, and this server's base URL
+ * (which tells a self-hosted DID's host from a peer's). Threaded through the
+ * verification path rather than held in module state, so two backends in one
+ * process never resolve against each other.
  */
 export interface WebvhResolverContext {
   storage: StorageBackend
+  /**
+   * The server backends `storage` is the control plane of. A log is read
+   * from the backend that serves its Collection's data plane.
+   */
+  serverBackends: ServerBackends
   serverUrl: string
   /**
    * A foreign `did:webvh` this one verification may resolve over the
@@ -132,11 +139,14 @@ interface WebvhCacheEntry {
 }
 
 /**
- * Everything the cache's `fetchMethod` needs to fill or revalidate one entry,
- * handed to `fetch()` as its `context`.
+ * Everything a fill or revalidation of one cache entry needs. `backend` is
+ * the server backend that serves the log's Collection, resolved once per
+ * fill by the cache's `fetchMethod` from the `serverBackends` its `context`
+ * carries.
  */
 interface WebvhFetchContext {
   storage: StorageBackend
+  backend: StorageBackend
   did: string
   spaceId: string
   collectionId: string
@@ -172,15 +182,24 @@ interface WebvhFetchContext {
  */
 const documentCaches = backendScoped(() => {
   const inFlight = new Map<string, number>()
-  const cache = new LRUCache<string, WebvhCacheEntry, WebvhFetchContext>({
+  const cache = new LRUCache<
+    string,
+    WebvhCacheEntry,
+    Omit<WebvhFetchContext, 'backend'> & { serverBackends: ServerBackends }
+  >({
     max: WEBVH_DOCUMENT_CACHE_MAX,
     ignoreFetchAbort: true,
     fetchMethod: async (key, staleEntry, { context }) => {
       inFlight.set(key, (inFlight.get(key) ?? 0) + 1)
       try {
+        const { serverBackends, spaceId, collectionId } = context
+        const fill = {
+          ...context,
+          backend: await serverBackends.dataBackendOf({ spaceId, collectionId })
+        }
         return staleEntry
-          ? await reviseEntry({ ...context, entry: staleEntry })
-          : await resolveVerifiedEntry(context)
+          ? await reviseEntry({ ...fill, entry: staleEntry })
+          : await resolveVerifiedEntry(fill)
       } finally {
         const remaining = (inFlight.get(key) ?? 1) - 1
         if (remaining > 0) {
@@ -423,7 +442,8 @@ export function forgetDeletedWebvhLocation({
  * entry is exactly the validator of the log bytes that were verified -- there is no second read for a concurrent rewrite to
  * slip between.
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.backend {StorageBackend}   the backend that serves the
+ *   log's Collection
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @returns {Promise<{ text: string, etag: string | undefined } | undefined>}
@@ -431,15 +451,15 @@ export function forgetDeletedWebvhLocation({
  *   is stored there
  */
 async function readLog({
-  storage,
+  backend,
   spaceId,
   collectionId
 }: {
-  storage: StorageBackend
+  backend: StorageBackend
   spaceId: string
   collectionId: string
 }): Promise<{ text: string; etag: string | undefined } | undefined> {
-  const result = await readWebvhLogResource({ storage, spaceId, collectionId })
+  const result = await readWebvhLogResource({ backend, spaceId, collectionId })
   if (result === undefined) {
     return undefined
   }
@@ -476,7 +496,8 @@ async function readLog({
  * the drop-on-rejection are `lru-cache`'s own `fetch()` behavior.
  *
  * @param options {object}
- * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.storage {StorageBackend}   the control plane
+ * @param options.serverBackends {ServerBackends}   the set it belongs to
  * @param options.serverUrl {string}   this server's base URL
  * @param options.did {string}   the controller DID to resolve
  * @param [options.keyId] {string}   the verification method a signature
@@ -488,6 +509,7 @@ async function readLog({
  */
 export async function resolveWebvhController({
   storage,
+  serverBackends,
   serverUrl,
   did,
   keyId,
@@ -522,7 +544,7 @@ export async function resolveWebvhController({
     performance.now() - current.verifiedAt >= WEBVH_DOCUMENT_CACHE_TTL
   const entry = await cache.fetch(key, {
     forceRefresh: stale,
-    context: { storage, did, spaceId, collectionId, selfHosted }
+    context: { storage, serverBackends, did, spaceId, collectionId, selfHosted }
   })
   if (!entry) {
     // `fetchMethod` always resolves an entry or rejects; this is a type guard.
@@ -543,6 +565,7 @@ export async function resolveWebvhController({
  *
  * @param options {object}
  * @param options.storage {StorageBackend}
+ * @param options.backend {StorageBackend}
  * @param options.did {string}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
@@ -550,17 +573,14 @@ export async function resolveWebvhController({
  * @returns {Promise<WebvhCacheEntry>}
  */
 async function reviseEntry({
-  storage,
-  did,
-  spaceId,
-  collectionId,
-  selfHosted,
-  entry
+  entry,
+  ...context
 }: WebvhFetchContext & { entry: WebvhCacheEntry }): Promise<WebvhCacheEntry> {
+  const { backend, spaceId, collectionId } = context
   const dueForReverify =
     performance.now() - entry.verifiedAt >= WEBVH_DOCUMENT_REVERIFY_AGE
   if (entry.etag !== undefined && !dueForReverify) {
-    const metadata = await storage.getResourceMetadata({
+    const metadata = await backend.getResourceMetadata({
       spaceId,
       collectionId,
       resourceId: WEBVH_LOG_RESOURCE_ID
@@ -569,13 +589,7 @@ async function reviseEntry({
       return entry
     }
   }
-  return await resolveVerifiedEntry({
-    storage,
-    did,
-    spaceId,
-    collectionId,
-    selfHosted
-  })
+  return await resolveVerifiedEntry(context)
 }
 
 /**
@@ -608,6 +622,7 @@ async function resolveVerifiedEntry(
  */
 async function resolveVerifiedDocument({
   storage,
+  backend,
   did,
   spaceId,
   collectionId,
@@ -619,7 +634,7 @@ async function resolveVerifiedDocument({
   const forgets = record.forgets
   let stored: { text: string; etag: string | undefined } | undefined
   try {
-    stored = await readLog({ storage, spaceId, collectionId })
+    stored = await readLog({ backend, spaceId, collectionId })
   } catch (err) {
     // Only an absent log is a resolution failure. A backend fault (I/O, a
     // dropped database) must surface as a 5xx, not be masked as an
@@ -848,6 +863,7 @@ export function dereferenceFragment({
  */
 export function webvhDidResolverDriver({
   storage,
+  serverBackends,
   serverUrl,
   peer
 }: WebvhResolverContext) {
@@ -871,6 +887,7 @@ export function webvhDidResolverDriver({
         : undefined
       const doc = await resolveWebvhController({
         storage,
+        serverBackends,
         serverUrl,
         did: didAuthority,
         peer

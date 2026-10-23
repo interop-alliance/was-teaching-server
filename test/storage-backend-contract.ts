@@ -27,6 +27,7 @@ import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps, stampOf } from '../src/lib/hlc.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
+import { ServerBackends } from '../src/lib/serverBackends.js'
 import type { ExportAttestor } from '../src/lib/exportProvenance.js'
 import { verifyRevocationChain } from '../src/zcap.js'
 import { revocationRecordFor } from '../src/lib/revocations.js'
@@ -11307,6 +11308,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             rootController: controller,
             webvh: {
               storage: target.backend,
+              serverBackends: new ServerBackends({
+                backends: [target.backend]
+              }),
               serverUrl: REVOCATION_SERVER_URL
             },
             invocation: { rootInvocation: true }
@@ -11437,6 +11441,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               rootController: controller,
               webvh: {
                 storage: target.backend,
+                serverBackends: new ServerBackends({
+                  backends: [target.backend]
+                }),
                 serverUrl: REVOCATION_SERVER_URL
               },
               invocation: { rootInvocation: true }
@@ -11510,6 +11517,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         const loaded = await loadExportAttestor({
           storage: backend,
+          serverBackends: new ServerBackends({ backends: [backend] }),
           serverUrl,
           signingKey,
           logger: pino({ level: 'silent' })
@@ -11840,6 +11848,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         const loaded = await loadExportAttestor({
           storage: backend,
+          serverBackends: new ServerBackends({ backends: [backend] }),
           serverUrl,
           signingKey,
           logger: pino({ level: 'silent' })

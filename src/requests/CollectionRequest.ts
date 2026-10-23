@@ -1101,7 +1101,7 @@ export class CollectionRequest {
    * @param options {object}
    * @param options.reply {import('fastify').FastifyReply}
    * @param options.serverUrl {string}   this server's base URL
-   * @param options.controlPlane {StorageBackend}   the default backend
+   * @param options.controlPlane {StorageBackend}   the control plane
    * @param options.dataBackend {StorageBackend}   the backend the feed is
    *   served from
    * @param options.spaceId {string}

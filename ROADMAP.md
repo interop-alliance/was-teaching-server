@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 220
+nextAvailableId: 222
 
 <!-- roadmap-order:index:start -->
 
@@ -25,6 +25,8 @@ Ready:
   anonymous read
 - WAS-191 [M] (fs) The sidecar is the commit point of a filesystem Resource
   write
+- WAS-220 [M] (*) A Resource write repairs a Collection copy the data backend
+  lost
 - WAS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
   both on each backend
 - WAS-83 [L] (*) Anonymous Get Policy with a malformed id now returns 401
@@ -77,7 +79,6 @@ Ready:
 - WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
 - WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
-- WAS-218 [M] (*) Replicate into a Collection on a non-default server backend
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -85,6 +86,8 @@ Ready:
 - WAS-198 [L] (*) Keep peer did:webvh head records and fetch bounds across
   eviction and restart
 - WAS-184 [L] (*) Write-time creation and revision statements
+- WAS-221 [L] (*) Registration check under the data backend's lock for a
+  Resource apply
 
 **Performance**
 
@@ -445,6 +448,33 @@ torn-run cases (delete ordering, a content-type change); this item is the write
 path's own ordering.
 
 ---
+
+### WAS-220: [M] (*) A Resource write repairs a Collection copy the data backend lost
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: backend, consistency, mirror
+- discovered-from: simplify review of the control-plane backend work
+  (2026-10-23)
+- acceptance:
+  - [ ] A Resource write through the request path into a server backend other
+        than the control plane, whose copy of the Collection Metadata object a
+        fault left out, brings the copy level before the write (as the pull loop
+        does through `ensureCollectionCopy`), or the backend-mirror doc states
+        that the recovery is an Update Collection and why
+  - [ ] A test in `test/` deletes the copy from under a Collection on another
+        server backend and shows the next Resource write succeeds, or shows the
+        documented recovery
+  - [ ] The mirror module's header no longer promises that a retried request
+        brings a copy level unless every write path does
+
+Today the pull loop repairs the copy before it applies a Collection's Resources,
+while a client's Resource write resolves the data backend from the control
+plane's Metadata object and writes into a backend holding no copy. The container
+re-check there answers 404 for a Collection that exists, and retrying the
+Resource write never repairs it; only a Collection Metadata write does. The two
+writers of one state recover differently after the same torn write.
 
 ### WAS-181: [L] (*) Pin that a sidecar imported without timestamps is served with both on each backend
 
@@ -1199,41 +1229,6 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
-### WAS-218: [M] (*) Replicate into a Collection on a non-default server backend
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: backend, replication
-- discovered-from: WAS-216 (2026-10-22)
-- acceptance:
-  - [ ] The pull loop applies a peer Collection whose `backend.id` names a
-        server backend of this deployment into that backend, through its
-        `apply*` methods, under the peer's stamps
-  - [ ] The replica registration the apply path checks is found whichever
-        backend the write lands on
-  - [ ] The loop routes the Collection's Resource, chunk and `/meta` applies to
-        the selected backend, as the request layer's data-plane resolver does,
-        and the Metadata object, log, policy and tombstone applies stay on the
-        control plane
-  - [ ] A test over `WAS_TEST_DATABASE_URL` replicates one such Collection
-
-The apply path refuses a write under a replica registration it cannot read from
-its own store (`guardApply`, reason `unregistered`), and registrations live on
-the default backend alone, so the loop stalls such a Collection with reason
-`unsupported-backend`.
-
-The control plane the loop writes through is the mirroring wrapper
-(`mirroringControlPlane`), so an applied Metadata object, log or tombstone of a
-Collection already held on another server backend reaches that backend's copy,
-and a replicated update keeps the held `backend` selection. What remains is the
-first apply of such a Collection from a peer and the Resource applies.
-
-Open before coding: a peer's `backend.id` names the peer's backend, not this
-server's. Whether `postgres` on the peer maps onto this deployment's `postgres`,
-or the registration states where pulled Collections land regardless of the
-peer's choice, is a wire-level decision to settle first.
-
 ### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 
 - status: todo
@@ -1387,6 +1382,32 @@ own statement has the same problem. Split in two, the creation statement travels
 with the record and `createdBy` stays verifiable by whoever actually verified
 the creating invocation. Signing costs one Ed25519 operation per write; the cost
 is in the storage, archive and import shapes.
+
+### WAS-221: [L] (*) Registration check under the data backend's lock for a Resource apply
+
+- status: todo
+- priority: low
+- backend: *
+- labels: replication, backend, mirror, decision
+- discovered-from: simplify review of the control-plane backend work
+  (2026-10-23)
+- acceptance:
+  - [ ] Decision recorded: a Resource apply into a server backend other than the
+        control plane keeps running under no `replicaId` after a control-plane
+        check outside its lock (the window a Delete Replica already has against
+        a control-plane apply), or the other backend keeps a copy of the
+        registration, written through `mirroringControlPlane` on `putReplica` /
+        `deleteReplica` with `spaceGeneration` rewritten to the Space copy's own
+        generation, so `applyResource` keeps one contract with `replicaId`
+        required
+  - [ ] The server implements the decision; docs/replication.md and the
+        `applyResource` / `applyResourceMetadata` contracts in `types.ts` say so
+
+Today the loop takes one registration verdict per feed page on the control
+plane, by the rule the apply uses, and applies under no `replicaId`, the way a
+policy copy is written. The apply's own in-lock check therefore covers the
+control plane only, and the `replicaId`-optional mode is on the general apply
+contract rather than confined to the loop.
 
 ## Performance
 

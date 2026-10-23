@@ -42,6 +42,7 @@ import {
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { ServerBackends } from '../src/lib/serverBackends.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { openTempBackend, webvhLogSigner } from './helpers.js'
 import {
@@ -153,10 +154,13 @@ async function publishDid({
 }
 
 describe('did:webvh resolution cache invalidation', () => {
-  let storage: TempFileSystemBackend, spaceId: string
+  let storage: TempFileSystemBackend,
+    serverBackends: ServerBackends,
+    spaceId: string
 
   beforeAll(async () => {
     storage = await openTempBackend()
+    serverBackends = new ServerBackends({ backends: [storage] })
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -180,7 +184,7 @@ describe('did:webvh resolution cache invalidation', () => {
    */
   async function resolves(did: string): Promise<boolean> {
     try {
-      await resolveWebvhController({ storage, serverUrl, did })
+      await resolveWebvhController({ storage, serverBackends, serverUrl, did })
       return true
     } catch {
       return false
@@ -296,11 +300,14 @@ describe('did:webvh resolution cache invalidation', () => {
 })
 
 describe('did:webvh resolution cache revalidation past the TTL', () => {
-  let storage: TempFileSystemBackend, spaceId: string
+  let storage: TempFileSystemBackend,
+    serverBackends: ServerBackends,
+    spaceId: string
   let published: { did: string; jsonl: string; collectionId: string }
 
   beforeAll(async () => {
     storage = await openTempBackend()
+    serverBackends = new ServerBackends({ backends: [storage] })
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -359,6 +366,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     })
     const doc = await resolveWebvhController({
       storage,
+      serverBackends,
       serverUrl,
       did: published.did
     })
@@ -388,6 +396,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
 
     const doc = await resolveWebvhController({
       storage,
+      serverBackends,
       serverUrl,
       did: published.did
     })
@@ -407,6 +416,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
 
     const doc = await resolveWebvhController({
       storage,
+      serverBackends,
       serverUrl,
       did: published.did
     })
@@ -434,7 +444,12 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     })
 
     await assert.rejects(
-      resolveWebvhController({ storage, serverUrl, did: published.did })
+      resolveWebvhController({
+        storage,
+        serverBackends,
+        serverUrl,
+        did: published.did
+      })
     )
 
     await restoreValidLog()
@@ -444,7 +459,12 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     await warm()
     // Version matches keep the entry alive across TTL boundaries...
     vi.advanceTimersByTime(WEBVH_DOCUMENT_CACHE_TTL + 1)
-    await resolveWebvhController({ storage, serverUrl, did: published.did })
+    await resolveWebvhController({
+      storage,
+      serverBackends,
+      serverUrl,
+      did: published.did
+    })
     // ...but not past the hard age: the log is re-read even though its
     // version has not moved.
     vi.advanceTimersByTime(WEBVH_DOCUMENT_REVERIFY_AGE)
@@ -452,6 +472,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
 
     const doc = await resolveWebvhController({
       storage,
+      serverBackends,
       serverUrl,
       did: published.did
     })
@@ -469,6 +490,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     // settles (a did.jsonl PUT landing mid-flight does exactly this).
     const pending = resolveWebvhController({
       storage,
+      serverBackends,
       serverUrl,
       did: published.did
     })
@@ -487,6 +509,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     const getResourceSpy = vi.spyOn(storage, 'getResource')
     const again = await resolveWebvhController({
       storage,
+      serverBackends,
       serverUrl,
       did: published.did
     })
@@ -513,7 +536,12 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     // Well within the TTL -- explicit invalidation drops the entry outright,
     // so this is not a revalidation and needs no elapsed time at all.
     await assert.rejects(
-      resolveWebvhController({ storage, serverUrl, did: published.did })
+      resolveWebvhController({
+        storage,
+        serverBackends,
+        serverUrl,
+        did: published.did
+      })
     )
 
     await restoreValidLog()
@@ -525,11 +553,14 @@ describe('did:webvh log head continuity', () => {
   // verification alone would accept a truncated log. The resolver records the
   // head it last verified and refuses a log that does not extend it.
   const collectionId = 'id'
-  let storage: TempFileSystemBackend, spaceId: string
+  let storage: TempFileSystemBackend,
+    serverBackends: ServerBackends,
+    spaceId: string
   let did: string, firstJsonl: string, secondJsonl: string
 
   beforeAll(async () => {
     storage = await openTempBackend()
+    serverBackends = new ServerBackends({ backends: [storage] })
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -606,25 +637,30 @@ describe('did:webvh log head continuity', () => {
 
   it('refuses a truncated log after a longer one verified', async () => {
     await store(secondJsonl)
-    await resolveWebvhController({ storage, serverUrl, did })
+    await resolveWebvhController({ storage, serverBackends, serverUrl, did })
 
     await store(firstJsonl)
     await assert.rejects(
-      resolveWebvhController({ storage, serverUrl, did }),
+      resolveWebvhController({ storage, serverBackends, serverUrl, did }),
       /does not extend/
     )
 
     await store(secondJsonl)
-    await resolveWebvhController({ storage, serverUrl, did })
+    await resolveWebvhController({ storage, serverBackends, serverUrl, did })
   })
 
   it('a deleted location forgets the head, so a restored log resolves', async () => {
     await store(secondJsonl)
-    await resolveWebvhController({ storage, serverUrl, did })
+    await resolveWebvhController({ storage, serverBackends, serverUrl, did })
 
     await store(firstJsonl)
     forgetDeletedWebvhLocation({ storage, spaceId, collectionId })
-    const doc = await resolveWebvhController({ storage, serverUrl, did })
+    const doc = await resolveWebvhController({
+      storage,
+      serverBackends,
+      serverUrl,
+      did
+    })
     assert.equal(doc.id, did)
   })
 })

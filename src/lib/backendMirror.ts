@@ -1,10 +1,10 @@
 /**
- * The container copies a server backend other than the default holds. Both
- * server backends refuse a Resource write into a Collection, or a Space, that
- * has no Metadata object in their own store, and read the Collection's
- * `unique` index declarations under their lock. The default backend is the
- * control plane and owns every Space and Collection Metadata object; a
- * Collection selecting another server backend's id therefore gets a copy of
+ * The container copies a server backend other than the control plane holds.
+ * Both server backends refuse a Resource write into a Collection, or a
+ * Space, that has no Metadata object in their own store, and read the
+ * Collection's `unique` index declarations under their lock. The control
+ * plane owns every Space and Collection Metadata object; a Collection
+ * selecting another server backend's id therefore gets a copy of
  * its Metadata object there, written through after the control-plane write,
  * and the Space Metadata object is copied on the first Collection the
  * backend serves in that Space and refreshed by every later Update Space.
@@ -26,12 +26,11 @@
  * answers.
  *
  * The copies follow the write itself: `mirroringControlPlane` wraps the
- * default backend so each write or delete of a container object or of a
+ * control plane so each write or delete of a container object or of a
  * Collection- or Resource-level policy, and each replicated apply of one, is
- * followed by the copy it calls for. The set
- * exposes the wrapped backend as `default`, which is what the handlers, the
- * import path and the pull loop write through, so no writer has to remember
- * the copy.
+ * followed by the copy it calls for. The set exposes the wrapped backend as
+ * `controlPlane`, which is what the handlers, the import path and the pull
+ * loop write through, so no writer has to remember the copy.
  *
  * The two stores make a write-through non-atomic: a fault between the
  * control-plane write and the copy leaves the copy behind, and the next
@@ -78,7 +77,7 @@ function spaceCopyOf(stored: SpaceMetadata): SpaceMetadata {
 /**
  * Ensures `backend` holds a Space Metadata object for the Space, writing a
  * copy of the control plane's user-writable members when it does not. A
- * no-op for the default backend.
+ * no-op for the control plane.
  * @param options {object}
  * @param options.serverBackends {ServerBackends}
  * @param options.backend {StorageBackend}   the server backend the copy is
@@ -96,13 +95,15 @@ export async function ensureMirroredSpace({
   backend: StorageBackend
   spaceId: string
 }): Promise<void> {
-  if (backend === serverBackends.default) {
+  if (backend === serverBackends.controlPlane) {
     return
   }
   if (await backend.getSpaceMetadata({ spaceId })) {
     return
   }
-  const stored = await serverBackends.default.getSpaceMetadata({ spaceId })
+  const stored = await serverBackends.controlPlane.getSpaceMetadata({
+    spaceId
+  })
   if (!stored) {
     throw new SpaceNotFoundError({ requestName: 'Write Collection' })
   }
@@ -222,16 +223,16 @@ export async function mirrorCollectionLog({
 /**
  * The server backend a Collection's copies go to: the one its `backend.id`
  * selects when that is another server backend, with the copy of the
- * Collection Metadata object brought level first, so a copy an earlier fault
- * left out is written here. `undefined` when the Collection is absent on the
- * control plane or on the default backend.
+ * Collection Metadata object brought level first
+ * ({@link ensureCollectionCopy}). `undefined` when the Collection is absent
+ * on the control plane or selects the control plane.
  * @param options {object}
  * @param options.serverBackends {ServerBackends}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @returns {Promise<StorageBackend | undefined>}
  */
-async function collectionCopyBackend({
+export async function collectionCopyBackend({
   serverBackends,
   spaceId,
   collectionId
@@ -240,7 +241,7 @@ async function collectionCopyBackend({
   spaceId: string
   collectionId: string
 }): Promise<StorageBackend | undefined> {
-  const metadata = await serverBackends.default.getCollectionMetadata({
+  const metadata = await serverBackends.controlPlane.getCollectionMetadata({
     spaceId,
     collectionId
   })
@@ -248,15 +249,53 @@ async function collectionCopyBackend({
   if (metadata === undefined || backend === undefined) {
     return undefined
   }
-  if (!(await backend.getCollectionMetadata({ spaceId, collectionId }))) {
-    await mirrorCollectionMetadata({
-      serverBackends,
-      spaceId,
-      collectionId,
-      metadata
-    })
-  }
+  await ensureCollectionCopy({
+    serverBackends,
+    backend,
+    spaceId,
+    collectionId,
+    metadata
+  })
   return backend
+}
+
+/**
+ * Writes `backend`'s copy of a Collection Metadata object when it holds
+ * none, so a copy an earlier fault left out is brought level. The pull loop
+ * calls it before it applies a Collection's Resources to that backend, which
+ * skips a Resource of a Collection it holds no copy of.
+ * @param options {object}
+ * @param options.serverBackends {ServerBackends}
+ * @param options.backend {StorageBackend}   the server backend the
+ *   Collection selects, other than the control plane
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.metadata {CollectionMetadata}   the object as the control
+ *   plane holds it
+ * @returns {Promise<void>}
+ */
+export async function ensureCollectionCopy({
+  serverBackends,
+  backend,
+  spaceId,
+  collectionId,
+  metadata
+}: {
+  serverBackends: ServerBackends
+  backend: StorageBackend
+  spaceId: string
+  collectionId: string
+  metadata: CollectionMetadata
+}): Promise<void> {
+  if (await backend.getCollectionMetadata({ spaceId, collectionId })) {
+    return
+  }
+  await mirrorCollectionMetadata({
+    serverBackends,
+    spaceId,
+    collectionId,
+    metadata
+  })
 }
 
 /**
@@ -395,7 +434,7 @@ export async function mirrorCollectionPolicies({
     return
   }
   for (const resourceId of [undefined, ...resourceIds]) {
-    const stored = await serverBackends.default.getPolicyRecord({
+    const stored = await serverBackends.controlPlane.getPolicyRecord({
       spaceId,
       collectionId,
       resourceId
@@ -415,7 +454,8 @@ export async function mirrorCollectionPolicies({
 }
 
 /**
- * The `changes` feed page of a Collection on a non-default server backend,
+ * The `changes` feed page of a Collection on a server backend other than
+ * the control plane,
  * with its `collection-metadata` and `log` documents carrying the control
  * plane's stamp and validator in place of the copy's, read off the control
  * plane once each per page. The feed position stays the data backend's,
@@ -425,7 +465,7 @@ export async function mirrorCollectionPolicies({
  * the control plane does not hold (a copy a fault left behind) keeps the
  * copy's stamp.
  * @param options {object}
- * @param options.controlPlane {StorageBackend}   the default backend
+ * @param options.controlPlane {StorageBackend}   the control plane
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.documents {FeedDocument[]}   the page as the data backend
@@ -512,15 +552,15 @@ export async function mirrorCollectionDelete({
 }
 
 /**
- * The default backend as the server writes through it: every write or
- * delete of a Space or Collection Metadata object or of a governing log,
- * and every replicated apply of one, is followed by the copy the other
- * server backends keep. Every other member is the wrapped backend's own, so
- * the result reads, stamps and closes as that backend does.
+ * The control plane as the server writes through it: every write or delete
+ * of a Space or Collection Metadata object or of a governing log, and every
+ * replicated apply of one, is followed by the copy the other server
+ * backends keep. Every other member is the wrapped backend's own, so the
+ * result reads, stamps and closes as that backend does.
  * @param options {object}
  * @param options.serverBackends {ServerBackends}   the set the backend is
- *   the default of
- * @param options.backend {StorageBackend}   the default backend as opened
+ *   the control plane of
+ * @param options.backend {StorageBackend}   the control plane as opened
  * @returns {StorageBackend}
  */
 export function mirroringControlPlane({

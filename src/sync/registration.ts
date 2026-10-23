@@ -59,6 +59,7 @@ import type {
 } from '../types.js'
 import { PeerClient } from './peerClient.js'
 import type { PeerFetch } from './peerFetch.js'
+import type { ServerBackends } from '../lib/serverBackends.js'
 
 /**
  * The actions a pull capability may carry. The loop only reads.
@@ -257,7 +258,9 @@ export function storedProjectionOfCollection(
  * @param options.record {ReplicaRegistration}   the parsed registration
  * @param options.spaceId {string}   the local Space
  * @param options.spaceMetadata {StoredSpaceMetadata}   its Metadata object
- * @param options.storage {StorageBackend}
+ * @param options.storage {StorageBackend}   the control plane
+ * @param options.serverBackends {ServerBackends}   the set `storage` is the
+ *   control plane of
  * @param options.serverUrl {string}
  * @param [options.signingKey] {ServerSigningKey}
  * @param options.peerFetch {PeerFetch}
@@ -270,6 +273,7 @@ export async function assertReplicaAcceptable({
   spaceId,
   spaceMetadata,
   storage,
+  serverBackends,
   serverUrl,
   signingKey,
   peerFetch,
@@ -279,6 +283,7 @@ export async function assertReplicaAcceptable({
   spaceId: string
   spaceMetadata: StoredSpaceMetadata
   storage: StorageBackend
+  serverBackends: ServerBackends
   serverUrl: string
   signingKey: ServerSigningKey | undefined
   peerFetch: PeerFetch
@@ -305,7 +310,13 @@ export async function assertReplicaAcceptable({
         'resolves from neither copy.'
     })
   }
-  const sync = await loadSyncSigner({ storage, serverUrl, signingKey, logger })
+  const sync = await loadSyncSigner({
+    storage,
+    serverBackends,
+    serverUrl,
+    signingKey,
+    logger
+  })
   if ('refusal' in sync) {
     throw new ReplicaRefusedError({
       detail: `This server cannot replicate. ${sync.reason}`,

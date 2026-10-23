@@ -88,6 +88,7 @@ export class ReplicaRequest {
       spaceId,
       spaceMetadata,
       storage,
+      serverBackends: request.server.serverBackends,
       serverUrl,
       signingKey: serverSigningKey,
       peerFetch: replication.peerFetch,

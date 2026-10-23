@@ -94,13 +94,20 @@ export interface FastifyWasOptions {
     | ((options: { logger: FastifyBaseLogger }) => Promise<StorageBackend>)
   /**
    * The fixed id of the backend the conventional `default` id aliases (config
-   * `WAS_DEFAULT_BACKEND`): the control plane, holding every Space and
-   * Collection Metadata object, the policies and the registrations. Unset,
-   * `fs` when that backend is configured, else the only configured backend;
-   * several without a filesystem backend is refused, as is an id naming no
-   * configured backend.
+   * `WAS_DEFAULT_BACKEND`): the data plane of every Collection that selects
+   * `default` or no backend. Unset, `fs` when that backend is configured,
+   * else the only configured backend; several without a filesystem backend
+   * is refused, as is an id naming no configured backend.
    */
   defaultBackend?: string
+  /**
+   * The fixed id of the backend that is the control plane (config
+   * `WAS_CONTROL_PLANE_BACKEND`), holding every Space and Collection
+   * Metadata object, the policies, the registrations, the keystores and the
+   * revocations. Unset, `postgres` when that backend is configured, else
+   * `fs`. An id naming no configured backend is refused.
+   */
+  controlPlaneBackend?: string
   /**
    * Whether the plugin manages the backends' lifecycle. When `true` (the
    * default), it routes each backend's `logger` to `fastify.log` and wires
@@ -287,6 +294,7 @@ async function wasPlugin(
     backends: backendsOption,
     backend,
     defaultBackend,
+    controlPlaneBackend,
     ownsBackend = true,
     cors: corsOptions,
     dataDir,
@@ -420,22 +428,23 @@ async function wasPlugin(
       )
     }
   }
-  // The set the request layer routes a Collection's data plane through; the
-  // default is the control plane every handler reads as `storage`.
+  // The set the request layer routes a Collection's data plane through; its
+  // control plane is what every handler reads as `storage`.
   const serverBackends = new ServerBackends({
     backends: opened,
-    defaultId: defaultBackend
+    defaultId: defaultBackend,
+    controlPlaneId: controlPlaneBackend
   })
-  const storage = serverBackends.default
+  const storage = serverBackends.controlPlane
   fastify.decorate('serverBackends', serverBackends)
   fastify.decorate('storage', storage)
 
-  // The buffered-body limit, derived from the default backend's per-upload
-  // cap and applied as every route's `bodyLimit`. Set per route rather than
-  // on the instance so a downstream composition that registers this plugin on
+  // The buffered-body limit, derived from the control plane's per-upload cap
+  // and applied as every route's `bodyLimit`. Set per route rather than on
+  // the instance so a downstream composition that registers this plugin on
   // its own instance gets the same bound. A route that sets its own
   // `bodyLimit` (the exchanges POST) keeps it. A server backend other than
-  // the default enforces its own cap inside its writes.
+  // the control plane enforces its own cap inside its writes.
   const bodyLimit = bufferedBodyLimit(storage.maxUploadBytes)
   fastify.addHook('onRoute', routeOptions => {
     if (routeOptions.bodyLimit === undefined) {
@@ -472,7 +481,7 @@ async function wasPlugin(
   // One pull loop per stored replica registration, started once the routes
   // are ready so a peer that pulls back finds this server serving.
   const replication = new ReplicationManager({
-    storage,
+    serverBackends,
     getServerUrl: () => fastify.serverUrl,
     signingKey: serverSigningKey,
     peerFetch: peerFetch ?? fetchFromPeer,
@@ -489,6 +498,7 @@ async function wasPlugin(
     fastify.addHook('onListen', async function warnWithoutServerDid() {
       const did = await resolveServerDid({
         storage,
+        serverBackends,
         serverUrl: fastify.serverUrl,
         signingKey: serverSigningKey,
         logger: fastify.log

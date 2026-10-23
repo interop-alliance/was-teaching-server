@@ -63,10 +63,12 @@ import {
   readServerLog,
   resolveServerDid,
   serverKeyPair,
+  serverLogBackend,
   serverMethodId,
   signingKeyRelationshipProblem
 } from './serverIdentity.js'
 import type { ServerSigningKey } from './serverIdentity.js'
+import type { ServerBackends } from './serverBackends.js'
 import { headOf, logDid, verifyWebvhLog } from './webvhController.js'
 
 /**
@@ -100,7 +102,9 @@ export interface ExportAttestor {
  * the two reads is judged by the bytes that travel.
  *
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.storage {StorageBackend}   the control plane
+ * @param options.serverBackends {ServerBackends}   the set `storage` is the
+ *   control plane of
  * @param options.serverUrl {string}
  * @param options.signingKey {ServerSigningKey}
  * @param options.logger {FastifyBaseLogger}   for `resolveServerDid`'s own
@@ -109,17 +113,20 @@ export interface ExportAttestor {
  */
 export async function loadExportAttestor({
   storage,
+  serverBackends,
   serverUrl,
   signingKey,
   logger
 }: {
   storage: StorageBackend
+  serverBackends: ServerBackends
   serverUrl: string
   signingKey: ServerSigningKey
   logger: FastifyBaseLogger
 }): Promise<{ attestor: ExportAttestor } | { reason: string }> {
   const serverDid = await resolveServerDid({
     storage,
+    serverBackends,
     serverUrl,
     signingKey,
     logger
@@ -127,7 +134,9 @@ export async function loadExportAttestor({
   if (serverDid === undefined) {
     return { reason: 'No server DID lists the export-signing key.' }
   }
-  const didLog = await readServerLog({ storage })
+  const didLog = await readServerLog({
+    backend: await serverLogBackend({ serverBackends })
+  })
   if (didLog === undefined) {
     return { reason: 'The server history log is gone.' }
   }

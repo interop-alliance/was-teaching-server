@@ -56,6 +56,7 @@ import {
 } from '@interop/space-archive'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
+import { ServerBackends } from '../src/lib/serverBackends.js'
 import {
   createServerSigningKey,
   SERVER_IDENTITY_COLLECTION_ID,
@@ -262,6 +263,7 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
     })
     const loaded = await loadExportAttestor({
       storage: backend,
+      serverBackends: new ServerBackends({ backends: [backend] }),
       serverUrl: PROVENANCE_FIXTURE_SERVER_URL,
       signingKey: await createServerSigningKey({
         seed: PROVENANCE_FIXTURE_SEED

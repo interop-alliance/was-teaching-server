@@ -96,7 +96,7 @@ export async function listReplicaSummaries({
  *
  * @param options {object}
  * @param options.serverBackends {ServerBackends}   the server's own backends;
- *   the default is read for the Space's registrations and replicas
+ *   the control plane is read for the Space's registrations and replicas
  * @param options.spaceId {string}
  * @param options.spaceMetadata {SpaceMetadata}   the stored object (a
  *   validator-bearing read result is accepted; the validator is stripped)
@@ -124,7 +124,7 @@ export async function projectSpaceMetadata({
     ? [serverBackends.describeAll(), []]
     : await Promise.all([
         listRegisteredBackends({ serverBackends, spaceId }),
-        listReplicaSummaries({ storage: serverBackends.default, spaceId })
+        listReplicaSummaries({ storage: serverBackends.controlPlane, spaceId })
       ])
   return {
     ...body,

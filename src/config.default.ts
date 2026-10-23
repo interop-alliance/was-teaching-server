@@ -605,6 +605,12 @@ export interface EnvConfig {
    */
   defaultBackend?: string
   /**
+   * The fixed id of the server backend that is the control plane
+   * (`WAS_CONTROL_PLANE_BACKEND`, `fs` or `postgres`); unset means
+   * `postgres` when it is configured, else `fs`.
+   */
+  controlPlaneBackend?: string
+  /**
    * Per-Space storage quota in bytes (`STORAGE_LIMIT_PER_SPACE`). `undefined`
    * means unset -- unlimited, but `start.ts` warns to prompt an explicit
    * choice; `Infinity` means `unlimited` was set explicitly (no warning).
@@ -691,7 +697,14 @@ export function loadConfigFromEnv(
     host: parseHost(env.HOST),
     databaseUrl: parseDatabaseUrl(env.DATABASE_URL),
     dataDir: parseDataDir(env.WAS_DATA_DIR),
-    defaultBackend: parseDefaultBackend(env.WAS_DEFAULT_BACKEND),
+    defaultBackend: parseServerBackendId({
+      raw: env.WAS_DEFAULT_BACKEND,
+      name: 'WAS_DEFAULT_BACKEND'
+    }),
+    controlPlaneBackend: parseServerBackendId({
+      raw: env.WAS_CONTROL_PLANE_BACKEND,
+      name: 'WAS_CONTROL_PLANE_BACKEND'
+    }),
     storageLimitPerSpace: parseStorageLimit(env.STORAGE_LIMIT_PER_SPACE),
     maxUploadBytes: parseMaxUploadBytes(env.MAX_UPLOAD_BYTES),
     maxSpacesPerController: parseCountLimit(
@@ -926,23 +939,31 @@ export function parseDataDir(raw: string | undefined): string | undefined {
 }
 
 /**
- * Parses the `WAS_DEFAULT_BACKEND` env value: the fixed id of the server
- * backend the conventional `default` id aliases, `fs` or `postgres`. Whether
+ * Parses an env value naming a server backend by its fixed id, `fs` or
+ * `postgres`: `WAS_DEFAULT_BACKEND` (the backend the conventional `default`
+ * id aliases) or `WAS_CONTROL_PLANE_BACKEND` (the control plane). Whether
  * the named backend is configured is checked once the backends are opened
- * (`ServerBackends`), where an unset value falls back to `fs`, else the only
- * configured backend. Any other value throws.
- * @param raw {string|undefined}   the raw env value
+ * (`ServerBackends`), which also fills in an unset value. Any other value
+ * throws.
+ * @param options {object}
+ * @param [options.raw] {string}   the raw env value
+ * @param options.name {string}   the env variable, for the error
  * @returns {string|undefined}   the id, or `undefined` when unset
  */
-function parseDefaultBackend(raw: string | undefined): string | undefined {
+function parseServerBackendId({
+  raw,
+  name
+}: {
+  raw: string | undefined
+  name: string
+}): string | undefined {
   const id = trimmedOrUndefined(raw)
   if (id === undefined) {
     return undefined
   }
   if (!isServerBackendId(id)) {
     throw new Error(
-      `WAS_DEFAULT_BACKEND must be one of ${SERVER_BACKEND_IDS.join(', ')}; ` +
-        `got "${id}".`
+      `${name} must be one of ${SERVER_BACKEND_IDS.join(', ')}; got "${id}".`
     )
   }
   return id

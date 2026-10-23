@@ -107,9 +107,10 @@ export async function startServer(): Promise<void> {
     assertFreshBuild()
     const config = loadConfigFromEnv()
     // Backend configuration: WAS_DATA_DIR configures the filesystem backend
-    // and DATABASE_URL the Postgres backend; a deployment may set both, and
-    // WAS_DEFAULT_BACKEND names the one `default` aliases (the plugin refuses
-    // a set with none). Each backend carries its own quota configuration, so
+    // and DATABASE_URL the Postgres backend; a deployment may set both.
+    // WAS_DEFAULT_BACKEND names the one `default` aliases and
+    // WAS_CONTROL_PLANE_BACKEND the control plane (the plugin refuses a set
+    // with none). Each backend carries its own quota configuration, so
     // the per-Space/per-upload limits are passed to it directly rather than
     // through the createApp options. Each is handed over as a function the
     // plugin calls at registration, once it has validated its options: the
@@ -151,6 +152,7 @@ export async function startServer(): Promise<void> {
       serverUrl: config.serverUrl,
       backends,
       defaultBackend: config.defaultBackend,
+      controlPlaneBackend: config.controlPlaneBackend,
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken,

@@ -30,6 +30,7 @@ import { backendScoped } from './backendCache.js'
 import { etagOf } from './etag.js'
 import { logDid, resolveWebvhController } from './webvhController.js'
 import { readWebvhLogResource } from './webvhLogLocation.js'
+import type { ServerBackends } from './serverBackends.js'
 import {
   AUXILIARY_SPACE_TYPE,
   SERVER_INSTANCE_SPACE_TYPE,
@@ -216,13 +217,17 @@ const serverDidMemo = backendScoped<{
  * hosted at `server/id` of this server, fails verification, or lists the key
  * wrongly. The reason is logged at `warn`, since each is an operator matter.
  *
- * Read per `/service` request. The outcome is memoized per backend on the
- * log Resource's `ETag` ({@link serverDidMemo}), so a request costs one
- * metadata read of the log while the log stands still, and the log is parsed
- * and the document resolved only when it has changed.
+ * Read per `/service` request. The outcome is memoized per control plane on
+ * the log Resource's `ETag` ({@link serverDidMemo}), so a request costs one
+ * metadata read of the log while the log stands still (plus the read that
+ * finds the log's backend in a set of several), and the log is parsed and
+ * the document resolved only when it has changed.
  *
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.storage {StorageBackend}   the control plane
+ * @param options.serverBackends {ServerBackends}   the set `storage` is the
+ *   control plane of; the log is read from the backend that serves its
+ *   Collection
  * @param options.serverUrl {string}
  * @param options.signingKey {ServerSigningKey}
  * @param options.logger {FastifyBaseLogger}
@@ -230,17 +235,20 @@ const serverDidMemo = backendScoped<{
  */
 export async function resolveServerDid({
   storage,
+  serverBackends,
   serverUrl,
   signingKey,
   logger
 }: {
   storage: StorageBackend
+  serverBackends: ServerBackends
   serverUrl: string
   signingKey: ServerSigningKey
   logger: FastifyBaseLogger
 }): Promise<string | undefined> {
   const memo = serverDidMemo.for(storage)
-  const metadata = await storage.getResourceMetadata({
+  const backend = await serverLogBackend({ serverBackends })
+  const metadata = await backend.getResourceMetadata({
     spaceId: SERVER_SPACE_ID,
     collectionId: SERVER_IDENTITY_COLLECTION_ID,
     resourceId: WEBVH_LOG_RESOURCE_ID
@@ -259,6 +267,8 @@ export async function resolveServerDid({
   }
   const did = await resolveServerDidUncached({
     storage,
+    serverBackends,
+    backend,
     serverUrl,
     signingKey,
     logger
@@ -276,6 +286,9 @@ export async function resolveServerDid({
  * log as it stands now.
  * @param options {object}
  * @param options.storage {StorageBackend}
+ * @param options.serverBackends {ServerBackends}
+ * @param options.backend {StorageBackend}   the backend that serves the
+ *   server log's Collection
  * @param options.serverUrl {string}
  * @param options.signingKey {ServerSigningKey}
  * @param options.logger {FastifyBaseLogger}
@@ -283,16 +296,20 @@ export async function resolveServerDid({
  */
 async function resolveServerDidUncached({
   storage,
+  serverBackends,
+  backend,
   serverUrl,
   signingKey,
   logger
 }: {
   storage: StorageBackend
+  serverBackends: ServerBackends
+  backend: StorageBackend
   serverUrl: string
   signingKey: ServerSigningKey
   logger: FastifyBaseLogger
 }): Promise<string | undefined> {
-  const did = await readHeadDid({ storage })
+  const did = await readHeadDid({ backend })
   if (did === undefined) {
     return undefined
   }
@@ -312,7 +329,12 @@ async function resolveServerDidUncached({
   }
   let doc: DIDDoc
   try {
-    doc = await resolveWebvhController({ storage, serverUrl, did })
+    doc = await resolveWebvhController({
+      storage,
+      serverBackends,
+      serverUrl,
+      did
+    })
   } catch (err) {
     // A storage fault says nothing about the log. It keeps its 5xx, and no
     // outcome is memoized for it.
@@ -341,19 +363,37 @@ async function resolveServerDidUncached({
 }
 
 /**
+ * The server backend that serves the server history log's Collection.
+ * @param options {object}
+ * @param options.serverBackends {ServerBackends}
+ * @returns {Promise<StorageBackend>}
+ */
+export async function serverLogBackend({
+  serverBackends
+}: {
+  serverBackends: ServerBackends
+}): Promise<StorageBackend> {
+  return serverBackends.dataBackendOf({
+    spaceId: SERVER_SPACE_ID,
+    collectionId: SERVER_IDENTITY_COLLECTION_ID
+  })
+}
+
+/**
  * Reads the stored server history log's bytes, exactly as the log Resource
  * serves them, or `undefined` when there is no log.
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.backend {StorageBackend}   the backend that serves the
+ *   log's Collection ({@link serverLogBackend})
  * @returns {Promise<Buffer | undefined>}
  */
 export async function readServerLog({
-  storage
+  backend
 }: {
-  storage: StorageBackend
+  backend: StorageBackend
 }): Promise<Buffer | undefined> {
   const stored = await readWebvhLogResource({
-    storage,
+    backend,
     spaceId: SERVER_SPACE_ID,
     collectionId: SERVER_IDENTITY_COLLECTION_ID
   })
@@ -364,15 +404,16 @@ export async function readServerLog({
  * Reads the DID the stored server log's head entry names, or `undefined` when
  * there is no log or it does not parse.
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.backend {StorageBackend}   the backend that serves the
+ *   log's Collection
  * @returns {Promise<string | undefined>}
  */
 async function readHeadDid({
-  storage
+  backend
 }: {
-  storage: StorageBackend
+  backend: StorageBackend
 }): Promise<string | undefined> {
-  const logBytes = await readServerLog({ storage })
+  const logBytes = await readServerLog({ backend })
   if (logBytes === undefined) {
     return undefined
   }

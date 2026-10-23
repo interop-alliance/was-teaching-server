@@ -176,11 +176,11 @@ records no `createdBy`.
 record by. A storage backend's `apply*` methods take a record a pull loop read
 from a peer and store it under the peer's write stamp and generation, so the
 record's `ETag` here equals the peer's. No request route reaches them. The one
-other caller is the policy copy a non-default server backend keeps
-(`src/lib/backendMirror.ts`), which hands `applyPolicy` the stamp and generation
-the control plane's own write minted, with no registration. Both backends decide
-through this module. The write stamp and the clock are described in
-[validators-and-stamps.md](validators-and-stamps.md).
+other caller is the policy copy a server backend other than the control plane
+keeps (`src/lib/backendMirror.ts`), which hands `applyPolicy` the stamp and
+generation the control plane's own write minted, with no registration. Both
+backends decide through this module. The write stamp and the clock are described
+in [validators-and-stamps.md](validators-and-stamps.md).
 
 A record is applied when its stamp sorts above the held one by
 `(ms, counter, originId)`, and skipped otherwise. An equal stamp is a record
@@ -221,6 +221,47 @@ are. The Space Metadata object replicates its `name` alone: `controller`, `type`
 and the server-derived members stay per server. Revocations, backend
 registrations, keystores and chunks are not replicated.
 
+## Where a replicated Collection lands
+
+A Collection's `backend.id` keeps its meaning across servers. `default` selects
+this server's default through its alias, and a fixed id (`fs`, `postgres`)
+selects this deployment's backend of that id, as it does for a request. The
+control plane, which `WAS_CONTROL_PLANE_BACKEND` names, holds the registrations
+and every container object whatever the Collection selects. The stored copy of
+the Collection Metadata object carries the peer's `backend.id` verbatim, so the
+object stays the same on every server, and a replicated update keeps the held
+selection, as `backend-immutable` does for a request.
+
+The pull loop writes through the control plane (the mirroring wrapper, see
+`lib/backendMirror.ts`), so an applied Collection Metadata object, governing log
+or policy of a Collection on another server backend reaches that backend's copy,
+and an applied tombstone removes it. The Resource documents of the feed are
+applied to the backend the stored `backend.id` selects, content and `/meta`
+record alike. Before the first Resource of a cycle the loop brings that
+backend's copy of the Collection level, since a backend holding no copy skips
+every Resource of the Collection and the checkpoint would pass them by.
+
+Registrations live on the control plane, so a Resource apply into another server
+backend cannot read one. The loop checks the registration on the control plane
+first, by the rule the apply uses. The registration must be stored, and made
+under the Space Metadata object's current generation. One verdict covers the
+Resource documents of a feed page. The apply then runs under no `replicaId`, the
+way a policy copy is written. That backend still requires its copy of the Space
+and a live copy of the Collection. The copy write before the first Resource is a
+step of the pull, so a refusal there (the quota, a Space gone) stalls this
+Collection alone. A registration removed between the check and the write is the
+window a Delete Replica already has against an apply on the control plane, whose
+lock it does not take.
+
+A page read of the feed is bounded by the upload cap of the backend the Resource
+is applied to, so a document the data backend would refuse as too large stalls
+the Collection before its body is buffered.
+
+A replicated `did.jsonl` lands on that backend with the rest of its Collection.
+The `did:webvh` resolver reads a log from the backend its Collection selects, so
+a peer-hosted DID whose log Collection names `postgres` resolves here once its
+log is applied there.
+
 ## The pull loop
 
 `sync/replication.ts` is the `ReplicationManager`, one per app, decorated as
@@ -259,16 +300,13 @@ reason (`clock-bound`, `fork`, `quota-exceeded`, `unsupported-backend`,
 `GET .../replicas/:replicaId/status` serves beside the loop `state` and the pull
 times. The Collection is retried each cycle while the others go on, and a
 clock-bound stall clears itself as local time catches up. A Collection whose
-`backend.id` on the peer is not `default` stalls as `unsupported-backend`. That
-includes a server backend id and a registered external backend. The apply path
-checks the replica registration on the backend it writes to, and registrations
-live on the default backend alone. The stall detail reads: The Collection
-selects backend "<id>" on the peer. This server replicates into its own default
-backend only. A Collection this server holds under another server backend's id
-keeps its copies there through a replicated apply, since the apply path writes
-through the control plane: an applied Metadata object or log refreshes the copy,
-and an applied tombstone removes it. A replicated update keeps the held
-`backend` selection, as `backend-immutable` does for a request.
+`backend.id` selects no server backend of this deployment stalls as
+`unsupported-backend`, before its Metadata object is stored: a fixed id this
+deployment does not configure, or a backend registered on the peer. The stall
+detail reads: The Collection selects backend "<id>", which is not a server
+backend this deployment configures. The stall clears once the deployment
+configures that backend. See
+[Where a replicated Collection lands](#where-a-replicated-collection-lands).
 
 A request to the peer that fails, a 404 for the Space included, ends the cycle.
 The loop then backs off, doubling its delay up to a limit, and logs one `warn`

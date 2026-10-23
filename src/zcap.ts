@@ -895,8 +895,8 @@ export async function handleZcapVerify({
 /**
  * {@link handleZcapVerify} for a Fastify request: the request URL, method and
  * headers, the server's base URL, the request logger and the local
- * `did:webvh` resolver context (the server's storage backend and base URL)
- * are all read off `request`. The network resolver for a foreign
+ * `did:webvh` resolver context (the control plane, the backend set and the
+ * base URL) are all read off `request`. The network resolver for a foreign
  * `did:webvh` invoker is an opt-in: set `peerWebvh` to hand it
  * `request.server.peerWebvh`, which only the WAS route families do.
  *
@@ -919,14 +919,14 @@ export async function verifyRequestZcap({
   'url' | 'method' | 'headers' | 'serverUrl' | 'webvh' | 'logger' | 'peerWebvh'
 >): Promise<VerifyCapabilityInvocationResult> {
   const { url, method, headers } = request
-  const { serverUrl, storage } = request.server
+  const { serverUrl, storage, serverBackends } = request.server
   return await handleZcapVerify({
     ...options,
     url,
     method,
     headers,
     serverUrl,
-    webvh: { storage, serverUrl },
+    webvh: { storage, serverBackends, serverUrl },
     logger: request.log,
     ...(peerWebvh && { peerWebvh: request.server.peerWebvh })
   })

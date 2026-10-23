@@ -170,7 +170,7 @@ export async function exportSpaceArchive({
   service?: ServiceDescription
   attestor?: ExportAttestor
 }): Promise<Readable> {
-  const control = serverBackends.default
+  const control = serverBackends.controlPlane
   const { entries, revocations } = await control.exportSpaceEntries({
     spaceId,
     serverBackends: serverBackends.describeAll()

@@ -35,6 +35,7 @@ import {
 } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
 import { loadSyncSigner } from '../src/lib/syncIdentity.js'
+import { ServerBackends } from '../src/lib/serverBackends.js'
 import type { IDID } from '../src/types.js'
 import {
   client,
@@ -108,6 +109,7 @@ describe('Server key relationships', () => {
       it(`${advertised ? 'advertises' : 'does not advertise'} serverDid`, async () => {
         const resolved = await resolveServerDid({
           storage: backend,
+          serverBackends: new ServerBackends({ backends: [backend] }),
           serverUrl,
           signingKey,
           logger: silent
@@ -118,6 +120,7 @@ describe('Server key relationships', () => {
       it(`${invocation ? 'yields' : 'refuses'} a sync signer`, async () => {
         const loaded = await loadSyncSigner({
           storage: backend,
+          serverBackends: new ServerBackends({ backends: [backend] }),
           serverUrl,
           signingKey,
           logger: silent
@@ -173,6 +176,7 @@ describe('Server key relationships', () => {
         // ignored the rule would sign it.
         const loaded = await loadExportAttestor({
           storage: backend,
+          serverBackends: new ServerBackends({ backends: [backend] }),
           serverUrl,
           signingKey,
           logger: silent
@@ -252,6 +256,7 @@ describe('Sync signer', () => {
   async function load() {
     return loadSyncSigner({
       storage: fastify.storage,
+      serverBackends: fastify.serverBackends,
       serverUrl,
       signingKey: fastify.serverSigningKey,
       logger: silent
@@ -339,6 +344,7 @@ describe('Sync signer', () => {
   it('is refused naming the missing serverDid when no seed is configured', async () => {
     const loaded = await loadSyncSigner({
       storage: fastify.storage,
+      serverBackends: fastify.serverBackends,
       serverUrl,
       signingKey: undefined,
       logger: silent

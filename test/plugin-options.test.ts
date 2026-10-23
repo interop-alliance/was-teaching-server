@@ -213,6 +213,21 @@ describe('the backends set', () => {
     await app.close().catch(() => {})
   })
 
+  it('refuses a control plane naming no configured backend', async () => {
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend: await FileSystemBackend.open({
+        dataDir: path.join(dataDir, 'lonely-control')
+      }),
+      controlPlaneBackend: 'postgres',
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'WAS_CONTROL_PLANE_BACKEND names "postgres", which is not a configured storage backend'
+    )
+    await app.close().catch(() => {})
+  })
+
   it('refuses `backend` beside `backends`', async () => {
     const backend = await FileSystemBackend.open({
       dataDir: path.join(dataDir, 'both')
@@ -229,11 +244,13 @@ describe('the backends set', () => {
     await app.close().catch(() => {})
   })
 
-  it('decorates the set, with the one backend as the default', async () => {
+  it('decorates the set, with the one backend as the default and the control plane', async () => {
     const app = await testApp('set')
     await app.ready()
     expect(app.serverBackends.default).toBe(app.storage)
+    expect(app.serverBackends.controlPlane).toBe(app.storage)
     expect(app.serverBackends.defaultId).toBe('fs')
+    expect(app.serverBackends.controlPlaneId).toBe('fs')
     expect(app.serverBackends.others()).toEqual([])
     await app.close()
   })

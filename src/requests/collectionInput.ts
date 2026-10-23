@@ -239,8 +239,8 @@ export async function composeCollectionMetadata({
   const plaintext = parsed.plaintext ?? existing?.plaintext
   // A `unique` claim is enforced inside the Resource write of the server's
   // own backends, which read the declaration under their lock (a server
-  // backend other than the default holds a copy of the Collection Metadata
-  // object for that). A registered external backend's adapter never receives
+  // backend other than the control plane holds a copy of the Collection
+  // Metadata object for that). A registered external backend's adapter never receives
   // the Collection Metadata object, so it cannot enforce the claim; the
   // declaration is refused rather than stored unenforced. Checked on the
   // composed pair, so selecting an external backend on a Collection that

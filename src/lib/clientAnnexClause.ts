@@ -218,6 +218,7 @@ import {
 } from './webvhController.js'
 import { locateWebvhLog } from './webvhLogLocation.js'
 import type { WebvhResolverContext } from './webvhController.js'
+import type { StorageBackend } from '../types.js'
 import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
 import { isDelegatedClientsSpace } from './spaceType.js'
 import {
@@ -659,7 +660,9 @@ async function ladderDelegationAdmitted({
   parent: ChainCapability & { proof?: unknown }
   parentMeta?: { verifyResult?: unknown }
   parentIsRoot: boolean
-} & WebvhResolverContext): Promise<boolean> {
+  storage: StorageBackend
+  serverUrl: string
+}): Promise<boolean> {
   const target = capability.invocationTarget
   if (typeof target !== 'string') {
     return false
@@ -935,6 +938,7 @@ function ladderInvocationRefusal({
  */
 export function clientAnnexChainInspector({
   storage,
+  serverBackends,
   serverUrl,
   invocation
 }: WebvhResolverContext & {
@@ -979,7 +983,12 @@ export function clientAnnexChainInspector({
       let doc = docs.get(did)
       if (doc === undefined) {
         try {
-          doc = await resolveWebvhController({ storage, serverUrl, did })
+          doc = await resolveWebvhController({
+            storage,
+            serverBackends,
+            serverUrl,
+            did
+          })
         } catch (err) {
           return { valid: false, error: err as Error }
         }

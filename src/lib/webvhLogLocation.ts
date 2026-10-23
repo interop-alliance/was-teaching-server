@@ -256,27 +256,27 @@ export function selfHostedLogLocation({
 }
 
 /**
- * Reads the `did.jsonl` Resource of one located log: its stream and validator
- * parts, or `undefined` when no Resource is stored there (a 404). Any other
- * failure rejects as it is, so each caller decides what an absent log means
- * and how a storage fault surfaces.
+ * Reads the `did.jsonl` history log Resource of a Collection from `backend`,
+ * the server backend that serves the Collection's data plane
+ * (`ServerBackends.dataBackendOf`), or `undefined` when there is none.
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.backend {StorageBackend}   the backend that serves the
+ *   Collection's data plane
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @returns {Promise<ResourceResult | undefined>}
  */
 export async function readWebvhLogResource({
-  storage,
+  backend,
   spaceId,
   collectionId
 }: {
-  storage: StorageBackend
+  backend: StorageBackend
   spaceId: string
   collectionId: string
 }): Promise<ResourceResult | undefined> {
   try {
-    return await storage.getResource({
+    return await backend.getResource({
       spaceId,
       collectionId,
       resourceId: WEBVH_LOG_RESOURCE_ID

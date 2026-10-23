@@ -589,6 +589,7 @@ export class SpaceRequest {
         ? { reason: 'No export-signing key is configured.' }
         : await loadExportAttestor({
             storage,
+            serverBackends: request.server.serverBackends,
             serverUrl,
             signingKey: serverSigningKey,
             logger: request.log
@@ -682,7 +683,11 @@ export class SpaceRequest {
           spaceId,
           rootTarget: spaceRootTarget,
           rootController: spaceMetadata.controller,
-          webvh: { storage, serverUrl: request.server.serverUrl },
+          webvh: {
+            storage,
+            serverBackends: request.server.serverBackends,
+            serverUrl: request.server.serverUrl
+          },
           invocation: { rootInvocation, invoker, invokedCapability }
         },
         storage,
@@ -1036,6 +1041,7 @@ async function authorizeAndWriteSpaceMetadata({
     try {
       await resolveWebvhController({
         storage,
+        serverBackends: request.server.serverBackends,
         serverUrl,
         did: body.controller
       })

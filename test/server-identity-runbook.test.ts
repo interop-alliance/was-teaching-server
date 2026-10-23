@@ -138,6 +138,7 @@ describe(
     async function syncSigner() {
       return loadSyncSigner({
         storage: fastify.storage,
+        serverBackends: fastify.serverBackends,
         serverUrl,
         signingKey: fastify.serverSigningKey,
         logger: pino({ level: 'silent' })

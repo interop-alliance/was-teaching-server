@@ -186,7 +186,7 @@ async function submitRevocation({
   maxDelegationTtl?: number
 }): Promise<void> {
   const { url, method, headers, body } = request
-  const { serverUrl, storage } = request.server
+  const { serverUrl, storage, serverBackends } = request.server
 
   // Validate the body capability and verify its own delegation chain, holding
   // any failure back until the invocation has verified: a 400 raised here
@@ -204,7 +204,7 @@ async function submitRevocation({
       revocationId,
       rootTarget,
       rootController,
-      webvh: { storage, serverUrl },
+      webvh: { storage, serverBackends, serverUrl },
       maxChainLength,
       maxDelegationTtl
     })
@@ -222,7 +222,7 @@ async function submitRevocation({
     serverUrl,
     rootTarget,
     rootController,
-    webvh: { storage, serverUrl },
+    webvh: { storage, serverBackends, serverUrl },
     // With no verified chain there are no chain controllers, so the
     // revocation URL's synthesized root is controlled by nobody and only the
     // scope's own root can authorize the submission.
@@ -233,7 +233,7 @@ async function submitRevocation({
     // against the annex-chain clause, as in `handleZcapVerify`.
     inspectCapabilityChain: composeChainInspectors([
       revocationChainInspector({ storage, scope }),
-      clientAnnexChainInspector({ storage, serverUrl })
+      clientAnnexChainInspector({ storage, serverBackends, serverUrl })
     ]),
     maxChainLength,
     maxDelegationTtl,

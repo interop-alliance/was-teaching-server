@@ -88,7 +88,7 @@ export async function guardWebvhLogWrite({
   ifNoneMatch?: HeldValidators
 }> {
   const stored = await readWebvhLogResource({
-    storage: dataBackend,
+    backend: dataBackend,
     spaceId,
     collectionId
   })

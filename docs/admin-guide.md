@@ -584,16 +584,27 @@ advertises it as `originId` on the core `https://w3id.org/pws` specs entry.
 The server runs the filesystem backend (`WAS_DATA_DIR`), the Postgres backend
 (`DATABASE_URL`), or both. With neither set, startup fails.
 `WAS_DEFAULT_BACKEND` (`fs` or `postgres`) names the backend that the id
-`default` aliases. Unset, it is `fs` when the filesystem backend is configured,
-else the only backend. Naming an unconfigured backend is a startup error. The
-default backend is the control plane and holds every Space and Collection
-Metadata object, the policies, the registrations, keystores and revocations.
+`default` aliases: the data plane of every Collection that selects `default` or
+no backend. Unset, it is `fs` when the filesystem backend is configured, else
+the only backend. `WAS_CONTROL_PLANE_BACKEND` (`fs` or `postgres`) names the
+control plane, which holds every Space and Collection Metadata object, the
+policies, the registrations, keystores and revocations. Unset, it is `postgres`
+when that backend is configured, else `fs`, so with both backends and neither
+setting those records live in the database while Resource bytes default to the
+filesystem. Naming an unconfigured backend in either setting is a startup error.
 
 A Collection's `backend.id` is stored as the client sent it, so `default` stays
 `default` and resolves through the alias on every read. Changing
 `WAS_DEFAULT_BACKEND` on a store that already has Collections moves every
 `default` Collection's data plane to the other backend, and their Resources
-appear missing. Set it once and keep it.
+appear missing. Changing `WAS_CONTROL_PLANE_BACKEND` moves where every Space is
+looked up, so every Space appears missing. Set both once and keep them.
+
+A replicated Collection lands on the backend its `backend.id` names here: a
+peer's `postgres` Collection goes into this server's Postgres backend, and its
+`default` Collection into this server's default. A replica that does not
+configure the named backend stalls that Collection (`unsupported-backend` on the
+registration's `status`) until it does.
 
 The origin id is one value across the configured backends. With `WAS_ORIGIN_ID`
 unset and two stores that each minted their own, startup fails and names both

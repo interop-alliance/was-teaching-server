@@ -27,6 +27,8 @@ import {
   injectPeerFetch,
   openTempBackend,
   provisionServerIdentity,
+  registerReplica,
+  replicaStatus,
   signedInject,
   zcapClients
 } from './helpers.js'
@@ -135,48 +137,16 @@ describe('Replication between two servers', () => {
 
   /**
    * Registers `from`'s Space as the source of `to`'s, with a pull capability
-   * Alice delegates to `to`'s DID, and resolves the registration response.
+   * Alice delegates to `to`'s DID by default, and resolves the registration
+   * response.
    */
   async function register({
-    to,
-    toSpaceId,
-    from,
-    fromSpaceId,
-    replicaId = 'peer',
-    overrides = {},
-    allowedActions = ['GET'],
-    delegator = alice
-  }: {
-    to: Server
-    toSpaceId: string
-    from: Server
-    fromSpaceId: string
-    replicaId?: string
-    overrides?: Record<string, unknown>
-    allowedActions?: string[]
+    delegator = alice,
+    ...options
+  }: Omit<Parameters<typeof registerReplica>[0], 'signer' | 'delegator'> & {
     delegator?: { did: string; signer: any }
   }) {
-    const fromSpace = `${from.serverUrl}/space/${fromSpaceId}/`
-    const capability = await delegate({
-      signer: delegator.signer,
-      capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
-      invocationTarget: fromSpace,
-      controller: to.did,
-      allowedActions
-    })
-    return call({
-      server: to,
-      path: `/space/${toSpaceId}/replicas`,
-      method: 'POST',
-      json: {
-        id: replicaId,
-        fromSpace,
-        toSpace: `${to.serverUrl}/space/${toSpaceId}/`,
-        capability,
-        role: 'source',
-        ...overrides
-      }
-    })
+    return registerReplica({ signer: alice.signer, delegator, ...options })
   }
 
   /**
@@ -195,23 +165,12 @@ describe('Replication between two servers', () => {
   }
 
   /**
-   * Reads a registration's status.
+   * Reads a registration's status, as Alice.
    */
-  async function statusOf({
-    server,
-    spaceId,
-    replicaId = 'peer'
-  }: {
-    server: Server
-    spaceId: string
-    replicaId?: string
-  }) {
-    const response = await call({
-      server,
-      path: `/space/${spaceId}/replicas/${replicaId}/status`
-    })
-    assert.equal(response.statusCode, 200, response.payload)
-    return response.json()
+  async function statusOf(
+    options: Omit<Parameters<typeof replicaStatus>[0], 'signer'>
+  ) {
+    return replicaStatus({ signer: alice.signer, ...options })
   }
 
   beforeAll(async () => {

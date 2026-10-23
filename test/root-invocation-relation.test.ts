@@ -48,6 +48,7 @@ import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
+import { ServerBackends } from '../src/lib/serverBackends.js'
 import { verifyZcap } from '../src/zcap.js'
 import {
   client,
@@ -384,7 +385,11 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
         headers,
         serverUrl,
         spaceController: space.did,
-        webvh: { storage: backend, serverUrl },
+        webvh: {
+          storage: backend,
+          serverBackends: new ServerBackends({ backends: [backend] }),
+          serverUrl
+        },
         attenuatedRootTarget: space.spaceUrl
       })
     }

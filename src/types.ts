@@ -1770,8 +1770,9 @@ export interface StorageBackend {
    * request route reaches these methods. Each stores the received record
    * under the stamp the peer served, verbatim, after the one comparison
    * `lib/replicaApply.ts` defines, and resolves an `ApplyResult` saying what
-   * it did. One other caller is the policy copy a non-default server backend
-   * keeps (`lib/backendMirror.ts`), which hands `applyPolicy` the stamp and
+   * it did. One other caller is the policy copy a server backend other than
+   * the control plane keeps (`lib/backendMirror.ts`), which hands
+   * `applyPolicy` the stamp and
    * generation the control plane's own write minted, with no `replicaId`.
    *
    * Every apply method runs inside the critical section the matching
@@ -1859,10 +1860,16 @@ export interface StorageBackend {
    *
    * A received `createdAt` or `createdBy` that is absent leaves the held one
    * in place where the store requires the member.
+   *
+   * An absent `replicaId`, here and on `applyResourceMetadata`, is an apply
+   * into a server backend other than the control plane, which holds no
+   * registrations: the pull loop checked the registration on the control
+   * plane, the registration check is skipped, and the Space and the
+   * Collection must still be held (their copies) as on any apply.
    */
   applyResource(options: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId: string
     resourceId: string
     generation: string
@@ -1882,7 +1889,7 @@ export interface StorageBackend {
    */
   applyResourceMetadata(options: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId: string
     resourceId: string
     meta: ResourceMetaStamp
@@ -2077,16 +2084,17 @@ declare module 'fastify' {
   interface FastifyInstance {
     serverUrl: string
     /**
-     * The default server backend: the control plane, which holds every Space
-     * and Collection Metadata object, the policies, the registrations, and
-     * the Resources of every Collection selecting `default` or its fixed id.
-     * The backend `serverBackends.default` names.
+     * The control plane: the server backend that holds every Space and
+     * Collection Metadata object, the policies, the registrations, the
+     * keystores and the revocations, and the Resources of every Collection
+     * selecting its fixed id. `serverBackends.controlPlane`.
      */
     storage: StorageBackend
     /**
      * The server's own backends under their fixed ids, with the `default`
-     * alias (lib/serverBackends.ts). The resolver routes a Collection's data
-     * plane through it. Set by `fastify.decorate` in plugin.ts.
+     * alias and the control plane (lib/serverBackends.ts). The resolver
+     * routes a Collection's data plane through it. Set by `fastify.decorate`
+     * in plugin.ts.
      */
     serverBackends: ServerBackends
     /**

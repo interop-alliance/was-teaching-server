@@ -5421,7 +5421,9 @@ export class PostgresBackend implements StorageBackend {
    * decided by `decideLogApply` in place of the stamp comparison.
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.replicaId {string}
+   * @param [options.replicaId] {string}   absent for an apply into a server
+   *   backend other than the control plane, which runs under no
+   *   registration
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.generation {string}
@@ -5448,7 +5450,7 @@ export class PostgresBackend implements StorageBackend {
     resource
   }: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId: string
     resourceId: string
     generation: string
@@ -5633,7 +5635,9 @@ export class PostgresBackend implements StorageBackend {
    * position, as a metadata write does.
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.replicaId {string}
+   * @param [options.replicaId] {string}   absent for an apply into a server
+   *   backend other than the control plane, which runs under no
+   *   registration
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.meta {ResourceMetaStamp}   the `/meta` record's stamp and
@@ -5651,7 +5655,7 @@ export class PostgresBackend implements StorageBackend {
     custom
   }: {
     spaceId: string
-    replicaId: string
+    replicaId?: string
     collectionId: string
     resourceId: string
     meta: ResourceMetaStamp

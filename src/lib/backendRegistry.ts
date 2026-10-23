@@ -2,15 +2,15 @@
  * Per-Collection backend resolver (spec "Backends"; stage 3 of the BYOS plan).
  * Maps a Collection's selected `backend.id` to the live `StorageBackend` that
  * serves its **data plane** (resource bytes, metadata, listings, change feed),
- * while the server's default backend (`request.server.storage`) keeps the
- * **control plane** (Space/Collection descriptions, policies, the backend
- * registry records). For the `default` backend the two planes are the same
- * instance, so behavior is byte-for-byte unchanged.
+ * while the control plane (`request.server.storage`) keeps the Space and
+ * Collection descriptions, the policies and the backend registry records.
+ * For a Collection on the control plane the two planes are the same
+ * instance.
  *
  * `resolveBackend` short-circuits to a server backend for the `default`,
  * absent, or fixed-id selection (`request.server.serverBackends`, one lookup,
- * no I/O). A server backend other than the default holds a copy of the
- * Space and Collection Metadata objects of the Collections it serves
+ * no I/O). A server backend other than the control plane holds a copy of
+ * the Space and Collection Metadata objects of the Collections it serves
  * (lib/backendMirror.ts), so its own write rules hold there. For a Collection
  * that selects a registered `external` backend it loads the (secret-bearing)
  * backend record from the control plane and builds -- memoized -- the
@@ -87,8 +87,7 @@ export async function resolveBackend({
     collectionMetadata ??
     (await storage.getCollectionMetadata({ spaceId, collectionId }))
   const backendId = metadata?.backend?.id
-  // Fast path: a server backend. For the default it is both control and data
-  // plane (unchanged), and an absent id selects it.
+  // Fast path: a server backend. An absent id selects the default.
   if (backendId === undefined) {
     return serverBackends.default
   }
@@ -100,7 +99,7 @@ export async function resolveBackend({
   return adapterCacheFor(backendProviders).memoize<StorageBackend>({
     key: `${spaceId}/${backendId}`,
     fn: async () => {
-      // Control-plane read: the secret-bearing record lives on the default backend.
+      // Control-plane read: the secret-bearing record lives there.
       const record = await storage.getBackend({ spaceId, backendId })
       if (!record) {
         throw new UnsupportedBackendError({ backendId })

@@ -1,6 +1,6 @@
 /**
- * Import Space across the server backends. The control plane (the default
- * backend) takes the whole plan less the Resources of every Collection that
+ * Import Space across the server backends. The control plane takes the
+ * whole plan less the Resources of every Collection that
  * selects another server backend, so it holds each Collection's Metadata
  * object, policies and governing log as it does for a live write. Each other
  * server backend takes a plan of its own Collections alone, carrying their
@@ -66,7 +66,7 @@ export async function importSpaceAcrossBackends({
   provenance: ImportStats['provenance']
   restoreSpaceMetadata?: boolean
 }): Promise<ImportStats> {
-  const control = serverBackends.default
+  const control = serverBackends.controlPlane
   const byBackend = new Map<StorageBackend, ImportPlanCollection[]>()
   const controlCollections: ImportPlanCollection[] = []
   const routed: ImportPlanCollection[] = []

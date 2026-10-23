@@ -9,6 +9,7 @@ import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyBaseLogger } from 'fastify'
 import { installImportRevocations } from '../src/lib/importRevocations.js'
+import { ServerBackends } from '../src/lib/serverBackends.js'
 import type { IDID, StorageBackend } from '../src/types.js'
 
 /**
@@ -18,10 +19,12 @@ import type { IDID, StorageBackend } from '../src/types.js'
 function harness() {
   const warnings: unknown[] = []
   const storage = {
+    describe: () => ({ id: 'fs' }),
     insertRevocation: async () => {
       assert.fail('nothing may be stored')
     }
   } as unknown as StorageBackend
+  const serverBackends = new ServerBackends({ backends: [storage] })
   const logger = {
     warn: (...args: unknown[]) => {
       warnings.push(args)
@@ -31,7 +34,7 @@ function harness() {
     spaceId: 'S1',
     rootTarget: 'https://was.example/space/S1/',
     rootController: 'did:key:z6MkController' as IDID,
-    webvh: { storage, serverUrl: 'https://was.example' },
+    webvh: { storage, serverBackends, serverUrl: 'https://was.example' },
     invocation: { rootInvocation: true }
   }
   return { warnings, storage, logger, scope }

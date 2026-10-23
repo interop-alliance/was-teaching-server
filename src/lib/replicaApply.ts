@@ -91,12 +91,36 @@ export function assertReceivableStamps(
 }
 
 /**
+ * Whether a replica registration admits an apply: it is stored, and was made
+ * under the Space Metadata object's current generation. The apply methods
+ * check it inside their critical section (`guardApply`), and the pull loop
+ * checks it on the control plane before a Resource apply into another
+ * server backend, which holds no registrations.
+ * @param options {object}
+ * @param [options.registeredUnder] {string}   the Space generation the
+ *   registration was made under; absent when the registration is not stored
+ * @param [options.spaceGeneration] {string | null}   the Space Metadata
+ *   object's generation; absent when the Space has no Metadata object
+ * @returns {boolean}
+ */
+export function registrationStands({
+  registeredUnder,
+  spaceGeneration
+}: {
+  registeredUnder?: string
+  spaceGeneration?: string | null
+}): boolean {
+  return (
+    typeof registeredUnder === 'string' && registeredUnder === spaceGeneration
+  )
+}
+
+/**
  * The two checks every apply method makes first, inside its critical
  * section, once it has read the registration and the Space. The
- * registration must be stored, and made under the Space Metadata object's
- * current generation. Then the store's clock takes in each received stamp,
- * and one dated more than the clock bound ahead of local time stops the
- * apply.
+ * registration must stand (`registrationStands`). Then the store's clock
+ * takes in each received stamp, and one dated more than the clock bound
+ * ahead of local time stops the apply.
  * @param options {object}
  * @param [options.registeredUnder] {string}   the Space generation the
  *   registration was made under; absent when the registration is not stored
@@ -118,10 +142,7 @@ export function guardApply({
   clock: HybridLogicalClock
   stamps: WriteStamp[]
 }): ApplyResult | undefined {
-  if (
-    typeof registeredUnder !== 'string' ||
-    registeredUnder !== spaceGeneration
-  ) {
+  if (!registrationStands({ registeredUnder, spaceGeneration })) {
     return { outcome: 'unregistered' }
   }
   for (const stamp of stamps) {

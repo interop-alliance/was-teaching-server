@@ -45,12 +45,35 @@
   one, so a fault leaves the default backend untouched. The plugin refuses an
   explicit empty `backends` list instead of opening the fallback filesystem
   backend.
-- The replication pull loop stalls a peer Collection selecting any backend id
-  other than `default`, a server backend id included. The copies a non-default
+- `WAS_CONTROL_PLANE_BACKEND` (`fs` or `postgres`) names the control plane, the
+  server backend that holds every Space and Collection Metadata object, the
+  policies, the registrations, keystores and revocations, apart from
+  `WAS_DEFAULT_BACKEND`, which keeps naming the data plane of a Collection that
+  selects `default` or no backend. Unset, the control plane is `postgres` when
+  that backend is configured, else `fs`, so a deployment with both and neither
+  setting keeps its records in the database and its Resource bytes on disk. The
+  plugin takes `controlPlaneBackend`, and `serverBackends` exposes
+  `controlPlane` and `controlPlaneId`. The copies a server backend keeps, the
+  export and import composition and the pull loop act on the backends other than
+  the control plane. The `did:webvh` resolver reads a history log from the
+  backend its Collection selects, so a log Collection on a backend other than
+  the control plane, self-hosted or replicated, resolves.
+- The replication pull loop replicates a peer Collection into the server backend
+  its `backend.id` names here: `default` through this server's alias, a fixed id
+  (`fs`, `postgres`) into this deployment's backend of that id. The Collection
+  Metadata object keeps the peer's `backend.id` verbatim and lands on the
+  control plane with the Collection's policies and log, while its Resource
+  content and `/meta` records are applied to the selected backend after the loop
+  checks the registration on the control plane; the loop brings that backend's
+  copy of the Collection level before the first Resource of a cycle. A
+  Collection naming a backend this deployment does not configure, or one
+  registered on the peer, stalls as `unsupported-backend` before its Metadata
+  object is stored, with the detail naming the id. The copies a non-default
   server backend keeps follow every write of a container object through the
   control plane, the apply path's included, so a replicated Metadata object, log
   or tombstone of a Collection held on that backend reaches its copy; a
-  replicated update keeps the held `backend` selection.
+  replicated update keeps the held `backend` selection. `applyResource` and
+  `applyResourceMetadata` take an optional `replicaId`, as `applyPolicy` does.
 
 ### Fixed
 

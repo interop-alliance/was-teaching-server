@@ -181,10 +181,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   server's DID. One pull loop per registration reads the peer's Space and each
   selected Collection's `changes` feed, and stores what it reads through the
   backend's `apply*` methods only, under the peer's stamp and generation. No
-  request route can supply a write stamp. A replicated `did:webvh` resolves from
-  the local copy of its log when exactly one registration maps it there. See
-  [docs/replication.md](docs/replication.md) and
-  [decision 0004](decisions/0004-stamps-are-minted-only-by-this-server.md).
+  request route can supply a write stamp. The container objects, logs and
+  policies are applied on the control plane; a Collection's Resources go to the
+  server backend its `backend.id` selects, the id meaning here what it means on
+  the peer, after the loop checks the registration on the control plane. A
+  `backend.id` this deployment does not configure stalls the Collection. A
+  replicated `did:webvh` resolves from the local copy of its log when exactly
+  one registration maps it there. See [docs/replication.md](docs/replication.md)
+  and [decision 0004](decisions/0004-stamps-are-minted-only-by-this-server.md).
 - **`src/lib/importTar.ts`**, **`src/lib/importPlan.ts`**,
   **`src/lib/importRevocations.ts`** and each backend's `exportSpace` /
   `importSpace` -- Export and Import Space. The archive codec lives in
@@ -197,38 +201,43 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 - **`src/storage.ts`** -- supplies `defaultBackend()`, which opens the
   `FileSystemBackend` that the plugin uses when no `backends` option is given.
   The open backends form a `ServerBackends` set, decorated onto the instance as
-  `request.server.serverBackends`; its default is `request.server.storage`.
+  `request.server.serverBackends`; its control plane is
+  `request.server.storage`.
 - **`src/lib/serverBackends.ts`** -- the set of server backends. Each reports a
-  fixed id from `describe()` (`fs`, `postgres`), and `WAS_DEFAULT_BACKEND` names
-  the one that `default` aliases. The default is the control plane. The set
-  refuses two backends under one id, a default that is not configured, no
-  backend at all, and differing origin ids. It also builds the server-managed
-  entries of a Space's backends listing: the `default` alias, then each fixed
-  id. A Collection's `backend.id` is stored as sent and resolves through the
-  alias on every read.
+  fixed id from `describe()` (`fs`, `postgres`). `WAS_DEFAULT_BACKEND` names the
+  one that `default` aliases, and `WAS_CONTROL_PLANE_BACKEND` names the control
+  plane, `postgres` when configured and else `fs` when unset. The set refuses
+  two backends under one id, a default or a control plane that is not
+  configured, no backend at all, and differing origin ids. It also builds the
+  server-managed entries of a Space's backends listing: the `default` alias,
+  then each fixed id. A Collection's `backend.id` is stored as sent and resolves
+  through the alias on every read. `dataBackendOf` finds the backend that serves
+  a stored Collection's data plane, which the `did:webvh` resolver reads a
+  history log from.
 - **`src/lib/backendMirror.ts`** -- the copies of the Space and Collection
   Metadata objects, of the Collection's governing history log and of its
-  policies kept in a non-default server backend, so that backend accepts a
-  Resource write, reads the `unique` declarations and the write-once rule under
-  its own lock, and serves a `changes` feed with one position sequence. The
-  copies follow the write: the set serves the default backend wrapped by
-  `mirroringControlPlane`, and each write, delete or replicated apply of a
-  container object or a Collection- or Resource-level policy through it is
-  followed by the copy it calls for, so the handlers and the pull loop keep them
-  alike. The Space copy is written on the first Collection the backend serves
-  and refreshed by Update Space, the Collection copy after every Create and
-  Update Collection, the log copy after every governed-log write, and a policy
-  copy after every policy write and delete, and Import Space copies the policies
-  it stored after the control plane's import. Reads never consult a copy. The
-  feed's `collection-metadata` and `log` documents are restamped from the
-  control plane's records (`restampFeedFromControlPlane`, two reads per page at
-  most), while a policy copy is written through `applyPolicy` under the control
-  plane's own generation and stamp, with no registration, so its feed document
-  is served as is and a tombstone copy lands over an absent copy too. Delete
-  Collection sweeps every other server backend for a copy after the control
-  plane's delete, on a repeat delete too, and Delete Space removes the Space
-  copies. A Collection's `backend` cannot change once set (`backend-immutable`,
-  409); it may be restated under another id of the same backend.
+  policies kept in a server backend other than the control plane, so that
+  backend accepts a Resource write, reads the `unique` declarations and the
+  write-once rule under its own lock, and serves a `changes` feed with one
+  position sequence. The copies follow the write: the set serves the control
+  plane wrapped by `mirroringControlPlane`, and each write, delete or replicated
+  apply of a container object or a Collection- or Resource-level policy through
+  it is followed by the copy it calls for, so the handlers and the pull loop
+  keep them alike. The Space copy is written on the first Collection the backend
+  serves and refreshed by Update Space, the Collection copy after every Create
+  and Update Collection, the log copy after every governed-log write, and a
+  policy copy after every policy write and delete, and Import Space copies the
+  policies it stored after the control plane's import. Reads never consult a
+  copy. The feed's `collection-metadata` and `log` documents are restamped from
+  the control plane's records (`restampFeedFromControlPlane`, two reads per page
+  at most), while a policy copy is written through `applyPolicy` under the
+  control plane's own generation and stamp, with no registration, so its feed
+  document is served as is and a tombstone copy lands over an absent copy too.
+  Delete Collection sweeps every other server backend for a copy after the
+  control plane's delete, on a repeat delete too, and Delete Space removes the
+  Space copies. A Collection's `backend` cannot change once set
+  (`backend-immutable`, 409); it may be restated under another id of the same
+  backend.
 - **`src/lib/exportArchive.ts`**, **`src/lib/importAcrossBackends.ts`** --
   Export and Import Space across the set. Export composes one entry tree from
   the control plane and the other backend, signs provenance over it and packs
@@ -370,18 +379,20 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
 - **Server backend** -- a storage backend this server configures: the filesystem
   backend (`WAS_DATA_DIR`, fixed id `fs`) or the Postgres backend
   (`DATABASE_URL`, fixed id `postgres`). `default` is the alias of the one
-  `WAS_DEFAULT_BACKEND` names, and that backend is the control plane. A
-  Collection selects one with `backend: { id }`. Avoid: dual mode, primary
-  backend.
+  `WAS_DEFAULT_BACKEND` names, the data plane of a Collection that selects no
+  backend. The control plane is the one `WAS_CONTROL_PLANE_BACKEND` names,
+  `postgres` when configured and else `fs` when unset. A Collection selects one
+  with `backend: { id }`. Avoid: dual mode, primary backend.
 - **Mirror** -- the copy of a Space or Collection Metadata object, of a
   Collection's governing history log, or of a Collection- or Resource-level
-  policy, that the server keeps in a non-default server backend, so that backend
-  accepts the Collection's Resource writes, decides the write-once rule under
-  its own lock, and holds every record kind of the Collection in its `changes`
-  feed. It is never read for an answer. A Metadata or log copy carries that
-  backend's own stamp and generation, and its feed document is restamped from
-  the control plane's record; a policy copy carries the control plane's. Avoid:
-  replica (reserved for replica registrations), shadow copy.
+  policy, that the server keeps in a server backend other than the control
+  plane, so that backend accepts the Collection's Resource writes, decides the
+  write-once rule under its own lock, and holds every record kind of the
+  Collection in its `changes` feed. It is never read for an answer. A Metadata
+  or log copy carries that backend's own stamp and generation, and its feed
+  document is restamped from the control plane's record; a policy copy carries
+  the control plane's. Avoid: replica (reserved for replica registrations),
+  shadow copy.
 - **Collection tombstone** -- what Delete Collection leaves in place of the
   Collection Metadata object: `deleted: true`, the Collection's generation, and
   the delete's write stamp, and nothing else of the old body. It reads as absent

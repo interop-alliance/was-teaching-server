@@ -124,8 +124,8 @@ Two things to get right:
 `fastifyWas` is wrapped with `fastify-plugin`, so what it installs lands on the
 **root** Fastify instance:
 
-- decorations: `serverUrl`, `storage` (the default backend, with its logger
-  wired to `fastify.log` unless `ownsBackend: false`), `serverBackends` (the
+- decorations: `serverUrl`, `storage` (the control plane, with its logger wired
+  to `fastify.log` unless `ownsBackend: false`), `serverBackends` (the
   `ServerBackends` set, whose `default` is `storage`), `backendProviders`,
   `enabledBackendProviders`;
 - `@fastify/cors`, unless `cors: false` (by default `origin: '*'` and every

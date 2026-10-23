@@ -58,19 +58,19 @@ Every document carries the record's write stamp, its `generation`, and its
 position with a new `meta` stamp, and its top-level stamp and `etag` stay the
 content record's.
 
-A Collection on a non-default server backend is fed from that backend, which
-holds copies of its Metadata object, its governing log and its policies. Each
-copy is written after the control-plane write, so the write takes a position in
-that backend's feed and the feed stays one sequence. Every document's `etag` is
-the one a GET of the record answers. A `policy` copy is written through the
-backend's `applyPolicy` under the control plane's own generation and stamp, so
-its document is served as is; the stamp comparison there orders two copies of
-one record however they land, and a tombstone copy lands over an absent copy. A
-`collection-metadata` or `log` copy carries the backend's own stamp, and its
-document takes the control plane's stamp and validator when the page is served
-(`restampFeedFromControlPlane` in `src/lib/backendMirror.ts`, one read of each
-record per page). A copy whose record the control plane no longer holds keeps
-the copy's stamp.
+A Collection on a server backend other than the control plane is fed from that
+backend, which holds copies of its Metadata object, its governing log and its
+policies. Each copy is written after the control-plane write, so the write takes
+a position in that backend's feed and the feed stays one sequence. Every
+document's `etag` is the one a GET of the record answers. A `policy` copy is
+written through the backend's `applyPolicy` under the control plane's own
+generation and stamp, so its document is served as is; the stamp comparison
+there orders two copies of one record however they land, and a tombstone copy
+lands over an absent copy. A `collection-metadata` or `log` copy carries the
+backend's own stamp, and its document takes the control plane's stamp and
+validator when the page is served (`restampFeedFromControlPlane` in
+`src/lib/backendMirror.ts`, one read of each record per page). A copy whose
+record the control plane no longer holds keeps the copy's stamp.
 
 A tombstone is marked `deleted: true`. A Collection's own tombstone is not in
 the feed, since the feed goes with the Collection.

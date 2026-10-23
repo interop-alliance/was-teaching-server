@@ -292,6 +292,7 @@ describe('loadConfigFromEnv', () => {
       DATABASE_URL: ' postgres://was:was@localhost:5433/was ',
       WAS_DATA_DIR: ' ./scratch/was-data ',
       WAS_DEFAULT_BACKEND: ' postgres ',
+      WAS_CONTROL_PLANE_BACKEND: ' fs ',
       STORAGE_LIMIT_PER_SPACE: '1048576',
       MAX_UPLOAD_BYTES: '65536',
       WAS_ENABLED_BACKENDS: 'gdrive, s3',
@@ -304,6 +305,7 @@ describe('loadConfigFromEnv', () => {
     // A relative WAS_DATA_DIR resolves against the process working directory.
     assert.equal(config.dataDir, path.resolve('./scratch/was-data'))
     assert.equal(config.defaultBackend, 'postgres')
+    assert.equal(config.controlPlaneBackend, 'fs')
     assert.equal(config.storageLimitPerSpace, 1048576)
     assert.equal(config.maxUploadBytes, 65536)
     assert.deepEqual(config.enabledBackendProviders, ['gdrive', 's3'])
@@ -311,12 +313,10 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.discloseVersion, false)
   })
 
-  it('reads an unset WAS_DEFAULT_BACKEND as undefined and refuses an unknown id', () => {
-    assert.equal(
-      loadConfigFromEnv({ SERVER_URL: 'https://was.example.com' })
-        .defaultBackend,
-      undefined
-    )
+  it('reads an unset WAS_DEFAULT_BACKEND or WAS_CONTROL_PLANE_BACKEND as undefined and refuses an unknown id', () => {
+    const unset = loadConfigFromEnv({ SERVER_URL: 'https://was.example.com' })
+    assert.equal(unset.defaultBackend, undefined)
+    assert.equal(unset.controlPlaneBackend, undefined)
     assert.throws(
       () =>
         loadConfigFromEnv({
@@ -324,6 +324,14 @@ describe('loadConfigFromEnv', () => {
           WAS_DEFAULT_BACKEND: 'sqlite'
         }),
       /WAS_DEFAULT_BACKEND must be one of fs, postgres; got "sqlite"/
+    )
+    assert.throws(
+      () =>
+        loadConfigFromEnv({
+          SERVER_URL: 'https://was.example.com',
+          WAS_CONTROL_PLANE_BACKEND: 'sqlite'
+        }),
+      /WAS_CONTROL_PLANE_BACKEND must be one of fs, postgres; got "sqlite"/
     )
   })
 

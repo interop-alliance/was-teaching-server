@@ -1198,6 +1198,105 @@ export async function signedInject({
 }
 
 /**
+ * Registers `from`'s Space as a source of `to`'s: delegates a pull capability
+ * on the source Space to `to`'s DID, signed by `delegator`, and posts the
+ * registration to `to` under `signer`, the local Space's controller.
+ * Resolves the registration response, whatever its status.
+ *
+ * @param options {object}
+ * @param options.to {{ fastify: FastifyInstance, serverUrl: string, did: string }}
+ *   the server that pulls
+ * @param options.toSpaceId {string}
+ * @param options.from {{ serverUrl: string }}   the source server
+ * @param options.fromSpaceId {string}
+ * @param options.signer {any}   the local Space's controller key, which
+ *   signs the registration
+ * @param options.delegator {{ did: string, signer: any }}   the source
+ *   Space's controller
+ * @param [options.replicaId] {string}   defaults to `peer`
+ * @param [options.allowedActions] {string[]}   of the pull capability;
+ *   defaults to `['GET']`
+ * @param [options.overrides] {object}   members laid over the registration
+ *   body
+ * @returns {Promise<import('fastify').LightMyRequestResponse>}
+ */
+export async function registerReplica({
+  to,
+  toSpaceId,
+  from,
+  fromSpaceId,
+  signer,
+  delegator,
+  replicaId = 'peer',
+  allowedActions = ['GET'],
+  overrides = {}
+}: {
+  to: { fastify: FastifyInstance; serverUrl: string; did: string }
+  toSpaceId: string
+  from: { serverUrl: string }
+  fromSpaceId: string
+  signer: any
+  delegator: { did: string; signer: any }
+  replicaId?: string
+  allowedActions?: string[]
+  overrides?: Record<string, unknown>
+}): Promise<LightMyRequestResponse> {
+  const fromSpace = `${from.serverUrl}/space/${fromSpaceId}/`
+  const capability = await delegate({
+    signer: delegator.signer,
+    capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+    invocationTarget: fromSpace,
+    controller: to.did,
+    allowedActions
+  })
+  return signedInject({
+    server: to,
+    signer,
+    path: `/space/${toSpaceId}/replicas`,
+    method: 'POST',
+    json: {
+      id: replicaId,
+      fromSpace,
+      toSpace: `${to.serverUrl}/space/${toSpaceId}/`,
+      capability,
+      role: 'source',
+      ...overrides
+    }
+  })
+}
+
+/**
+ * Reads a registration's status on `server`, signed by `signer`, and
+ * resolves the status document.
+ *
+ * @param options {object}
+ * @param options.server {{ fastify: FastifyInstance, serverUrl: string }}
+ * @param options.spaceId {string}
+ * @param options.signer {any}
+ * @param [options.replicaId] {string}   defaults to `peer`
+ * @returns {Promise<any>}
+ */
+export async function replicaStatus({
+  server,
+  spaceId,
+  signer,
+  replicaId = 'peer'
+}: {
+  server: { fastify: FastifyInstance; serverUrl: string }
+  spaceId: string
+  signer: any
+  replicaId?: string
+}): Promise<any> {
+  const response = await signedInject({
+    server,
+    signer,
+    path: `/space/${spaceId}/replicas/${replicaId}/status`
+  })
+  assert.equal(response.statusCode, 200, response.payload)
+  return response.json()
+}
+
+/**
  * Watches the global `fetch` for a request of a `did-witness.json`.
  * `@interop/did-method-webvh` makes one, with the global `fetch`, when it
  * verifies a log that declares witnesses and is given no witness proofs. A

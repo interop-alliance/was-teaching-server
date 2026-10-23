@@ -1,9 +1,11 @@
 /**
  * The `ServerBackends` set: the fixed ids, the `default` alias and its
- * fallback, and the refusals at construction (no backend, two under one id,
- * a default naming no configured backend, origin ids that differ). Uses stub
- * backends, since only `describe()` and `originId` are read here; the plugin
- * refusals over real backends are in `plugin-options.test.ts`.
+ * fallback, the control plane and its fallback, the data-plane lookup, and
+ * the refusals at construction (no backend, two under one id, a default or
+ * a control plane naming no configured backend, origin ids that differ).
+ * Uses stub backends, since only `describe()`, `originId` and, for the
+ * lookup, `getCollectionMetadata` are read here; the plugin refusals over
+ * real backends are in `plugin-options.test.ts`.
  */
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
@@ -13,10 +15,12 @@ import type { StorageBackend } from '../src/types.js'
 
 function stub({
   id,
-  originId = 'zOrigin'
+  originId = 'zOrigin',
+  collections = {}
 }: {
   id: string
   originId?: string
+  collections?: Record<string, { backend?: { id: string } }>
 }): StorageBackend {
   return {
     originId,
@@ -25,7 +29,9 @@ function stub({
       name: `Stub ${id}`,
       managedBy: 'server',
       persistence: 'durable'
-    })
+    }),
+    getCollectionMetadata: async ({ collectionId }: { collectionId: string }) =>
+      collections[collectionId]
   } as unknown as StorageBackend
 }
 
@@ -33,9 +39,14 @@ describe('ServerBackends', () => {
   it('aliases `default` to the filesystem backend when unset', () => {
     const fs = stub({ id: 'fs' })
     const postgres = stub({ id: 'postgres' })
-    const backends = new ServerBackends({ backends: [postgres, fs] })
+    const backends = new ServerBackends({
+      backends: [postgres, fs],
+      controlPlaneId: 'fs'
+    })
     assert.equal(backends.defaultId, 'fs')
-    // The default is served wrapped by the mirroring control plane.
+    // The control plane is served wrapped by the mirroring control plane.
+    assert.equal(backends.controlPlaneId, 'fs')
+    assert.equal(backends.controlPlane, backends.default)
     assert.notEqual(backends.default, fs)
     assert.equal(backends.default.describe().id, 'fs')
     assert.deepStrictEqual(
@@ -63,10 +74,24 @@ describe('ServerBackends', () => {
     )
   })
 
+  it('puts the control plane on Postgres when configured, else on the filesystem backend', () => {
+    const fs = stub({ id: 'fs' })
+    const postgres = stub({ id: 'postgres' })
+    const both = new ServerBackends({ backends: [fs, postgres] })
+    assert.equal(both.defaultId, 'fs')
+    assert.equal(both.controlPlaneId, 'postgres')
+    assert.equal(both.default, fs)
+    assert.deepStrictEqual(both.others(), [fs])
+    const fsOnly = new ServerBackends({ backends: [stub({ id: 'fs' })] })
+    assert.equal(fsOnly.controlPlaneId, 'fs')
+    assert.equal(fsOnly.controlPlane, fsOnly.default)
+  })
+
   it('aliases `default` to the only configured backend when unset', () => {
     const postgres = stub({ id: 'postgres' })
     const backends = new ServerBackends({ backends: [postgres] })
     assert.equal(backends.defaultId, 'postgres')
+    assert.equal(backends.controlPlaneId, 'postgres')
     assert.deepStrictEqual(
       backends.describeAll().map(entry => entry.id),
       ['default', 'postgres']
@@ -81,10 +106,76 @@ describe('ServerBackends', () => {
       defaultId: 'postgres'
     })
     assert.equal(backends.default.describe().id, 'postgres')
+    assert.equal(backends.controlPlaneId, 'postgres')
     assert.deepStrictEqual(backends.others(), [fs])
   })
 
-  it('refuses no backend, a duplicate id, a `default` id, and an unknown default', () => {
+  it('takes a control plane apart from the default', () => {
+    const fs = stub({ id: 'fs' })
+    const postgres = stub({ id: 'postgres' })
+    const backends = new ServerBackends({
+      backends: [fs, postgres],
+      controlPlaneId: 'postgres'
+    })
+    // `default` still aliases the filesystem backend, now unwrapped: it is a
+    // data plane like any other backend beside the control plane.
+    assert.equal(backends.defaultId, 'fs')
+    assert.equal(backends.default, fs)
+    assert.equal(backends.resolve(undefined), fs)
+    assert.equal(backends.resolve('default'), fs)
+    // The control plane is the wrapped Postgres backend.
+    assert.equal(backends.controlPlaneId, 'postgres')
+    assert.notEqual(backends.controlPlane, postgres)
+    assert.equal(backends.controlPlane.describe().id, 'postgres')
+    assert.equal(backends.resolve('postgres'), backends.controlPlane)
+    // The copies go to every backend other than the control plane, the
+    // default included.
+    assert.deepStrictEqual(backends.others(), [fs])
+    assert.equal(backends.resolveOther(undefined), fs)
+    assert.equal(backends.resolveOther('default'), fs)
+    assert.equal(backends.resolveOther('postgres'), undefined)
+    assert.deepStrictEqual(
+      backends.all().map(backend => backend.describe().id),
+      ['postgres', 'fs']
+    )
+    assert.deepStrictEqual(
+      backends.describeAll().map(entry => [entry.id, entry.name]),
+      [
+        ['default', 'Stub fs'],
+        ['postgres', 'Stub postgres'],
+        ['fs', 'Stub fs']
+      ]
+    )
+  })
+
+  it('finds the backend that serves a stored Collection', async () => {
+    const fs = stub({ id: 'fs' })
+    const postgres = stub({
+      id: 'postgres',
+      collections: {
+        onDefault: {},
+        onFs: { backend: { id: 'fs' } },
+        onPostgres: { backend: { id: 'postgres' } },
+        onExternal: { backend: { id: 'gdrive-1' } }
+      }
+    })
+    const backends = new ServerBackends({
+      backends: [fs, postgres],
+      controlPlaneId: 'postgres'
+    })
+    const spaceId = 'S1'
+    const of = (collectionId: string) =>
+      backends.dataBackendOf({ spaceId, collectionId })
+    assert.equal(await of('onDefault'), fs)
+    assert.equal(await of('onFs'), fs)
+    assert.equal(await of('onPostgres'), backends.controlPlane)
+    // An external backend and an absent Collection read as the control
+    // plane, which answers the read as it would without the lookup.
+    assert.equal(await of('onExternal'), backends.controlPlane)
+    assert.equal(await of('absent'), backends.controlPlane)
+  })
+
+  it('refuses no backend, a duplicate id, a `default` id, and an unknown default or control plane', () => {
     assert.throws(
       () => new ServerBackends({ backends: [] }),
       /No storage backend is configured/
@@ -107,6 +198,14 @@ describe('ServerBackends', () => {
           defaultId: 'postgres'
         }),
       /WAS_DEFAULT_BACKEND names "postgres", which is not a configured/
+    )
+    assert.throws(
+      () =>
+        new ServerBackends({
+          backends: [stub({ id: 'fs' })],
+          controlPlaneId: 'postgres'
+        }),
+      /WAS_CONTROL_PLANE_BACKEND names "postgres", which is not a configured/
     )
   })
 

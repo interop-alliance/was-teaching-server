@@ -16,6 +16,7 @@ import type { ISigner } from '@interop/data-integrity-core'
 import type { DIDDoc } from '@interop/did-method-webvh'
 import { isServerFault } from '../errors.js'
 import type { StorageBackend } from '../types.js'
+import type { ServerBackends } from './serverBackends.js'
 import {
   resolveServerDid,
   serverKeyPair,
@@ -42,7 +43,9 @@ import {
  * under `capabilityInvocation`. `reason` says the same for a person to read.
  *
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.storage {StorageBackend}   the control plane
+ * @param options.serverBackends {ServerBackends}   the set `storage` is the
+ *   control plane of
  * @param options.serverUrl {string}
  * @param [options.signingKey] {ServerSigningKey}   the key derived from
  *   `WAS_SERVER_KEY_SEED`, absent when the seed is unset
@@ -54,11 +57,13 @@ import {
  */
 export async function loadSyncSigner({
   storage,
+  serverBackends,
   serverUrl,
   signingKey,
   logger
 }: {
   storage: StorageBackend
+  serverBackends: ServerBackends
   serverUrl: string
   signingKey: ServerSigningKey | undefined
   logger: FastifyBaseLogger
@@ -76,6 +81,7 @@ export async function loadSyncSigner({
   }
   const serverDid = await resolveServerDid({
     storage,
+    serverBackends,
     serverUrl,
     signingKey,
     logger
@@ -90,7 +96,12 @@ export async function loadSyncSigner({
   }
   let doc: DIDDoc
   try {
-    doc = await resolveWebvhController({ storage, serverUrl, did: serverDid })
+    doc = await resolveWebvhController({
+      storage,
+      serverBackends,
+      serverUrl,
+      did: serverDid
+    })
   } catch (err) {
     // A storage fault says nothing about the log, and keeps its 5xx.
     if (isServerFault(err)) {

@@ -35,7 +35,8 @@ import {
   REPLICATION_PULL_INTERVAL_MS
 } from '../config.default.js'
 import { PeerRequestError, ProblemError } from '../errors.js'
-import { DEFAULT_BACKEND_ID } from '../lib/serverBackends.js'
+import { ensureCollectionCopy } from '../lib/backendMirror.js'
+import type { ServerBackends } from '../lib/serverBackends.js'
 import { bufferedBodyLimit } from '../lib/bodyLimit.js'
 import { generationOfEtag } from '../lib/etag.js'
 import { invalidateCollectionGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
@@ -56,7 +57,11 @@ import {
   invalidateCollectionPolicies,
   invalidatePolicy
 } from '../lib/policyCache.js'
-import { type ApplyResult, isReceivableStamp } from '../lib/replicaApply.js'
+import {
+  type ApplyResult,
+  isReceivableStamp,
+  registrationStands
+} from '../lib/replicaApply.js'
 import type { ServerSigningKey } from '../lib/serverIdentity.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { loadSyncSigner } from '../lib/syncIdentity.js'
@@ -71,6 +76,7 @@ import {
   invalidateResolvedWebvhDid
 } from '../lib/webvhController.js'
 import type {
+  CollectionMetadata,
   IDID,
   PolicyDocument,
   ReplicaCollectionState,
@@ -167,6 +173,9 @@ export class ReplicationManager {
    * The transport to a peer, which a registration's checks read through too.
    */
   readonly peerFetch: PeerFetch
+  #serverBackends: ServerBackends
+  // The control plane, which holds the registrations and every container
+  // object, and takes every apply but a Resource's.
   #storage: StorageBackend
   #getServerUrl: () => string
   #signingKey?: ServerSigningKey
@@ -178,7 +187,9 @@ export class ReplicationManager {
 
   /**
    * @param options {object}
-   * @param options.storage {StorageBackend}
+   * @param options.serverBackends {ServerBackends}   the server backends;
+   *   their control plane takes every apply but a Resource's, which goes to
+   *   the backend the Collection's `backend.id` selects
    * @param options.getServerUrl {() => string}   this server's base URL,
    *   read per cycle since a test boot sets it after `listen()`
    * @param [options.signingKey] {ServerSigningKey}   the server's seed key;
@@ -189,21 +200,22 @@ export class ReplicationManager {
    *   that reached the peer; defaults to `REPLICATION_PULL_INTERVAL_MS`
    */
   constructor({
-    storage,
+    serverBackends,
     getServerUrl,
     signingKey,
     peerFetch,
     logger,
     pullIntervalMs = REPLICATION_PULL_INTERVAL_MS
   }: {
-    storage: StorageBackend
+    serverBackends: ServerBackends
     getServerUrl: () => string
     signingKey: ServerSigningKey | undefined
     peerFetch: PeerFetch
     logger: FastifyBaseLogger
     pullIntervalMs?: number
   }) {
-    this.#storage = storage
+    this.#serverBackends = serverBackends
+    this.#storage = serverBackends.controlPlane
     this.#getServerUrl = getServerUrl
     this.#signingKey = signingKey
     this.peerFetch = peerFetch
@@ -546,6 +558,7 @@ export class ReplicationManager {
     const serverUrl = this.#getServerUrl()
     const sync = await loadSyncSigner({
       storage: this.#storage,
+      serverBackends: this.#serverBackends,
       serverUrl,
       signingKey: this.#signingKey,
       logger: this.#logger
@@ -884,21 +897,58 @@ export class ReplicationManager {
    * @returns {Promise<CollectionOutcome>}
    */
   async #pullCollection(options: CollectionPull): Promise<CollectionOutcome> {
-    const { spaceId, collectionId, collection, peer, peerSpaceId, peerUrl } =
-      options
+    const {
+      spaceId,
+      replicaId,
+      collectionId,
+      collection,
+      peer,
+      peerSpaceId,
+      peerUrl
+    } = options
 
-    const held = await this.#storage.getCollectionMetadata({
+    const stored = await this.#storage.getCollectionMetadata({
       spaceId,
       collectionId
     })
-    if (
-      held === undefined ||
-      collection.generation === undefined ||
-      held.metaGeneration !== collection.generation
-    ) {
-      const ensured = await this.#pullCollectionMetadata(options)
-      if (ensured !== 'done') {
-        return ensured
+    // The stored object is the peer's life of the Collection when its
+    // generation is the one the loop state holds; otherwise it is pulled.
+    const held =
+      collection.generation !== undefined &&
+      stored?.metaGeneration === collection.generation
+        ? stored
+        : await this.#pullCollectionMetadata(options)
+    if (typeof held === 'string') {
+      return held
+    }
+    // The feed's Resource documents are applied to the Collection's data
+    // plane, the server backend its stored `backend.id` selects. A backend
+    // other than the control plane needs its copy of the Collection, which a
+    // fault after an earlier apply may have left out: without it the data
+    // backend skips every Resource, and the checkpoint would pass them by.
+    // The copy write is a step of the pull, so a refusal (the quota, a
+    // Space gone) stalls this Collection alone.
+    const dataBackend = this.#serverBackends.resolve(held.backend?.id)
+    if (dataBackend === undefined) {
+      return this.#recordStall({
+        ...options,
+        ...unsupportedBackendStall(held.backend?.id)
+      })
+    }
+    if (dataBackend !== this.#storage) {
+      const copied = await this.#applyStep({
+        pull: options,
+        apply: () =>
+          ensureCollectionCopy({
+            serverBackends: this.#serverBackends,
+            backend: dataBackend,
+            spaceId,
+            collectionId,
+            metadata: held
+          })
+      })
+      if ('ended' in copied) {
+        return copied.ended
       }
     }
 
@@ -921,11 +971,12 @@ export class ReplicationManager {
         page = await peer.readJson({
           url,
           expect: [200, 400],
-          // One document alone may hold a body as large as a JSON upload.
+          // One document alone may hold a body as large as a JSON upload
+          // into the backend the Resource is applied to.
           ...(limit === 1 && {
             maxBytes:
               REPLICATION_DOCUMENT_MAX_BYTES +
-              bufferedBodyLimit(this.#storage.maxUploadBytes)
+              bufferedBodyLimit(dataBackend.maxUploadBytes)
           })
         })
       } catch (err) {
@@ -960,10 +1011,20 @@ export class ReplicationManager {
       const documents = Array.isArray(page.json.documents)
         ? page.json.documents.filter(isPlainObject)
         : []
+      // One registration verdict covers the Resource applies of a page.
+      const registration = await this.#dataBackendRegistration({
+        dataBackend,
+        spaceId,
+        replicaId
+      })
+      if (registration === undefined) {
+        return 'unregistered'
+      }
+      const dataPlane = { backend: dataBackend, ...registration }
       for (const document of documents) {
         const step = await this.#applyStep({
           pull: options,
-          apply: () => this.#applyChange({ ...options, document })
+          apply: () => this.#applyChange({ ...options, document, dataPlane })
         })
         if ('ended' in step) {
           return step.ended
@@ -997,16 +1058,18 @@ export class ReplicationManager {
   }
 
   /**
-   * Reads the peer's Collection Metadata object and applies it. On `done`
-   * this server holds the peer's life of the Collection, and `collection`
-   * carries its generation.
+   * Reads the peer's Collection Metadata object and applies it. On `held`
+   * this server holds the peer's life of the Collection, `collection`
+   * carries its generation, and `held` is the object as stored.
    * @param options {object}   the pull context, the Collection id and its
    *   loop state
-   * @returns {Promise<CollectionOutcome>}
+   * @returns {Promise<CollectionMetadata | 'pending' | 'unregistered'>}   the
+   *   held object, now the peer's life of the Collection, or the outcome
+   *   that stops the pull
    */
   async #pullCollectionMetadata(
     options: CollectionPull
-  ): Promise<CollectionOutcome> {
+  ): Promise<CollectionMetadata | Exclude<CollectionOutcome, 'done'>> {
     const {
       spaceId,
       replicaId,
@@ -1038,18 +1101,17 @@ export class ReplicationManager {
           'creating stamp, or no validator.'
       })
     }
-    // The apply path checks the replica registration on the backend it writes
-    // to, and the registration is stored on the default backend alone, so a
-    // Collection selecting any other backend id stalls, a server backend of
-    // this deployment included.
+    // A `backend.id` keeps its meaning across servers. `default` is this
+    // server's default through its alias. A fixed id (`fs`, `postgres`)
+    // selects this deployment's backend of that id. An id this deployment
+    // does not configure, or a backend registered on the peer, stalls before
+    // the object is stored, so no Collection here names a backend that
+    // cannot serve it.
     const backendId = metadata.backend?.id
-    if (backendId !== undefined && backendId !== DEFAULT_BACKEND_ID) {
+    if (this.#serverBackends.resolve(backendId) === undefined) {
       return this.#recordStall({
         ...options,
-        reason: 'unsupported-backend',
-        detail:
-          `The Collection selects backend "${backendId}" on the peer. ` +
-          'This server replicates into its own default backend only.'
+        ...unsupportedBackendStall(backendId)
       })
     }
 
@@ -1075,7 +1137,7 @@ export class ReplicationManager {
       spaceId,
       collectionId
     })
-    if (held?.metaGeneration !== generation) {
+    if (held === undefined || held.metaGeneration !== generation) {
       // This server holds a tombstone, or a life of the Collection that wins
       // over the peer's. Its members are not pulled into that life.
       collection.state = 'skipped'
@@ -1090,18 +1152,22 @@ export class ReplicationManager {
     }
     collection.state = 'syncing'
     delete collection.stall
-    return 'done'
+    return held
   }
 
   /**
    * Applies one change document of a peer's feed, by `kind`. A `kind` this
    * server does not know is skipped.
    * @param options {object}   the pull context, the Collection id and its
-   *   loop state, and the change document
+   *   loop state, the change document, and the Collection's data plane with
+   *   the `replicaId` a Resource apply there runs under
    * @returns {Promise<ChangeResult>}
    */
   async #applyChange(
-    options: CollectionPull & { document: Record<string, unknown> }
+    options: CollectionPull & {
+      document: Record<string, unknown>
+      dataPlane: { backend: StorageBackend; replicaId?: string }
+    }
   ): Promise<ChangeResult> {
     const { document, spaceId, collectionId } = options
     // A Resource change drops its own cache, and a Collection Metadata change
@@ -1116,7 +1182,7 @@ export class ReplicationManager {
         return { outcome: 'unregistered' }
       }
       // The read itself recorded a stall or a skip in the loop state.
-      return { outcome: outcome === 'done' ? 'skipped' : 'pending' }
+      return { outcome: outcome === 'pending' ? 'pending' : 'skipped' }
     }
     if (document.kind === 'log') {
       const result = await this.#applyLogChange(options)
@@ -1144,15 +1210,16 @@ export class ReplicationManager {
    */
   async #applyResourceChange({
     spaceId,
-    replicaId,
     collectionId,
     peer,
     peerSpaceId,
     peerUrl,
-    document
+    document,
+    dataPlane: { backend: dataBackend, replicaId }
   }: PullContext & {
     collectionId: string
     document: Record<string, unknown>
+    dataPlane: { backend: StorageBackend; replicaId?: string }
   }): Promise<ChangeResult> {
     const resourceId = document.id
     const stamp = receivedStampOf(document)
@@ -1182,7 +1249,7 @@ export class ReplicationManager {
     }
 
     if (document.deleted === true) {
-      const result = await this.#storage.applyResource({
+      const result = await dataBackend.applyResource({
         ...members,
         resource: { deleted: true, contentType }
       })
@@ -1227,7 +1294,7 @@ export class ReplicationManager {
     const { input, release } = acquired
     let result: ApplyResult
     try {
-      result = await this.#storage.applyResource({
+      result = await dataBackend.applyResource({
         ...members,
         ...(typeof createdAt === 'string' && { createdAt }),
         resource: {
@@ -1258,8 +1325,49 @@ export class ReplicationManager {
       collectionId,
       resourceId,
       document,
+      dataBackend,
       contentResult: result
     })
+  }
+
+  /**
+   * The `replicaId` a Resource apply into the Collection's data plane runs
+   * under. On the control plane it is the registration's: the apply reads
+   * the registration inside its critical section. Another server backend
+   * holds no registrations. For it the registration is checked here, on the
+   * control plane, by the rule the apply uses (`registrationStands`), and
+   * the apply then runs under no `replicaId`, as a copy of a control-plane
+   * record does. That backend still requires its copy of the Space and a
+   * live copy of the Collection.
+   * @param options {object}
+   * @param options.dataBackend {StorageBackend}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<{ replicaId?: string } | undefined>}   `undefined`
+   *   when the registration is gone, or was made for an earlier life of the
+   *   Space
+   */
+  async #dataBackendRegistration({
+    dataBackend,
+    spaceId,
+    replicaId
+  }: {
+    dataBackend: StorageBackend
+    spaceId: string
+    replicaId: string
+  }): Promise<{ replicaId?: string } | undefined> {
+    if (dataBackend === this.#storage) {
+      return { replicaId }
+    }
+    const [registration, space] = await Promise.all([
+      this.#storage.getReplica({ spaceId, replicaId }),
+      this.#storage.getSpaceMetadata({ spaceId })
+    ])
+    const stands = registrationStands({
+      registeredUnder: registration?.spaceGeneration,
+      spaceGeneration: space?.metaGeneration
+    })
+    return stands ? {} : undefined
   }
 
   /**
@@ -1320,10 +1428,13 @@ export class ReplicationManager {
    * content was applied or skipped.
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.replicaId {string}
+   * @param [options.replicaId] {string}   the id the apply runs under: the
+   *   registration's on the control plane, none on another server backend
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.document {Record<string, unknown>}
+   * @param options.dataBackend {StorageBackend}   the backend that serves
+   *   the Collection's data plane
    * @param options.contentResult {ApplyResult}   the content apply's result,
    *   which stands when there is no meta record or its apply was skipped
    * @returns {Promise<ApplyResult>}
@@ -1334,13 +1445,15 @@ export class ReplicationManager {
     collectionId,
     resourceId,
     document,
+    dataBackend,
     contentResult
   }: {
     spaceId: string
-    replicaId: string
+    replicaId: string | undefined
     collectionId: string
     resourceId: string
     document: Record<string, unknown>
+    dataBackend: StorageBackend
     contentResult: ApplyResult
   }): Promise<ApplyResult> {
     const metaRecord = document.meta
@@ -1351,7 +1464,7 @@ export class ReplicationManager {
     ) {
       return contentResult
     }
-    const metaResult = await this.#storage.applyResourceMetadata({
+    const metaResult = await dataBackend.applyResourceMetadata({
       spaceId,
       replicaId,
       collectionId,
@@ -1466,11 +1579,12 @@ export class ReplicationManager {
    * Any other error is rethrown.
    * @param options {object}
    * @param options.pull {CollectionPull}   the pull the step belongs to
-   * @param options.apply {() => Promise<T>}   the step
+   * @param options.apply {() => Promise<T>}   the step; one that answers
+   *   nothing ends the pull only by throwing
    * @returns {Promise<{ ended: 'pending' | 'unregistered' } | { result: T }>}
    *   `ended` when the pull stops, else the step's result
    */
-  async #applyStep<T extends ChangeResult>({
+  async #applyStep<T extends ChangeResult | void>({
     pull,
     apply
   }: {
@@ -1487,7 +1601,10 @@ export class ReplicationManager {
       }
       return { ended: this.#recordStall({ ...pull, ...refusal }) }
     }
-    const settled: ChangeResult = result
+    const settled: ChangeResult | void = result
+    if (settled === undefined) {
+      return { result }
+    }
     if (settled.outcome === 'unregistered') {
       return { ended: 'unregistered' }
     }
@@ -1643,6 +1760,24 @@ interface PullContext {
 type CollectionPull = PullContext & {
   collectionId: string
   collection: ReplicaCollectionState
+}
+
+/**
+ * The stall of a Collection whose `backend.id` selects no server backend of
+ * this deployment.
+ * @param [backendId] {string}   the Collection's selection
+ * @returns {{ reason: ReplicaStallReason, detail: string }}
+ */
+function unsupportedBackendStall(backendId: string | undefined): {
+  reason: ReplicaStallReason
+  detail: string
+} {
+  return {
+    reason: 'unsupported-backend',
+    detail:
+      `The Collection selects backend "${backendId}", which is not a ` +
+      'server backend this deployment configures.'
+  }
 }
 
 /**

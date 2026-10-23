@@ -232,7 +232,8 @@ rather than surfacing later as broken ZCap matching.
 | `HOST`                           | `0.0.0.0`                                           | Address to listen on. The default binds every IPv4 interface, as a container deployment needs; `HOST=localhost` binds loopback only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `DATABASE_URL`                   | (unset = no Postgres backend)                       | Configures the **PostgreSQL storage backend**: a `postgres://` connection string (e.g. `postgres://was:was@localhost:5433/was`). Schema migrations are applied automatically at startup. May be set together with `WAS_DATA_DIR`, which makes both backends available. With neither set, startup fails. See [Storage Backends](#storage-backends).                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `WAS_DATA_DIR`                   | (unset = no filesystem backend)                     | Configures the **filesystem backend** and is its root for Spaces, keystores, and revocations. There is no default directory: unset, the server has no filesystem backend. A relative value resolves against the process working directory. Point it at a scratch directory to run a test suite against a fresh server each time. See [Storage Backends](#storage-backends).                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `WAS_DEFAULT_BACKEND`            | (unset = `fs` if configured, else the only backend) | `fs` or `postgres`: the backend the conventional `default` id aliases. It is the control plane. Naming a backend that is not configured, or any other value, is a startup error. Set it once and keep it; see [Storage Backends](#storage-backends).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `WAS_DEFAULT_BACKEND`            | (unset = `fs` if configured, else the only backend) | `fs` or `postgres`: the backend the conventional `default` id aliases, the data plane of every Collection that selects `default` or no backend. Naming a backend that is not configured, or any other value, is a startup error. Set it once and keep it; see [Storage Backends](#storage-backends).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `WAS_CONTROL_PLANE_BACKEND`      | (unset = `postgres` if configured, else `fs`)       | `fs` or `postgres`: the control plane, which holds every Space and Collection Metadata object, the policies, the registrations, keystores and revocations. Unset, the database holds it whenever one is configured, while `default` stays the filesystem backend. Naming a backend that is not configured, or any other value, is a startup error. Set it once and keep it; see [Storage Backends](#storage-backends).                                                                                                                                                                                                                                                                                                                                                               |
 | `STORAGE_LIMIT_PER_SPACE`        | (unset = unlimited, warned)                         | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited, and startup logs a warning; set `unlimited` to acknowledge the choice explicitly and silence it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `MAX_UPLOAD_BYTES`               | `67108864` (64 MiB)                                 | Per-upload size cap in **bytes** (spec "Quotas", the backend's `maxUploadBytes` constraint), default-on. A single upload exceeding it is rejected with `payload-too-large` (413) -- distinct from the cumulative `STORAGE_LIMIT_PER_SPACE`. Also bounds a buffered JSON or text Resource write, so both accept the same size. Set `unlimited` to remove the cap (filesystem backend only: the Postgres backend buffers each upload in memory as a single `bytea`, so it rejects `unlimited` at startup); a buffered body still falls back to a 64 MiB limit even when `unlimited` is set, since only a streamed blob write on the filesystem backend becomes uncapped.                                                                                                               |
 | `MAX_SPACES_PER_CONTROLLER`      | `100`                                               | Max number of Spaces a single controller DID may create (a default-on count quota). A create beyond the limit is rejected with `quota-exceeded` (507); overwriting an existing Space never trips it. Auxiliary Spaces (typed `AuxiliarySpace`) count toward it, and List Spaces lists them with their `type`. Set `unlimited` for no cap. Hard (transactional) on the Postgres backend, soft under concurrency on the filesystem backend -- like the byte quota.                                                                                                                                                                                                                                                                                                                     |
@@ -289,37 +290,43 @@ its own setting:
   backend only), since a buffered body is held in memory regardless of the cap.
 
 With neither setting, startup fails with "No storage backend is configured."
-`WAS_DEFAULT_BACKEND` picks the backend that the id `default` aliases. It is the
-control plane: it holds every Space and Collection Metadata object, the
-policies, the backend and replica registrations, keystores, revocations, and the
-Resources of every Collection that selects `default` or its fixed id. A client
-selects the other backend per Collection with `backend: { id: 'postgres' }` (or
-`'fs'`). `GET /space/:spaceId/backends` lists the `default` alias entry first,
-then each configured backend under its fixed id (the default first), then the
+`WAS_DEFAULT_BACKEND` picks the backend that the id `default` aliases: the data
+plane of every Collection that selects `default` or no backend. A client selects
+the other backend per Collection with `backend: { id: 'postgres' }` (or `'fs'`).
+`WAS_CONTROL_PLANE_BACKEND` picks the control plane, which holds every Space and
+Collection Metadata object, the policies, the backend and replica registrations,
+keystores and revocations, whatever a Collection selects. Unset, it is
+`postgres` when that backend is configured, else `fs`. So a deployment with both
+backends and neither setting keeps its records in the database and its Resource
+bytes on disk; set `WAS_CONTROL_PLANE_BACKEND=fs` to keep everything on disk.
+`GET /space/:spaceId/backends` lists the `default` alias entry first, then each
+configured backend under its fixed id (the control plane first), then the
 Space's registered external backends. Registering an external backend under
 `default`, `fs` or `postgres` is refused.
 
-A Collection on the non-default backend has its Resources, chunks, listings and
-`changes` feed served by that backend. That backend refuses a write whose Space
-or Collection Metadata object is absent from its own store, so the server keeps
-a copy (a mirror) of each there, of the Collection's governing history log once
-it has one, and of each policy in the Collection. Reads never consult the copy,
-and the Delete calls remove it. The Collection's `changes` feed serves its
-`collection-metadata`, `log` and `policy` documents under the control plane's
-validator, the one a GET of the record answers. The write-through to the copy is
-not atomic, and a fault is brought level by the next write or a retried request.
-A Collection's `backend` cannot change once set (409 `backend-immutable`).
-`GET /space/:id/quotas` returns one `backends` entry per server backend under
-its fixed id, and each enforces `STORAGE_LIMIT_PER_SPACE` against its own
-per-Space usage. Export Space composes one archive across the backends, and
-Import Space splits it back to them.
+A Collection on a backend other than the control plane has its Resources,
+chunks, listings and `changes` feed served by that backend. That backend refuses
+a write whose Space or Collection Metadata object is absent from its own store,
+so the server keeps a copy (a mirror) of each there, of the Collection's
+governing history log once it has one, and of each policy in the Collection.
+Reads never consult the copy, and the Delete calls remove it. The Collection's
+`changes` feed serves its `collection-metadata`, `log` and `policy` documents
+under the control plane's validator, the one a GET of the record answers. The
+write-through to the copy is not atomic, and a fault is brought level by the
+next write or a retried request. A Collection's `backend` cannot change once set
+(409 `backend-immutable`). `GET /space/:id/quotas` returns one `backends` entry
+per server backend under its fixed id, and each enforces
+`STORAGE_LIMIT_PER_SPACE` against its own per-Space usage. Export Space composes
+one archive across the backends, and Import Space splits it back to them.
 
 A Collection's `backend.id` is stored as sent. Changing `WAS_DEFAULT_BACKEND` on
 a store that already has Collections therefore moves every `default`
 Collection's data plane to the other backend, and its Resources appear missing.
-Set it once. The origin id must be one value across the backends. When adding
-Postgres beside an existing filesystem store, set `WAS_ORIGIN_ID` to the
-filesystem store's id, which the fresh Postgres store adopts.
+Changing `WAS_CONTROL_PLANE_BACKEND` moves where every Space is looked up, so
+every Space appears missing. Set both once. The origin id must be one value
+across the backends. When adding Postgres beside an existing filesystem store,
+set `WAS_ORIGIN_ID` to the filesystem store's id, which the fresh Postgres store
+adopts.
 
 Each backend assumes one server process per store. Every versioned write carries
 a write stamp minted by the store's clock under the store's origin id, and two

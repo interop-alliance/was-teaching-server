@@ -336,6 +336,7 @@ export class KeystoreRequest {
       try {
         await resolveWebvhController({
           storage,
+          serverBackends: request.server.serverBackends,
           serverUrl,
           did: body.controller
         })

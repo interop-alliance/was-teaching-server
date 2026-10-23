@@ -255,12 +255,14 @@ export async function initServiceDescriptionRoutes(
   fastify.get(
     serviceDescriptionPath(),
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { serverUrl, serverSigningKey, storage } = request.server
+      const { serverUrl, serverSigningKey, storage, serverBackends } =
+        request.server
       const did =
         serverSigningKey === undefined
           ? undefined
           : await resolveServerDid({
               storage,
+              serverBackends,
               serverUrl,
               signingKey: serverSigningKey,
               logger: request.log

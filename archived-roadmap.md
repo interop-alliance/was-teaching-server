@@ -6191,3 +6191,49 @@ those stay on the default backend. Either the control-plane writes of those
 records take a position in the data backend's feed, or the feed is composed from
 both stores. Whichever is picked has to keep one per-Collection position
 sequence.
+
+### WAS-218: [M] (*) Replicate into a Collection on a non-default server backend
+
+- status: done
+- done: 2026-10-23
+- priority: medium
+- backend: *
+- labels: backend, replication
+- discovered-from: WAS-216 (2026-10-22)
+- acceptance:
+  - [x] The pull loop applies a peer Collection whose `backend.id` names a
+        server backend of this deployment into that backend, through its
+        `apply*` methods, under the peer's stamps
+  - [x] The replica registration the apply path checks is found whichever
+        backend the write lands on
+  - [x] The loop routes the Collection's Resource, chunk and `/meta` applies to
+        the selected backend, as the request layer's data-plane resolver does,
+        and the Metadata object, log, policy and tombstone applies stay on the
+        control plane
+  - [x] A test over `WAS_TEST_DATABASE_URL` replicates one such Collection
+
+The apply path refuses a write under a replica registration it cannot read from
+its own store (`guardApply`, reason `unregistered`), and registrations live on
+the default backend alone, so the loop stalls such a Collection with reason
+`unsupported-backend`.
+
+The control plane the loop writes through is the mirroring wrapper
+(`mirroringControlPlane`), so an applied Metadata object, log or tombstone of a
+Collection already held on another server backend reaches that backend's copy,
+and a replicated update keeps the held `backend` selection. What remains is the
+first apply of such a Collection from a peer and the Resource applies.
+
+Open before coding: a peer's `backend.id` names the peer's backend, not this
+server's. Whether `postgres` on the peer maps onto this deployment's `postgres`,
+or the registration states where pulled Collections land regardless of the
+peer's choice, is a wire-level decision to settle first.
+
+Shipped 2026-10-23, by the maintainer's direction: a `backend.id` keeps its
+meaning across servers (`default` through the local alias, a fixed id selects
+this deployment's backend of that id), the stored object carries the peer's id
+verbatim, and no new registration member. A Resource apply into another server
+backend runs under no `replicaId`, the policy-copy convention, after the loop
+checks the registration on the control plane; the loop brings that backend's
+copy of the Collection level before the first Resource of a cycle. Chunks are
+not replicated, so there is no chunk apply to route. The two-server test is
+`test/mixed-backends-replication.test.ts`.

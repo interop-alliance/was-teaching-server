@@ -212,7 +212,7 @@ export function sanitizeBackendRecord(
  * The backends advertised at `GET /space/:spaceId/backends`: the server's
  * own backends first (the `default` alias, then each under its fixed id),
  * followed by the Space's sanitized registered `external` backends, read from
- * the default backend, which holds the registrations. Also the single source
+ * the control plane, which holds the registrations. Also the single source
  * of a Space's selectable backends for `assertSupportedBackend` /
  * `resolveBackendDescriptor`.
  * @param options {object}
@@ -229,7 +229,7 @@ export async function listRegisteredBackends({
 }): Promise<BackendDescriptor[]> {
   return [
     ...serverBackends.describeAll(),
-    ...(await serverBackends.default.listBackends({ spaceId }))
+    ...(await serverBackends.controlPlane.listBackends({ spaceId }))
   ]
 }
 
