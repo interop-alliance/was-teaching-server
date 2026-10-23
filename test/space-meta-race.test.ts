@@ -12,6 +12,7 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { StorageBackend } from '../src/types.js'
 import { invalidateSpaceMetadata } from '../src/lib/spaceMetadataCache.js'
 import {
   requestError,
@@ -31,6 +32,13 @@ type WriteSpaceOptions = Parameters<FileSystemBackend['writeSpace']>[0]
 class InterleavingBackend extends FileSystemBackend {
   interleavings: Array<() => Promise<void>> = []
   churn?: () => Promise<void>
+  /**
+   * The server's `storage`, the control-plane wrapper the request layer reads
+   * through. The Space Metadata cache is keyed by that object, not by this
+   * backend, so a direct write invalidates through it. Set once the server
+   * is up.
+   */
+  serverStorage!: StorageBackend
 
   async writeSpace(options: WriteSpaceOptions) {
     await (this.churn ?? this.interleavings.shift())?.()
@@ -66,7 +74,7 @@ class InterleavingBackend extends FileSystemBackend {
         ...(name !== undefined && { name })
       }
     })
-    invalidateSpaceMetadata({ storage: this, spaceId })
+    invalidateSpaceMetadata({ storage: this.serverStorage, spaceId })
   }
 }
 
@@ -82,6 +90,7 @@ describe('Update Space against a concurrently changing Space', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     backend = await InterleavingBackend.open({ dataDir })
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    backend.serverStorage = fastify.storage
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
@@ -114,7 +123,7 @@ describe('Update Space against a concurrently changing Space', () => {
 
   async function deleteSpace(spaceId: string): Promise<void> {
     await backend.deleteSpace({ spaceId })
-    invalidateSpaceMetadata({ storage: fastify.storage, spaceId })
+    invalidateSpaceMetadata({ storage: backend.serverStorage, spaceId })
   }
 
   it("an update whose Space is re-created by another controller leaves the new controller's Space untouched", async () => {
