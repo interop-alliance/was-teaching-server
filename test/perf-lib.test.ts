@@ -1,9 +1,9 @@
 /**
- * Tests for the pure/injectable-dependency logic behind `pnpm perf:fs`
- * (`scripts/perf-fs-lib.ts`): CLI argument parsing, the run-length estimate,
- * the Markdown table formatting, and the three load-aggregation harnesses.
- * The subprocess/k6/WasClient wiring itself is verified by running
- * `pnpm perf:fs` once end to end, not by unit tests.
+ * Tests for the pure/injectable-dependency logic behind `pnpm perf:fs` and
+ * `pnpm perf:pg` (`scripts/performance/perf-lib.ts`): CLI argument parsing,
+ * the run-length estimate, the Markdown table formatting, and the
+ * load-aggregation harnesses. The subprocess/k6/WasClient wiring itself is
+ * verified by running `pnpm perf:fs` once end to end, not by unit tests.
  */
 import { describe, it } from 'vitest'
 import assert from 'node:assert'
@@ -15,11 +15,13 @@ import {
   formatProgressLine,
   formatScalingSummary,
   load,
+  parseLoadSettings,
   parseSizes,
   pivotRows,
   positiveInteger,
+  retryOnTimeout,
   serialWriteLoad
-} from '../scripts/perf-fs-lib.js'
+} from '../scripts/performance/perf-lib.js'
 
 describe('positiveInteger', () => {
   it('parses a valid positive integer string', () => {
@@ -496,6 +498,85 @@ describe('formatScalingSummary', () => {
     assert.ok(
       !lines.some(line => line.includes('Public read')),
       `expected the skipped test to be left out entirely, got: ${JSON.stringify(lines)}`
+    )
+  })
+})
+
+describe('retryOnTimeout', () => {
+  /**
+   * An error shaped like ky's `TimeoutError`, which was-client rethrows.
+   * @returns {Error}
+   */
+  function timeoutError(): Error {
+    const err = new Error('Request timed out.')
+    err.name = 'TimeoutError'
+    return err
+  }
+
+  it('runs the write again after a timeout, and returns its result', async () => {
+    let calls = 0
+    const result = await retryOnTimeout({
+      op: async () => {
+        calls++
+        if (calls === 1) {
+          throw timeoutError()
+        }
+        return 'stored'
+      }
+    })
+    assert.equal(result, 'stored')
+    assert.equal(calls, 2)
+  })
+
+  it('throws the timeout once every attempt timed out', async () => {
+    let calls = 0
+    await assert.rejects(
+      retryOnTimeout({
+        attempts: 3,
+        op: async () => {
+          calls++
+          throw timeoutError()
+        }
+      }),
+      { name: 'TimeoutError' }
+    )
+    assert.equal(calls, 3)
+  })
+
+  it('does not retry any other error', async () => {
+    let calls = 0
+    await assert.rejects(
+      retryOnTimeout({
+        op: async () => {
+          calls++
+          throw new Error('403 Forbidden')
+        }
+      }),
+      /403/
+    )
+    assert.equal(calls, 1)
+  })
+})
+
+describe('parseLoadSettings', () => {
+  const values = { clients: '5', duration: '10', writes: '100' }
+
+  it('runs the 10 MiB tests with every client unless capped', () => {
+    assert.equal(parseLoadSettings(values).largeFileClients, 5)
+  })
+
+  it("takes --large-file-clients as the 10 MiB tests' client count", () => {
+    assert.equal(
+      parseLoadSettings({ ...values, 'large-file-clients': '2' })
+        .largeFileClients,
+      2
+    )
+  })
+
+  it('rejects a --large-file-clients that is not a positive integer', () => {
+    assert.throws(
+      () => parseLoadSettings({ ...values, 'large-file-clients': '0' }),
+      /positive integer/
     )
   })
 })

@@ -401,15 +401,16 @@ server unreachable.
 
 `pnpm perf:fs` measures the filesystem backend of the checked-out code. It
 starts the server as its own process on a fresh temp data dir (with
-`DATABASE_URL` and `WAS_ONBOARDING_TOKEN` cleared), fills Collections of 1 and
-500 Resources, runs the tests, prints one Markdown table, and stops the server.
-To compare two versions, run it on each.
+`DATABASE_URL` and `WAS_ONBOARDING_TOKEN` cleared), fills Collections of 1, 500
+and 2,000 Resources (pass `--sizes` for others) and the payload matrix below,
+runs the tests, prints the Markdown tables, and stops the server. To compare two
+versions, run it on each.
 
 ```bash
-# Quick run, about 5 minutes:
+# Quick run, about 15 minutes filling fresh (8 from a seed, below):
 pnpm perf:fs
-# Full run, about 15 minutes:
-pnpm perf:fs --sizes 1,500,2000 --duration 20 --writes 300
+# Full run, about 22 minutes (15 from a seed):
+pnpm perf:fs --duration 20 --writes 300
 # Other sizes, client counts, test lengths (seconds) and in-a-row write counts:
 pnpm perf:fs --sizes 1,10000 --clients 10 --duration 30 --writes 500
 # Other server settings come from the environment as usual:
@@ -433,25 +434,123 @@ time, and reports requests per second, average latency in ms, and failures:
 Every test that writes or deletes gets fresh data of its own size, so filling
 Collections is a large part of a run, and it grows with the sizes. A run prints
 an estimate of its length when it starts. It uses port 4455 (override with
-`PORT=...`) and keeps the table and the server log in a temp dir, whose path it
-prints at the end. The numbers depend on the machine, so compare runs made on
-the same one.
+`PORT=...`), and before starting its server it stops whatever else listens
+there, naming each process it stops. That includes another `pnpm perf:fs` or
+`pnpm perf:pg` run's server, so only one run measures at a time; the stopped run
+fails rather than reporting numbers. A run also fails as soon as its own server
+exits. It keeps the table and the server log in a temp dir, whose path it prints
+at the end. The numbers depend on the machine, so compare runs made on the same
+one.
 
 Filling is the slow part at larger sizes: `pnpm perf:fs:seed` pre-fills a data
-dir once, directly through `FileSystemBackend`'s own write methods (no HTTP, no
-signing), and `pnpm perf:fs --seed-dir <path>` copies it into each run instead
-of refilling over signed HTTP every time. `--sizes` is ignored when `--seed-dir`
-is given -- the sizes come from the seed dir itself, and the original is left
-untouched (each run copies it, so it can be reused). Reseed with
+dir (`.perf-fs-seed`) once, directly through `FileSystemBackend`'s own write
+methods (no HTTP, no signing; only the payload matrix goes over HTTP, as below).
+Like `pnpm perf:pg`, `pnpm perf:fs` then uses that seed whenever it exists,
+copying it into each run instead of refilling over signed HTTP; the sizes come
+from the seed, and the original is left untouched, so it can be reused. With no
+seed it fills fresh, and passing `--sizes` fills fresh with those sizes even
+when a seed exists. `--seed-dir <path>` names a seed elsewhere (one written with
+`pnpm perf:fs:seed --out <path>`). Each run prints which it did. Reseed with
 `pnpm perf:fs:seed` again after a Collection-size change, or whenever you want a
 clean baseline.
 
 ```bash
-# Seed once, with the sizes you want to test:
-pnpm perf:fs:seed --sizes 1,500,2000
+# Seed once, with Collections of 1, 500 and 2,000 Resources (pass `--sizes`
+# for others):
+pnpm perf:fs:seed
 # Then run against it, as many times as you like:
-pnpm perf:fs --seed-dir .perf-fs-seed --duration 20 --writes 300
+pnpm perf:fs --duration 20 --writes 300
 ```
+
+`pnpm perf:pg` runs the same tests against the Postgres backend instead, against
+a local Postgres container the repo's `docker-compose.yml` defines
+(`postgres:16-alpine`, matching `pnpm test:pg`'s connection convention):
+
+```bash
+# Start Postgres once:
+docker compose up -d
+# Seed a fixed schema (`perf`) with Collections of 1, 500 and 2,000 Resources
+# (pass `--sizes` for others), the payload matrix below, and 100 MiB of binary
+# ballast (pass `--binary-total-mib` for more or less) -- this always resets the
+# schema, so reseed after a size change or whenever you want a clean baseline:
+pnpm perf:pg:seed
+# Then run against it, as many times as you like; the seeded data is left in
+# place afterward:
+pnpm perf:pg --duration 20 --writes 300
+```
+
+Unlike `pnpm perf:fs`, there is no over-HTTP seeding fallback: `pnpm perf:pg`
+always reads the sizes, the signing identity and the encrypted read targets' ids
+that `pnpm perf:pg:seed` recorded in `.perf-pg-seed/seed-meta.json`. The seed
+writes the Collection-size data straight through `PostgresBackend`, since
+seeding thousands of Resources one signed HTTP request at a time is much slower.
+Override the connection string with `--database-url` (or `DATABASE_URL`) if
+Postgres is not at the default `postgres://was:was@localhost:5433/was`.
+
+After the Collection-size tests, `pnpm perf:fs` and `pnpm perf:pg` both run a
+payload matrix and report it as a second table. It reads and writes three
+payloads (a JSON credential, a 100 KiB file and a 10 MiB file) in three kinds of
+Collection: a public one (`PublicCanRead`, read unsigned through k6), a private
+plaintext one, and a private encrypted one (`edv`). Each cell counts whole
+files. In the encrypted Collection a 100 KiB file is one EDV document, while a
+10 MiB file is one document plus ten 1 MiB chunks, so one write is 12 requests
+(the document, each chunk, the document again) and one read is 11.
+
+The encrypted Collection is set up the way freewallet sets up its own: the seed
+uses `@interop/was-client` with a throwaway X25519 key, installs the key epoch
+with a blinded-index key, and writes real EDV envelopes and chunks. That part of
+the seed runs over signed HTTP (through an in-process server on the same backend
+for `pnpm perf:pg:seed` and `pnpm perf:fs:seed`, and against the server under
+test for a fresh `pnpm perf:fs` run), because was-client is what makes the
+envelopes. Timed encrypted writes send copies of the stored envelopes and chunks
+at fresh ids, and no read decrypts, so the numbers measure the server rather
+than client-side crypto. Binary writes in every Collection create a file, timed,
+then delete it, untimed, so repeated runs don't fill the database. JSON writes
+create a new Resource each time.
+
+`pnpm perf:remote` runs the same tests against a server that is already
+deployed, such as a staging host, instead of a local one. It starts no server
+and nothing can be seeded behind the server's back, so it fills fresh over
+signed HTTP under a throwaway `did:key`, and deletes the Spaces it created when
+the run ends, even when a test fails or you stop it with Ctrl-C. A second Ctrl-C
+exits at once and skips that cleanup; the identity's key is never saved, so
+Spaces left that way can only be removed on the server itself. The server must
+allow Space creation (no `WAS_ONBOARDING_TOKEN`).
+
+```bash
+# Compare two deployed backends from the same machine, one after the other.
+# `--payloads json,small` leaves out the 10 MiB file, which an uplink slower
+# than about 1 MB/s can't send within was-client's 10 s request timeout:
+pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem" --payloads json,small
+pnpm perf:remote --url https://postgres.staging.freewallet.me --label "Postgres" --payloads json,small
+# From a fast uplink, leave `--payloads` out to run all three payloads, the
+# same matrix as `pnpm perf:fs` and `pnpm perf:pg`:
+pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem"
+# From far away, use more clients so the round trip doesn't cap every rate
+# (5 clients / 185 ms is about 27 req/s):
+pnpm perf:remote --url https://staging.freewallet.me --clients 25 --payloads json,small
+# From a machine with little memory (512 MB), cap the clients of the 10 MiB
+# tests: five clients each sending a 10 MiB file run Node out of memory there:
+pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem" --large-file-clients 2
+```
+
+Every number includes the round trip from the machine running it, so compare
+runs made from the same machine against hosts in the same region.
+`--large-file-clients` (`pnpm perf:fs`, `pnpm perf:pg` and `pnpm perf:remote`
+take it; it defaults to `--clients`) runs only the payload matrix's 10 MiB tests
+with fewer clients, and the report header names the cap, so compare a capped run
+only with one capped the same way. Without `--payloads json,small`, a run from a
+slow uplink stops while filling, with
+`Request to ".../space/perf-matrix-read/public/large" timed out.`, and deletes
+the Spaces it created so far.
+
+The ballast, seeded by `pnpm perf:pg:seed` only, is extra 10 MiB files in a
+`perf-ballast` Space that no test reads. It grows the database past what
+Postgres keeps in its own cache, so the binary reads aren't served purely from
+memory. `pnpm perf:fs` seeds none: the filesystem backend's cache is the OS page
+cache, which can hold all free RAM, so ballast small enough to copy into every
+run could not push the matrix files out of it. Filesystem reads are page-cache
+reads either way.
 
 ## Security
 
