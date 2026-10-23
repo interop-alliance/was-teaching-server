@@ -6057,3 +6057,113 @@ ahead of a body-derived 400/409, recorded in the CHANGELOG.
   - [x] A multipart create's 201 echoes the stored `content-type`, not the
         request envelope's
   - [x] `test/` covers each case
+
+### WAS-216: [M] (*) Second server-managed backend: filesystem and Postgres side by side, selectable per Collection
+
+- status: done
+- done: 2026-10-22
+- priority: medium
+- backend: *
+- labels: backend, postgres, filesystem-backend
+- discovered-from: question about per-Collection backends (2026-10-22)
+- touches:
+  - `src/start.ts`, `src/config.default.ts`, `src/plugin.ts`,
+    `src/lib/backends.ts`, `src/lib/backendRegistry.ts`,
+    `src/requests/collectionInput.ts`, `src/types.ts`, README.md "Storage
+    Backends", docs/admin-guide.md (all shipped 2026-10-22, plus
+    `src/lib/serverBackends.ts`, `src/lib/backendMirror.ts`,
+    `src/lib/exportArchive.ts`, `src/lib/importAcrossBackends.ts`)
+  - `@interop/space-archive`: the fixture archives' `backends` listing
+    regenerated under the fixed id `fs` (0.8.2 TBD, publish pending)
+- acceptance:
+  - [x] A deployment configures both a filesystem data dir and a Postgres
+        connection, names one of them the server's `default` backend with
+        `WAS_DEFAULT_BACKEND=fs|postgres`, and the other is operable in the same
+        process; a value naming an unconfigured backend refuses to start
+  - [x] `GET /space/:spaceId/backends` lists both as server-managed entries
+        (`fs` and `postgres`) in every Space, with `default` aliasing the
+        configured one; a Collection created with `backend.id` naming the
+        non-default one has its Resources, listings and `changes` feed served by
+        that backend, while the Space and Collection Metadata objects, policies
+        and backend records stay in the default backend
+  - [x] A Collection on the non-default backend counts toward the Space's quota
+        and appears in `GET /quotas` and the Collection quota read
+  - [x] Export Space archives a Space whose Collections span both backends, and
+        Import Space restores each Collection onto the backend its archived
+        Metadata object names (or refuses with `unsupported-backend` when that
+        backend is not configured)
+  - [x] A server configured with only one backend behaves exactly as today: one
+        `default` entry, no second id selectable
+  - [x] Test: one suite boots a server over a temp data dir plus
+        `WAS_TEST_DATABASE_URL`, creates one Collection on each backend, and
+        asserts where the bytes landed
+
+Goal: deploy with both a filesystem and a Postgres backend, set one of them as
+the default, and switch per Collection.
+
+Today the two are a whole-server choice: `DATABASE_URL` in `start.ts` swaps the
+default backend from filesystem to Postgres for everything. The per-Collection
+resolver (`src/lib/backendRegistry.ts`) already splits the data plane from the
+control plane, but it only reaches a second backend through a
+`managedBy: external` registration on one Space, built by a provider adapter
+from the injected `providers` map, which the production start script leaves
+empty. The server's own backends are not registrations: `src/lib/backends.ts`
+builds one `default` descriptor from the active `StorageBackend` and says the
+indirection "leaves room for multiple registered backends later". This item is
+that room.
+
+Shape, decided 2026-10-22 by the maintainer: a second server-managed entry in
+the backends-available list, present in every Space without a registration. The
+two server backends carry the fixed ids `fs` and `postgres`; `default` is an
+alias of whichever one the deployment picked. The resolver short-circuits to
+either as it does for `default` today, with no control-plane record read, no
+adapter cache and no `providers` factory. `managedBy: external` and the
+`providers` registry stay for storage the server does not own. The alternative
+considered and rejected: a Postgres provider adapter in the `providers`
+registry, registered on each Space through `POST /backends`, which would make a
+connection the server already holds a per-Space secret-bearing record.
+
+Config, decided 2026-10-22 by the maintainer: `WAS_DEFAULT_BACKEND=fs|postgres`
+names the default. A backend is configured when its own setting is present
+(`WAS_DATA_DIR`, defaulting to `data/`, for `fs`; `DATABASE_URL` for
+`postgres`), so a deployment with `DATABASE_URL` set has both. Unset,
+`WAS_DEFAULT_BACKEND` keeps today's rule (`postgres` when `DATABASE_URL` is set,
+else `fs`); a value naming an unconfigured backend refuses to start. Both
+backends take the same storage options (`maxUploadBytes`,
+`maxSpacesPerController`, `maxCollectionsPerSpace`, `originId`); the origin id
+must be one value for the process, since both backends mint stamps for one store
+as seen by a replication peer. The item on several processes over one store
+(WAS-185) is the neighbouring question.
+
+Boundaries that follow from the current split and need a decision per path:
+
+- Quota: `capacityBytes` and usage accounting live on each backend, so a Space's
+  usage is the sum across both, or the control-plane backend owns the Space
+  total and the data-plane backend reports per-Collection usage.
+- Delete Collection and Delete Space must delete the Collection's Resources
+  through the data-plane backend (WAS-136 lists this for external backends; it
+  applies here as well).
+- Replication: the pull loop stalls any Collection whose `backend` is not
+  `default` (WAS-201); a server-managed second backend already implements the
+  `apply*` methods, so the loop only needs to resolve the data backend.
+- Export/Import: each backend's `exportSpace` / `importSpace` builds the archive
+  from its own store, so a mixed Space needs the export to walk Collections
+  through the resolver rather than ask one backend for the whole Space.
+- The Postgres storage-contract tests are still skipped (WAS-46); the mixed
+  suite depends on a Postgres being reachable from `test/`.
+
+Shipped 2026-10-22, by the maintainer's direction: the server backends are
+always a set (`ServerBackends`, `src/lib/serverBackends.ts`), each configured by
+its own setting, with `default` an alias stored verbatim in `backend.id` and
+resolved on every read; no configured backend refuses to start, and so does a
+set whose origin ids differ. `WAS_DATA_DIR` no longer defaults to `data/` at
+startup. The non-default backend keeps a copy of the Space and Collection
+Metadata objects of the Collections it serves (`src/lib/backendMirror.ts`),
+since both backends check the container and read the `unique` declarations in
+their own store. The quota report lists one entry per server backend. Export
+composes the entry trees of the backends a Space spans (`exportSpaceEntries` on
+the contract, `src/lib/exportArchive.ts`) and Import splits the plan
+(`src/lib/importAcrossBackends.ts`). Replication into a non-default server
+backend stays stalled (WAS-218); the feed of such a Collection carries no policy
+or log documents (WAS-217); a change of `backend.id` on an existing Collection
+is WAS-219.

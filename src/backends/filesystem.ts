@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import pino from 'pino'
 import type { FastifyBaseLogger } from 'fastify'
 import { LruCache } from '@interop/lru-memoize'
+import { FILESYSTEM_BACKEND_ID } from '../lib/serverBackends.js'
 import {
   ResourceImmutableError,
   StorageError,
@@ -61,8 +62,7 @@ import {
   parseResourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionLogFileName,
-  packSpaceArchive
+  collectionLogFileName
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import {
@@ -80,7 +80,7 @@ import {
   serverBackendDescriptor
 } from '../lib/backends.js'
 import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
-import { attestArchiveEntries } from '../lib/exportProvenance.js'
+import { packExportArchive } from '../lib/exportArchive.js'
 import type { ExportAttestor } from '../lib/exportProvenance.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
 import { sameMediaType } from '../lib/mediaType.js'
@@ -263,7 +263,8 @@ import type {
   ResourceMetaStamp,
   ReplicaRegistration,
   ReplicaLoopState,
-  StoredReplica
+  StoredReplica,
+  SpaceExportEntries
 } from '../types.js'
 
 /**
@@ -1043,7 +1044,10 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
-    return serverBackendDescriptor({ name: 'Server Filesystem' })
+    return serverBackendDescriptor({
+      id: FILESYSTEM_BACKEND_ID,
+      name: 'Server Filesystem'
+    })
   }
 
   /**
@@ -2473,6 +2477,34 @@ export class FileSystemBackend implements StorageBackend {
     service?: ServiceDescription
     attestor?: ExportAttestor
   }): Promise<Readable> {
+    const { entries, revocations } = await this.exportSpaceEntries({ spaceId })
+    return packExportArchive({
+      spaceId,
+      entries,
+      revocations,
+      service,
+      attestor
+    })
+  }
+
+  /**
+   * The Space's archive entry tree, read from the Space directory: every
+   * file entry carries a lazy `read()` so the bytes are fetched one file at
+   * a time while packing (an export never buffers the whole Space).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.serverBackends] {BackendDescriptor[]}   the
+   *   server-managed entries of the archived Space Metadata object's
+   *   backends listing; defaults to this backend's descriptor
+   * @returns {Promise<SpaceExportEntries>}
+   */
+  async exportSpaceEntries({
+    spaceId,
+    serverBackends
+  }: {
+    spaceId: string
+    serverBackends?: BackendDescriptor[]
+  }): Promise<SpaceExportEntries> {
     const spaceMetadata = await this.getSpaceMetadata({ spaceId })
     if (!spaceMetadata) {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
@@ -2648,7 +2680,12 @@ export class FileSystemBackend implements StorageBackend {
           archiveEntries.push({
             name: entry.name,
             read: () =>
-              archivedSpaceMetadata({ storage: this, spaceId, spaceMetadata })
+              archivedSpaceMetadata({
+                storage: this,
+                spaceId,
+                spaceMetadata,
+                serverBackends
+              })
           })
           continue
         }
@@ -2682,32 +2719,7 @@ export class FileSystemBackend implements StorageBackend {
     // A tombstone's file sorts among the Space-level files by its own name,
     // the order the Postgres backend packs in.
     archiveEntries.sort((left, right) => left.name.localeCompare(right.name))
-
-    // One signed statement per exported object, over the entry tree about to
-    // be packed, plus the log snapshot they verify against. A tombstone is a
-    // Space-level file entry, which gets no statement.
-    const provenance =
-      attestor === undefined
-        ? undefined
-        : await attestArchiveEntries({
-            spaceId,
-            entries: archiveEntries,
-            attestor
-          })
-
-    // `packSpaceArchive` resolves a tar-stream `Pack`, a streamx readable;
-    // `exportSpace` hands its callers a Node `Readable`.
-    const pack = await packSpaceArchive({
-      spaceId,
-      entries: archiveEntries,
-      revocations,
-      // Written verbatim as the archive's `service.json`; absent when the
-      // caller had no description to declare.
-      service,
-      provenance,
-      didLog: attestor?.didLog
-    })
-    return Readable.from(pack)
+    return { entries: archiveEntries, revocations }
   }
 
   /**

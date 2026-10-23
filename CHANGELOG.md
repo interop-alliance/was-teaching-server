@@ -2,6 +2,52 @@
 
 ## 0.42.3 - TBD
 
+### Added
+
+- The server's own storage backends are a set, selectable per Collection.
+  `WAS_DATA_DIR` configures the filesystem backend and `DATABASE_URL` the
+  Postgres backend; a deployment may set both, and `WAS_DEFAULT_BACKEND` (`fs`
+  or `postgres`) names the one the `default` id aliases (unset: `fs` when
+  configured, else the only one). With neither setting the server refuses to
+  start, and so does a default naming an unconfigured backend or two backends
+  whose origin ids differ (set `WAS_ORIGIN_ID` to one value). Each backend
+  carries a fixed id (`fs`, `postgres`) and `GET /space/:spaceId/backends`, the
+  Space Metadata object's `backends` member and the quota report list them: the
+  backends listing opens with the `default` alias, then each server backend
+  under its fixed id; the quota report has one entry per server backend under
+  its fixed id, each enforcing its own per-Space limit. A Collection created
+  with `backend.id` naming the non-default server backend has its Resources,
+  listings and `changes` feed served there, while its Metadata object, policies
+  and log stay on the default backend, with a copy of the Space and Collection
+  Metadata objects kept on the selected backend (its own stamp; the feed's
+  `collection-metadata` document carries the copy's validator, and the feed
+  carries no `policy` or `log` documents). Export Space composes the archive
+  across the backends, and Import Space restores each Collection onto the
+  backend its archived Metadata object names, refusing an archive naming an
+  unconfigured one with `unsupported-backend` (409) before writing anything.
+  Registering an external backend under `default`, `fs` or `postgres` is
+  refused. The plugin takes `backends` (a list) beside the one-backend
+  `backend`, and `defaultBackend`; it decorates `serverBackends`. An Update
+  Collection body naming a backend other than the stored one is refused with
+  `backend-immutable` (409, pointer `#/backend`); restating the selection under
+  another id of the same backend is stored as sent. The selected backend also
+  keeps a copy of the Collection's governing history log, written after each log
+  write, so the write-once recheck under its lock reads it; its feed carries a
+  `collection-log` document. Update Space refreshes the Space copy's
+  `controller` and `name`. Delete Collection sweeps the other server backends
+  for a copy on every attempt, so a copy a faulted first attempt left behind
+  goes on the retry. Import routes an existing Collection's Resources by the
+  live object's `backend.id`, and the other backends import before the default
+  one, so a fault leaves the default backend untouched. The plugin refuses an
+  explicit empty `backends` list instead of opening the fallback filesystem
+  backend.
+- The replication pull loop stalls a peer Collection selecting any backend id
+  other than `default`, a server backend id included. The copies a non-default
+  server backend keeps follow every write of a container object through the
+  control plane, the apply path's included, so a replicated Metadata object, log
+  or tombstone of a Collection held on that backend reaches its copy; a
+  replicated update keeps the held `backend` selection.
+
 ### Fixed
 
 - Update Collection composed the object it stored from a read made before the

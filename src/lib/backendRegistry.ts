@@ -2,15 +2,19 @@
  * Per-Collection backend resolver (spec "Backends"; stage 3 of the BYOS plan).
  * Maps a Collection's selected `backend.id` to the live `StorageBackend` that
  * serves its **data plane** (resource bytes, metadata, listings, change feed),
- * while the server `default` backend (`request.server.storage`) keeps the
+ * while the server's default backend (`request.server.storage`) keeps the
  * **control plane** (Space/Collection descriptions, policies, the backend
  * registry records). For the `default` backend the two planes are the same
  * instance, so behavior is byte-for-byte unchanged.
  *
- * `resolveBackend` short-circuits to the default backend for the common
- * `default`/absent selection (one branch, no extra I/O). For a Collection that
- * selects a registered `external` backend it loads the (secret-bearing) backend
- * record from the control plane and builds -- memoized -- the provider adapter
+ * `resolveBackend` short-circuits to a server backend for the `default`,
+ * absent, or fixed-id selection (`request.server.serverBackends`, one lookup,
+ * no I/O). A server backend other than the default holds a copy of the
+ * Space and Collection Metadata objects of the Collections it serves
+ * (lib/backendMirror.ts), so its own write rules hold there. For a Collection
+ * that selects a registered `external` backend it loads the (secret-bearing)
+ * backend record from the control plane and builds -- memoized -- the
+ * provider adapter
  * from the injected `backendProviders` registry; with no factory for the record's
  * `provider` it fails closed with `unsupported-backend` (409). Memoization
  * mirrors spaceContext.ts: one `LruCache` per registry (a `WeakMap`), so adapter
@@ -19,7 +23,6 @@
  */
 import type { FastifyRequest } from 'fastify'
 import { LruCache } from '@interop/lru-memoize'
-import { DEFAULT_BACKEND_ID } from './backends.js'
 import { UnsupportedBackendError } from '../errors.js'
 import { RESOLVED_BACKEND_CACHE_MAX } from '../config.default.js'
 import type {
@@ -53,8 +56,8 @@ function adapterCacheFor(providers: BackendProviderRegistry): LruCache {
 }
 
 /**
- * Resolves the data-plane `StorageBackend` for a Collection. Returns the server
- * default backend when the Collection selects `default` (or selects nothing);
+ * Resolves the data-plane `StorageBackend` for a Collection. Returns the
+ * server backend the Collection selects (`default`, nothing, or a fixed id);
  * otherwise builds (memoized) the provider adapter for its registered backend.
  *
  * @param options {object}
@@ -79,15 +82,21 @@ export async function resolveBackend({
   collectionId: string
   collectionMetadata?: CollectionMetadata
 }): Promise<StorageBackend> {
-  const { storage, backendProviders } = request.server
+  const { storage, serverBackends, backendProviders } = request.server
   const metadata =
     collectionMetadata ??
     (await storage.getCollectionMetadata({ spaceId, collectionId }))
   const backendId = metadata?.backend?.id
-  // Fast path: the default backend is both control and data plane (unchanged).
-  if (backendId === undefined || backendId === DEFAULT_BACKEND_ID) {
-    return storage
+  // Fast path: a server backend. For the default it is both control and data
+  // plane (unchanged), and an absent id selects it.
+  if (backendId === undefined) {
+    return serverBackends.default
   }
+  const serverBackend = serverBackends.resolve(backendId)
+  if (serverBackend !== undefined) {
+    return serverBackend
+  }
+  // The adapter path: `backendId` is a registered external backend's id.
   return adapterCacheFor(backendProviders).memoize<StorageBackend>({
     key: `${spaceId}/${backendId}`,
     fn: async () => {

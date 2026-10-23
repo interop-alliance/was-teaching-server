@@ -299,8 +299,9 @@ export function decideCollectionTombstoneApply({
  * Merges a received Collection Metadata object over the held one of the same
  * life, for an `update`. The received object replaces the held one, except
  * for the members that are immutable once set: `encryption`,
- * `revisions.resolution` and `revisions.immutable`. One the received object
- * omits and the held one sets is kept. Two different set values cannot be
+ * `revisions.resolution`, `revisions.immutable` and `backend`, which keeps
+ * the held selection as Update Collection's `backend-immutable` rule does.
+ * One the received object omits and the held one sets is kept. Two different set values cannot be
  * ordered, so the result is a fork naming the member. `encryption.version`
  * takes the greater of the two.
  *
@@ -317,6 +318,9 @@ export function mergeAppliedCollectionMetadata({
   incoming: CollectionMetadata
 }): { metadata: CollectionMetadata } | { fork: string } {
   const merged: CollectionMetadata = { ...incoming }
+  if (held.backend !== undefined) {
+    merged.backend = held.backend
+  }
 
   if (held.encryption !== undefined) {
     if (incoming.encryption === undefined) {

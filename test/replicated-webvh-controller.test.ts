@@ -317,7 +317,7 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       spaceId: options.toSpaceId,
       record: record as any
     })
-    invalidateReplicaIndex({ storage: mirror.backend })
+    invalidateReplicaIndex({ storage: mirror.fastify.storage })
     mirror.fastify.replication.register({
       spaceId: options.toSpaceId,
       replicaId: record.id
@@ -964,7 +964,7 @@ describe('A did:webvh controller resolved from a replicated log', () => {
         spaceId: 'acct-stale',
         replicaId: 'origin'
       })
-      invalidateReplicaIndex({ storage: mirror.backend })
+      invalidateReplicaIndex({ storage: mirror.fastify.storage })
       mirror.fastify.replication.unregister({
         spaceId: 'acct-stale',
         replicaId: 'origin'

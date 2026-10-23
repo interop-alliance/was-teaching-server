@@ -1547,7 +1547,7 @@ describe('Storage API', () => {
       const { backend, spaceId, collectionId, tempDir } = await provision()
       try {
         const usage = await backend.reportUsage({ spaceId })
-        assert.equal(usage.id, 'default')
+        assert.equal(usage.id, 'fs')
         assert.equal(usage.managedBy, 'server')
         assert.equal(usage.state, 'ok')
         assert.ok(usage.usageBytes > 0)

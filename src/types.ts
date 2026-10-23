@@ -15,9 +15,11 @@
 // Pull in @fastify/multipart's `FastifyRequest.file()` augmentation program-wide
 // (the request layer calls `request.file()` without importing the plugin
 // directly).
+import type { Readable } from 'node:stream'
+import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type {} from '@fastify/multipart'
 import type { FastifyBaseLogger, FastifyRequest } from 'fastify'
-import type { Readable } from 'node:stream'
+import type { ServerBackends } from './lib/serverBackends.js'
 import type {
   IDID,
   IVerificationMethod,
@@ -558,6 +560,15 @@ export type CollectionDeleteOutcome = 'deleted' | 'already-deleted' | 'absent'
 export type StoredSpaceMetadata = SpaceMetadata & MetadataValidatorParts
 
 /**
+ * A Space's export archive entry tree as one backend holds it: the top-level
+ * entries in pack order, and the Space-scoped zcap revocation records.
+ */
+export interface SpaceExportEntries {
+  entries: ArchiveEntry[]
+  revocations: ArchiveFile[]
+}
+
+/**
  * What a Space or Collection Metadata write left, read inside the write's
  * critical section: the object's new validator, whether this write created
  * the container (a create over a Collection tombstone included), and the
@@ -986,6 +997,22 @@ export interface StorageBackend {
     service?: ServiceDescription
     attestor?: ExportAttestor
   }): Promise<Readable>
+  /**
+   * The archive entry tree of a Space as this backend holds it, before it
+   * is packed: the top-level entries in pack order (a Space-level file, or a
+   * Collection directory with its files and chunk directories) and the
+   * Space's zcap revocation records. `exportSpace` packs it through
+   * `packExportArchive` (lib/exportArchive.ts), and Export Space composes
+   * the trees of the server backends a Space's Collections span. Throws
+   * `SpaceNotFoundError` for a Space this backend has no Metadata object
+   * for. `serverBackends` is the server-managed part of the backends
+   * listing the archived Space Metadata object carries; it defaults to this
+   * backend's own descriptor.
+   */
+  exportSpaceEntries(options: {
+    spaceId: string
+    serverBackends?: BackendDescriptor[]
+  }): Promise<SpaceExportEntries>
   /**
    * Merges a Space-export archive into an existing Space, skip-not-overwrite
    * per item. The archive's revocation records are not in the plan: the
@@ -2044,7 +2071,19 @@ declare module 'fastify' {
   }
   interface FastifyInstance {
     serverUrl: string
+    /**
+     * The default server backend: the control plane, which holds every Space
+     * and Collection Metadata object, the policies, the registrations, and
+     * the Resources of every Collection selecting `default` or its fixed id.
+     * The backend `serverBackends.default` names.
+     */
     storage: StorageBackend
+    /**
+     * The server's own backends under their fixed ids, with the `default`
+     * alias (lib/serverBackends.ts). The resolver routes a Collection's data
+     * plane through it. Set by `fastify.decorate` in plugin.ts.
+     */
+    serverBackends: ServerBackends
     /**
      * The provider-adapter registry: maps a registered backend's `provider` to
      * the factory that builds its live `StorageBackend` adapter. Read by the

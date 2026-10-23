@@ -24,7 +24,7 @@ import { MIGRATIONS } from '../src/backends/postgresSchema.js'
 import { StoreVersionError } from '../src/errors.js'
 import { compareStamps, readingOfStamp } from '../src/lib/hlc.js'
 import { etagOf, formatEtag } from '../src/lib/etag.js'
-import { frozenClock } from './helpers.js'
+import { frozenClock, openTempPostgres, postgresAdminQuery } from './helpers.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 
@@ -63,8 +63,7 @@ if (!connectionString) {
     async function boot(
       physicalClock?: () => number
     ): Promise<PostgresBackend> {
-      const backend = await PostgresBackend.open({
-        connectionString: connectionString!,
+      const { backend } = await openTempPostgres({
         schema,
         ...(physicalClock !== undefined && { physicalClock })
       })
@@ -73,30 +72,11 @@ if (!connectionString) {
     }
 
     /**
-     * Runs one statement as an admin client outside any backend's pool.
-     * @param sql {string}
-     * @param [values] {unknown[]}
-     * @returns {Promise<pg.QueryResult>}
-     */
-    async function adminQuery(
-      sql: string,
-      values?: unknown[]
-    ): Promise<pg.QueryResult> {
-      const admin = new pg.Client({ connectionString: connectionString! })
-      await admin.connect()
-      try {
-        return await admin.query(sql, values)
-      } finally {
-        await admin.end()
-      }
-    }
-
-    /**
      * Reads the store row's `clock_high_water` column.
      * @returns {Promise<number | undefined>}
      */
     async function storedHighWater(): Promise<number | undefined> {
-      const { rows } = await adminQuery(
+      const { rows } = await postgresAdminQuery(
         `SELECT clock_high_water FROM "${schema}".store`
       )
       const value = rows[0]?.clock_high_water as string | null | undefined
@@ -108,7 +88,7 @@ if (!connectionString) {
      * @returns {Promise<number>}
      */
     async function storedSchemaVersion(): Promise<number> {
-      const { rows } = await adminQuery(
+      const { rows } = await postgresAdminQuery(
         `SELECT max(version)::int AS version FROM "${schema}".schema_migrations`
       )
       return rows[0]!.version as number
@@ -122,7 +102,7 @@ if (!connectionString) {
      * @returns {Promise<void>}
      */
     async function migrateToPreStampVersion(): Promise<void> {
-      await adminQuery(`CREATE SCHEMA "${schema}"`)
+      await postgresAdminQuery(`CREATE SCHEMA "${schema}"`)
       const client = new pg.Client({
         connectionString: connectionString!,
         options: `-csearch_path=${schema}`
@@ -175,7 +155,7 @@ if (!connectionString) {
 
     afterEach(async () => {
       await Promise.all(backends.splice(0).map(backend => backend.close()))
-      await adminQuery(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+      await postgresAdminQuery(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
     })
 
     it('persists the high-water mark in the store row on a cadence and seeds the clock from it at the next boot', async () => {
@@ -272,7 +252,7 @@ if (!connectionString) {
       await backend.clock.mint()
       physical.now += 1
       backend.clock.now()
-      await adminQuery(`DROP TABLE "${schema}".store`)
+      await postgresAdminQuery(`DROP TABLE "${schema}".store`)
       backends.splice(backends.indexOf(backend), 1)
       await backend.close()
       assert.equal(warnings.length, 1)
@@ -364,7 +344,7 @@ if (!connectionString) {
 
     it('refuses a pre-stamp schema that holds a Space, on every boot', async () => {
       await migrateToPreStampVersion()
-      await adminQuery(
+      await postgresAdminQuery(
         `INSERT INTO "${schema}".spaces (space_id, metadata, controller)
          VALUES ($1, $2::jsonb, $3)`,
         [
@@ -383,7 +363,7 @@ if (!connectionString) {
         assert.equal(await storedSchemaVersion(), PRE_STAMP_VERSION)
       }
       // The refusal rolled the whole run back: the old layout stands.
-      const { rows } = await adminQuery(
+      const { rows } = await postgresAdminQuery(
         `SELECT 1 FROM information_schema.columns
           WHERE table_schema = $1 AND table_name = 'resources'
             AND column_name = 'version'`,
@@ -397,7 +377,7 @@ if (!connectionString) {
      * @returns {Promise<Record<string, string | null>>}
      */
     async function feedColumns(): Promise<Record<string, string | null>> {
-      const { rows } = await adminQuery(
+      const { rows } = await postgresAdminQuery(
         `SELECT feed_position::text, metadata_feed_position::text,
                 log_feed_position::text, feed_generation
            FROM "${schema}".collections
@@ -461,12 +441,12 @@ if (!connectionString) {
       backends.splice(backends.indexOf(backend), 1)
       // Roll the schema back to the version before the two columns, with
       // the Collection in it, so the next boot applies the migration.
-      await adminQuery(
+      await postgresAdminQuery(
         `ALTER TABLE "${schema}".collections
            DROP COLUMN metadata_feed_position,
            DROP COLUMN log_feed_position`
       )
-      await adminQuery(
+      await postgresAdminQuery(
         `DELETE FROM "${schema}".schema_migrations WHERE version = $1`,
         [FEED_KINDS_VERSION]
       )
@@ -503,7 +483,7 @@ if (!connectionString) {
      * @returns {Promise<void>}
      */
     async function rollBackPolicyStamps(): Promise<void> {
-      await adminQuery(
+      await postgresAdminQuery(
         `ALTER TABLE "${schema}".policies
            DROP COLUMN deleted,
            DROP COLUMN generation,
@@ -513,8 +493,8 @@ if (!connectionString) {
            DROP COLUMN feed_position,
            ALTER COLUMN policy SET NOT NULL`
       )
-      await adminQuery(`DROP TABLE "${schema}".replicas`)
-      await adminQuery(
+      await postgresAdminQuery(`DROP TABLE "${schema}".replicas`)
+      await postgresAdminQuery(
         `DELETE FROM "${schema}".schema_migrations WHERE version >= $1`,
         [POLICY_STAMP_VERSION]
       )
@@ -526,7 +506,7 @@ if (!connectionString) {
       await backend.close()
       backends.splice(backends.indexOf(backend), 1)
       await rollBackPolicyStamps()
-      await adminQuery(
+      await postgresAdminQuery(
         `INSERT INTO "${schema}".policies (space_id, collection_id, policy)
          VALUES ('space1', 'notes', '{"type":"PublicCanRead"}'::jsonb)`
       )

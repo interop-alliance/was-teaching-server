@@ -281,8 +281,11 @@ that lands between the handler's read and the write still binds it. A registered
 external backend's adapter never receives the Collection Metadata object and its
 writes do not pass through this server's lock, so a `unique` declaration on a
 Collection stored there cannot be enforced; the declaration is refused
-(`unsupported-backend`, 409), as is selecting an external backend on a
-Collection that already declares one.
+(`unsupported-backend`, 409). A Collection's `backend` is set at creation and
+cannot move: an Update Collection body naming a backend other than the stored
+one is refused (`backend-immutable`, 409, pointer `#/backend`), while one naming
+the same backend under another of its ids (`default` for the backend it aliases)
+is stored as sent.
 
 Two unconditional `PUT`s of one new Collection's `meta` can both see it absent
 before their writes, but only the first write creates it, and the second answers

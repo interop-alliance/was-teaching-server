@@ -13,10 +13,10 @@
 import { it, describe, expect, beforeEach, afterEach } from 'vitest'
 import assert from 'node:assert'
 import crypto from 'node:crypto'
-import pg from 'pg'
 import { PostgresBackend } from '../src/backends/postgres.js'
 import { StoreOriginIdError } from '../src/errors.js'
 import { ORIGIN_ID_PATTERN } from '../src/lib/originId.js'
+import { openTempPostgres, postgresAdminQuery } from './helpers.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 
@@ -35,28 +35,9 @@ if (!connectionString) {
      * @returns {Promise<PostgresBackend>}
      */
     async function boot(originId?: string): Promise<PostgresBackend> {
-      const backend = await PostgresBackend.open({
-        connectionString: connectionString!,
-        schema,
-        originId
-      })
+      const { backend } = await openTempPostgres({ schema, originId })
       backends.push(backend)
       return backend
-    }
-
-    /**
-     * Runs one statement as an admin client outside any backend's pool.
-     * @param sql {string}
-     * @returns {Promise<pg.QueryResult>}
-     */
-    async function adminQuery(sql: string): Promise<pg.QueryResult> {
-      const admin = new pg.Client({ connectionString: connectionString! })
-      await admin.connect()
-      try {
-        return await admin.query(sql)
-      } finally {
-        await admin.end()
-      }
     }
 
     /**
@@ -64,7 +45,7 @@ if (!connectionString) {
      * @returns {Promise<string[]>}   every stored origin id
      */
     async function storedOriginIds(): Promise<string[]> {
-      const { rows } = await adminQuery(
+      const { rows } = await postgresAdminQuery(
         `SELECT origin_id FROM "${schema}".store`
       )
       return rows.map(row => row.origin_id as string)
@@ -76,7 +57,7 @@ if (!connectionString) {
 
     afterEach(async () => {
       await Promise.all(backends.splice(0).map(backend => backend.close()))
-      await adminQuery(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+      await postgresAdminQuery(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
     })
 
     it('mints an id on a fresh schema and reads it back on the next init', async () => {
@@ -110,7 +91,7 @@ if (!connectionString) {
 
     it('fills an empty store table on the next init', async () => {
       const first = await boot()
-      await adminQuery(`DELETE FROM "${schema}".store`)
+      await postgresAdminQuery(`DELETE FROM "${schema}".store`)
       const second = await boot()
       assert.match(second.originId, ORIGIN_ID_PATTERN)
       assert.notEqual(second.originId, first.originId)
@@ -118,11 +99,7 @@ if (!connectionString) {
     })
 
     it('carries the id as soon as open() resolves', async () => {
-      const backend = await PostgresBackend.open({
-        connectionString: connectionString!,
-        schema
-      })
-      backends.push(backend)
+      const backend = await boot()
       assert.match(backend.originId, ORIGIN_ID_PATTERN)
     })
   })

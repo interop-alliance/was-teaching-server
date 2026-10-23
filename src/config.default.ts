@@ -5,6 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { decodeSecretKeySeed } from '@interop/bnid'
+import { SERVER_BACKEND_IDS, isServerBackendId } from './lib/serverBackends.js'
 import { parseKekMultibase } from './lib/kmsRecordCipher.js'
 import { ORIGIN_ID_PATTERN, isValidOriginId } from './lib/originId.js'
 import { isValidController } from './lib/validateDid.js'
@@ -586,13 +587,23 @@ export interface EnvConfig {
   port: number
   /** Host to listen on (`HOST`); defaults to {@link DEFAULT_HOST}. */
   host: string
-  /** Postgres connection string (`DATABASE_URL`); unset selects the filesystem backend. */
+  /**
+   * Postgres connection string (`DATABASE_URL`); set, the Postgres backend
+   * is configured. Unset, it is not.
+   */
   databaseUrl?: string
   /**
-   * Filesystem root for the default backend (`WAS_DATA_DIR`); unset means the
-   * project `data/` directory.
+   * Filesystem root for the filesystem backend (`WAS_DATA_DIR`); set, that
+   * backend is configured. Unset, it is not, and with no `DATABASE_URL`
+   * either the server refuses to start.
    */
   dataDir?: string
+  /**
+   * The fixed id of the server backend the `default` id aliases
+   * (`WAS_DEFAULT_BACKEND`, `fs` or `postgres`); unset means `fs` when it is
+   * configured, else the only configured backend.
+   */
+  defaultBackend?: string
   /**
    * Per-Space storage quota in bytes (`STORAGE_LIMIT_PER_SPACE`). `undefined`
    * means unset -- unlimited, but `start.ts` warns to prompt an explicit
@@ -680,6 +691,7 @@ export function loadConfigFromEnv(
     host: parseHost(env.HOST),
     databaseUrl: parseDatabaseUrl(env.DATABASE_URL),
     dataDir: parseDataDir(env.WAS_DATA_DIR),
+    defaultBackend: parseDefaultBackend(env.WAS_DEFAULT_BACKEND),
     storageLimitPerSpace: parseStorageLimit(env.STORAGE_LIMIT_PER_SPACE),
     maxUploadBytes: parseMaxUploadBytes(env.MAX_UPLOAD_BYTES),
     maxSpacesPerController: parseCountLimit(
@@ -888,10 +900,9 @@ export function loopbackPortMismatch({
 
 /**
  * Parses the `DATABASE_URL` env value: a Postgres connection string that,
- * when set, selects the PostgreSQL storage backend (unset keeps the default
- * filesystem backend). The string's shape is left to the `pg` driver, which
- * accepts several connection-string forms; an unset or empty value returns
- * `undefined`.
+ * when set, configures the PostgreSQL storage backend. The string's shape is
+ * left to the `pg` driver, which accepts several connection-string forms; an
+ * unset or empty value returns `undefined`.
  * @param raw {string|undefined}   the raw env value
  * @returns {string|undefined}   the trimmed connection string, or `undefined`
  */
@@ -900,18 +911,41 @@ function parseDatabaseUrl(raw: string | undefined): string | undefined {
 }
 
 /**
- * Parses the `WAS_DATA_DIR` env value: the filesystem root the default backend
- * stores Spaces, keystores, and revocations under. A relative value resolves
- * against the process working directory, so the running server never depends on
- * where its own modules sit on disk. Ignored when `DATABASE_URL` selects the
- * Postgres backend; an unset or empty value returns `undefined`, which keeps
- * the project `data/` directory.
+ * Parses the `WAS_DATA_DIR` env value: the filesystem root the filesystem
+ * backend stores Spaces, keystores, and revocations under, which configures
+ * that backend when set. A relative value resolves against the process
+ * working directory, so the running server never depends on where its own
+ * modules sit on disk. An unset or empty value returns `undefined`: no
+ * filesystem backend.
  * @param raw {string|undefined}   the raw env value
  * @returns {string|undefined}   the resolved absolute path, or `undefined`
  */
 export function parseDataDir(raw: string | undefined): string | undefined {
   const dataDir = trimmedOrUndefined(raw)
   return dataDir === undefined ? undefined : path.resolve(dataDir)
+}
+
+/**
+ * Parses the `WAS_DEFAULT_BACKEND` env value: the fixed id of the server
+ * backend the conventional `default` id aliases, `fs` or `postgres`. Whether
+ * the named backend is configured is checked once the backends are opened
+ * (`ServerBackends`), where an unset value falls back to `fs`, else the only
+ * configured backend. Any other value throws.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string|undefined}   the id, or `undefined` when unset
+ */
+function parseDefaultBackend(raw: string | undefined): string | undefined {
+  const id = trimmedOrUndefined(raw)
+  if (id === undefined) {
+    return undefined
+  }
+  if (!isServerBackendId(id)) {
+    throw new Error(
+      `WAS_DEFAULT_BACKEND must be one of ${SERVER_BACKEND_IDS.join(', ')}; ` +
+        `got "${id}".`
+    )
+  }
+  return id
 }
 
 /**

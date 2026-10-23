@@ -36,7 +36,8 @@ import {
   assertValidServerUrl,
   CORS_PREFLIGHT_MAX_AGE
 } from './config.default.js'
-import { defaultBackend } from './storage.js'
+import { defaultBackend as openFallbackBackend } from './storage.js'
+import { ServerBackends } from './lib/serverBackends.js'
 import { bufferedBodyLimit } from './lib/bodyLimit.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
 import {
@@ -69,29 +70,47 @@ export interface FastifyWasOptions {
    */
   serverUrl: string
   /**
-   * Persistence backend to use; defaults to a filesystem backend rooted at
-   * `dataDir` (the project `data/` directory when that is unset). Tests inject
-   * their own (e.g. a FileSystemBackend over a temp dir). Either an open
-   * backend, or a function that opens one. The plugin calls the function at
-   * registration, after it has validated its other options, and hands it
-   * `fastify.log`, so the backend's startup work (the Postgres migrations)
-   * logs through the app's logger and a refused option leaves the store
-   * untouched. The backend it resolves is the plugin's to close, so the
-   * function form is refused with `ownsBackend: false`.
+   * The server's own persistence backends, each either open or a function
+   * that opens one. The plugin calls each function at registration, after it
+   * has validated its other options, and hands it `fastify.log`, so the
+   * backend's startup work (the Postgres migrations) logs through the app's
+   * logger and a refused option leaves the store untouched. Each backend is
+   * keyed by the fixed id its `describe()` reports (`fs`, `postgres`); two
+   * under one id, or origin ids that differ, are refused. Defaults to one
+   * filesystem backend rooted at `dataDir` (the project `data/` directory when
+   * that is unset). A backend the plugin opens is the plugin's to close, so
+   * the function form is refused with `ownsBackend: false`.
+   */
+  backends?: (
+    | StorageBackend
+    | ((options: { logger: FastifyBaseLogger }) => Promise<StorageBackend>)
+  )[]
+  /**
+   * The one-backend form of `backends`: `backend: b` is `backends: [b]`.
+   * Passing both is refused.
    */
   backend?:
     | StorageBackend
     | ((options: { logger: FastifyBaseLogger }) => Promise<StorageBackend>)
   /**
-   * Whether the plugin manages the backend's lifecycle. When `true` (the
-   * default), it routes the backend's `logger` to `fastify.log` and wires its
-   * `close()` to Fastify's `onClose`. When `false`, it does neither, and the
-   * composition logs and closes the backend itself. A backend is always
+   * The fixed id of the backend the conventional `default` id aliases (config
+   * `WAS_DEFAULT_BACKEND`): the control plane, holding every Space and
+   * Collection Metadata object, the policies and the registrations. Unset,
+   * `fs` when that backend is configured, else the only configured backend;
+   * several without a filesystem backend is refused, as is an id naming no
+   * configured backend.
+   */
+  defaultBackend?: string
+  /**
+   * Whether the plugin manages the backends' lifecycle. When `true` (the
+   * default), it routes each backend's `logger` to `fastify.log` and wires
+   * its `close()` to Fastify's `onClose`. When `false`, it does neither, and
+   * the composition logs and closes the backends itself. A backend is always
    * obtained from its async factory (which runs the Postgres migrations or
    * the filesystem store stamp), so neither setting opens one. `false`
-   * requires an injected, already open `backend`, since the composition can
+   * requires injected, already open `backends`, since the composition can
    * only run the lifecycle of a backend it holds a handle to; passing it
-   * without one, or with a function that opens one, is refused at
+   * with none, or with a function that opens one, is refused at
    * registration.
    */
   ownsBackend?: boolean
@@ -105,21 +124,23 @@ export interface FastifyWasOptions {
    */
   cors?: false | Pick<FastifyCorsOptions, 'origin' | 'methods'>
   /**
-   * Filesystem root the default backend stores under (env `WAS_DATA_DIR`);
-   * applied only to the default backend (an injected `backend` carries its
-   * own root). `undefined` uses the project `data/` directory.
+   * Filesystem root the fallback filesystem backend stores under, applied
+   * only when no `backends` are given (an injected backend carries its own
+   * root). `undefined` uses the project `data/` directory.
    */
   dataDir?: string
   /**
    * Per-Space storage limit in bytes (spec "Quotas"); applied only to the
-   * default backend (an injected `backend` carries its own `capacityBytes`).
+   * fallback filesystem backend (an injected backend carries its own
+   * `capacityBytes`).
    * `undefined` means unlimited; `Infinity` (an explicit `unlimited`) is
    * normalized by the backend to the same no-limit behavior.
    */
   storageLimitPerSpace?: number
   /**
    * Per-upload size cap in bytes (spec "Quotas", `maxUploadBytes`); applied
-   * only to the default backend (an injected `backend` carries its own).
+   * only to the fallback filesystem backend (an injected backend carries its
+   * own).
    * `undefined` applies the backend's default-on cap
    * ({@link DEFAULT_MAX_UPLOAD_BYTES}); `Infinity` (an explicit `unlimited`)
    * disables the cap.
@@ -127,16 +148,16 @@ export interface FastifyWasOptions {
   maxUploadBytes?: number
   /**
    * Max Spaces a single controller may create (spec "Quotas", a default-on
-   * count quota); applied only to the default backend (an injected `backend`
-   * carries its own). `undefined` applies the backend's default
+   * count quota); applied only to the fallback filesystem backend (an
+   * injected backend carries its own). `undefined` applies the backend's default
    * ({@link DEFAULT_MAX_SPACES_PER_CONTROLLER}); `Infinity` (an explicit
    * `unlimited`) disables the cap.
    */
   maxSpacesPerController?: number
   /**
    * Max Collections a single Space may hold (spec "Quotas", a default-on count
-   * quota); applied only to the default backend (an injected `backend` carries
-   * its own). `undefined` applies the backend's default
+   * quota); applied only to the fallback filesystem backend (an injected
+   * backend carries its own). `undefined` applies the backend's default
    * ({@link DEFAULT_MAX_COLLECTIONS_PER_SPACE}); `Infinity` (an explicit
    * `unlimited`) disables the cap.
    */
@@ -198,21 +219,21 @@ export interface FastifyWasOptions {
    */
   adminDid?: IDID
   /**
-   * The store's origin id (env `WAS_ORIGIN_ID`), applied only to the default
-   * backend (an injected `backend` carries its own). Used verbatim; `undefined`
-   * reads the store's own id, or mints one on first boot.
+   * The store's origin id (env `WAS_ORIGIN_ID`), applied only to the fallback
+   * filesystem backend (an injected backend carries its own). Used verbatim;
+   * `undefined` reads the store's own id, or mints one on first boot.
    */
   originId?: string
   /**
    * The clock bound for a write stamp received from a peer, in milliseconds
-   * (env `WAS_REPLICATION_CLOCK_BOUND_MS`), applied only to the default
-   * backend. `undefined` means `REPLICATION_CLOCK_BOUND_MS`.
+   * (env `WAS_REPLICATION_CLOCK_BOUND_MS`), applied only to the fallback
+   * filesystem backend. `undefined` means `REPLICATION_CLOCK_BOUND_MS`.
    */
   replicationClockBoundMs?: number
   /**
-   * The physical clock (epoch milliseconds) the default backend's hybrid
-   * logical clock reads, applied only to the default backend (an injected
-   * `backend` carries its own). `undefined` means `Date.now`. A test freezes
+   * The physical clock (epoch milliseconds) the fallback filesystem backend's
+   * hybrid logical clock reads, applied only to that backend (an injected
+   * backend carries its own). `undefined` means `Date.now`. A test freezes
    * or steps it to drive the write stamps.
    */
   physicalClock?: () => number
@@ -263,7 +284,9 @@ async function wasPlugin(
 ): Promise<void> {
   const {
     serverUrl,
+    backends: backendsOption,
     backend,
+    defaultBackend,
     ownsBackend = true,
     cors: corsOptions,
     dataDir,
@@ -312,9 +335,18 @@ async function wasPlugin(
     source: 'webvhBlocklist'
   })
 
-  // A composition that runs the backend lifecycle itself needs the backend in
-  // hand, or there is nothing for it to close.
-  if (!ownsBackend && typeof backend !== 'object') {
+  if (backend !== undefined && backendsOption !== undefined) {
+    throw new Error('backend and backends are mutually exclusive.')
+  }
+  const backends = backend !== undefined ? [backend] : backendsOption
+  // A composition that runs the backend lifecycle itself needs the backends
+  // in hand, or there is nothing for it to close.
+  if (
+    !ownsBackend &&
+    (backends === undefined ||
+      backends.length === 0 ||
+      backends.some(candidate => typeof candidate !== 'object'))
+  ) {
     throw new Error(
       'ownsBackend: false requires an injected, already open backend option.'
     )
@@ -325,66 +357,85 @@ async function wasPlugin(
   // Every option check above runs before a backend is opened, so a refused
   // option leaves the store untouched. A backend the plugin opens logs
   // through the Fastify pino logger from its first line.
-  // No backend option means the default one, opened like any other opener.
-  const backendOrOpener =
-    backend ??
-    (({ logger }: { logger: FastifyBaseLogger }) =>
-      defaultBackend({
-        dataDir,
-        logger,
-        capacityBytes: storageLimitPerSpace,
-        maxUploadBytes,
-        maxSpacesPerController,
-        maxCollectionsPerSpace,
-        originId,
-        ...(replicationClockBoundMs !== undefined && {
-          clockBoundMs: replicationClockBoundMs
-        }),
-        ...(physicalClock !== undefined && { physicalClock })
-      }))
-  let storage: StorageBackend
-  if (typeof backendOrOpener === 'function') {
-    storage = await backendOrOpener({ logger: fastify.log })
-  } else {
-    storage = backendOrOpener
-    // Route the backend's diagnostics through the Fastify pino logger (an
-    // injected backend defaults to a silent logger until wired here).
-    if (ownsBackend) {
-      storage.logger = fastify.log
-    }
-  }
-
-  // Backend lifecycle: the backend arrived open (its async factory ran the
+  // No backends option means the fallback filesystem backend, opened like any
+  // other opener. An explicit empty list is passed through, and the set
+  // refuses it as no backend configured.
+  const backendsOrOpeners =
+    backends !== undefined
+      ? backends
+      : [
+          ({ logger }: { logger: FastifyBaseLogger }) =>
+            openFallbackBackend({
+              dataDir,
+              logger,
+              capacityBytes: storageLimitPerSpace,
+              maxUploadBytes,
+              maxSpacesPerController,
+              maxCollectionsPerSpace,
+              originId,
+              ...(replicationClockBoundMs !== undefined && {
+                clockBoundMs: replicationClockBoundMs
+              }),
+              ...(physicalClock !== undefined && { physicalClock })
+            })
+        ]
+  const opened: StorageBackend[] = []
+  // Backend lifecycle: a backend arrives open (its async factory ran the
   // startup work), so only the optional shutdown hook (pool drain) is wired,
   // to Fastify's close. Wired before anything below can throw, so a failed
-  // registration still releases the backend when the app is closed.
-  // The pull loops stop first, in the same hook, so no cycle applies into a
-  // closed backend.
+  // registration still releases every backend opened so far when the app is
+  // closed. The pull loops stop first, in the same hook, so no cycle applies
+  // into a closed backend.
   fastify.addHook('onClose', async () => {
     if (fastify.hasDecorator('replication')) {
       await fastify.replication.stop()
     }
-    if (ownsBackend && storage.close) {
-      await storage.close()
+    if (ownsBackend) {
+      for (const backend of opened) {
+        await backend.close?.()
+      }
     }
   })
+  for (const backendOrOpener of backendsOrOpeners) {
+    if (typeof backendOrOpener === 'function') {
+      opened.push(await backendOrOpener({ logger: fastify.log }))
+    } else {
+      // Route the backend's diagnostics through the Fastify pino logger (an
+      // injected backend defaults to a silent logger until wired here).
+      if (ownsBackend) {
+        backendOrOpener.logger = fastify.log
+      }
+      opened.push(backendOrOpener)
+    }
+  }
 
   // A backend that never ran its async factory has no settled origin id, and
   // `/service` would advertise none to a replication peer. Refuse it here
   // rather than on the first request.
-  if (typeof storage.originId !== 'string' || storage.originId === '') {
-    throw new Error(
-      'The storage backend carries no origin id. Obtain the backend from ' +
-        'its async open() factory before injecting it.'
-    )
+  for (const backend of opened) {
+    if (typeof backend.originId !== 'string' || backend.originId === '') {
+      throw new Error(
+        'A storage backend carries no origin id. Obtain the backend from ' +
+          'its async open() factory before injecting it.'
+      )
+    }
   }
+  // The set the request layer routes a Collection's data plane through; the
+  // default is the control plane every handler reads as `storage`.
+  const serverBackends = new ServerBackends({
+    backends: opened,
+    defaultId: defaultBackend
+  })
+  const storage = serverBackends.default
+  fastify.decorate('serverBackends', serverBackends)
   fastify.decorate('storage', storage)
 
-  // The buffered-body limit, derived from the active backend's per-upload cap
-  // and applied as every route's `bodyLimit`. Set per route rather than on the
-  // instance so a downstream composition that registers this plugin on its own
-  // instance gets the same bound. A route that sets its own `bodyLimit` (the
-  // exchanges POST) keeps it.
+  // The buffered-body limit, derived from the default backend's per-upload
+  // cap and applied as every route's `bodyLimit`. Set per route rather than
+  // on the instance so a downstream composition that registers this plugin on
+  // its own instance gets the same bound. A route that sets its own
+  // `bodyLimit` (the exchanges POST) keeps it. A server backend other than
+  // the default enforces its own cap inside its writes.
   const bodyLimit = bufferedBodyLimit(storage.maxUploadBytes)
   fastify.addHook('onRoute', routeOptions => {
     if (routeOptions.bodyLimit === undefined) {

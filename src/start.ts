@@ -7,8 +7,11 @@
  * run.
  */
 import type { FastifyInstance } from 'fastify'
+import type { FastifyBaseLogger } from 'fastify'
 import { createApp } from './server.js'
+import { FileSystemBackend } from './backends/filesystem.js'
 import { PostgresBackend } from './backends/postgres.js'
+import type { StorageBackend } from './types.js'
 import {
   assertFreshBuild,
   loadConfigFromEnv,
@@ -103,39 +106,51 @@ export async function startServer(): Promise<void> {
   try {
     assertFreshBuild()
     const config = loadConfigFromEnv()
-    // Backend selection: presence of DATABASE_URL selects the Postgres
-    // backend; otherwise createApp falls back to the default filesystem
-    // backend (rooted at WAS_DATA_DIR, else data/). An injected backend
-    // carries its own quota configuration, so the per-Space/per-upload limits
-    // are passed to it directly rather than through the createApp options.
-    // The Postgres backend is handed over as a function the plugin calls at
-    // registration, once it has validated its options: the migrations then
-    // log through `fastify.log`, and the plugin closes the pool with the app.
-    const { databaseUrl } = config
-    // The storage options either backend takes under the same names.
+    // Backend configuration: WAS_DATA_DIR configures the filesystem backend
+    // and DATABASE_URL the Postgres backend; a deployment may set both, and
+    // WAS_DEFAULT_BACKEND names the one `default` aliases (the plugin refuses
+    // a set with none). Each backend carries its own quota configuration, so
+    // the per-Space/per-upload limits are passed to it directly rather than
+    // through the createApp options. Each is handed over as a function the
+    // plugin calls at registration, once it has validated its options: the
+    // migrations then log through `fastify.log`, and the plugin closes the
+    // store with the app.
+    const { databaseUrl, dataDir } = config
+    // The storage options either backend takes under the same names. The
+    // origin id is one value for the process: both backends stamp writes for
+    // one store as a replication peer sees it.
     const storageOptions = {
+      capacityBytes: config.storageLimitPerSpace,
       maxUploadBytes: config.maxUploadBytes,
       maxSpacesPerController: config.maxSpacesPerController,
       maxCollectionsPerSpace: config.maxCollectionsPerSpace,
-      originId: config.originId
+      originId: config.originId,
+      ...(config.replicationClockBoundMs !== undefined && {
+        clockBoundMs: config.replicationClockBoundMs
+      })
     }
+    const backends: ((options: {
+      logger: FastifyBaseLogger
+    }) => Promise<StorageBackend>)[] = []
+    if (dataDir !== undefined) {
+      backends.push(({ logger }) =>
+        FileSystemBackend.open({ logger, dataDir, ...storageOptions })
+      )
+    }
+    if (databaseUrl !== undefined) {
+      backends.push(({ logger }) =>
+        PostgresBackend.open({
+          logger,
+          connectionString: databaseUrl,
+          ...storageOptions
+        })
+      )
+    }
+    // An empty list is refused by the server backend set inside `createApp`.
     fastify = createApp({
       serverUrl: config.serverUrl,
-      ...(databaseUrl !== undefined && {
-        backend: ({ logger }) =>
-          PostgresBackend.open({
-            logger,
-            connectionString: databaseUrl,
-            capacityBytes: config.storageLimitPerSpace,
-            ...(config.replicationClockBoundMs !== undefined && {
-              clockBoundMs: config.replicationClockBoundMs
-            }),
-            ...storageOptions
-          })
-      }),
-      ...(config.dataDir !== undefined && { dataDir: config.dataDir }),
-      storageLimitPerSpace: config.storageLimitPerSpace,
-      ...storageOptions,
+      backends,
+      defaultBackend: config.defaultBackend,
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken,

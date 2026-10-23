@@ -75,7 +75,8 @@ describe('Quotas API', () => {
 
     const [entry] = report.backends
     assert.ok(entry)
-    assert.equal(entry.id, 'default')
+    // The report names each server backend by its fixed id, not the alias.
+    assert.equal(entry.id, 'fs')
     assert.equal(entry.name, 'Server Filesystem')
     assert.equal(entry.managedBy, 'server')
     assert.equal(entry.state, 'ok')
@@ -146,7 +147,7 @@ describe('Quotas API', () => {
       assert.match(response.headers.get('content-type')!, /application\/json/)
 
       const entry = response.data as BackendUsageBody
-      assert.equal(entry.id, 'default')
+      assert.equal(entry.id, 'fs')
       assert.equal(entry.name, 'Server Filesystem')
       assert.equal(entry.managedBy, 'server')
       assert.equal(entry.state, 'ok')

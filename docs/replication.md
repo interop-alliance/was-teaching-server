@@ -196,9 +196,9 @@ round a two-way pair. Three records follow other rules:
   one created before it is skipped.
 
 An update of a held life replaces the object except for the members that are
-immutable once set (`encryption`, `revisions.resolution`,
-`revisions.immutable`). One the received object omits is kept, and two different
-set values are a fork.
+immutable once set (`encryption`, `revisions.resolution`, `revisions.immutable`,
+and `backend`, which keeps the held selection). One the received object omits is
+kept, and two different set values are a fork.
 
 Each apply method runs inside the critical section the matching request-layer
 write takes, and checks there, in order:
@@ -255,9 +255,17 @@ reason (`clock-bound`, `fork`, `quota-exceeded`, `unsupported-backend`,
 `container-refused`) is stored with the loop state, which
 `GET .../replicas/:replicaId/status` serves beside the loop `state` and the pull
 times. The Collection is retried each cycle while the others go on, and a
-clock-bound stall clears itself as local time catches up. A Collection stored on
-a registered external backend on the peer stalls as `unsupported-backend`: this
-server replicates into its own default backend only.
+clock-bound stall clears itself as local time catches up. A Collection whose
+`backend.id` on the peer is not `default` stalls as `unsupported-backend`. That
+includes a server backend id and a registered external backend. The apply path
+checks the replica registration on the backend it writes to, and registrations
+live on the default backend alone. The stall detail reads: The Collection
+selects backend "<id>" on the peer. This server replicates into its own default
+backend only. A Collection this server holds under another server backend's id
+keeps its copies there through a replicated apply, since the apply path writes
+through the control plane: an applied Metadata object or log refreshes the copy,
+and an applied tombstone removes it. A replicated update keeps the held
+`backend` selection, as `backend-immutable` does for a request.
 
 A request to the peer that fails, a 404 for the Space included, ends the cycle.
 The loop then backs off, doubling its delay up to a limit, and logs one `warn`

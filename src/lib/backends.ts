@@ -6,29 +6,32 @@
  * (and default-filling) a client-supplied `backend` on create/update, and
  * resolving a stored `{ id }` to its full descriptor for `GET .../backend`.
  *
- * This reference server ships a single server-configured backend (the active
- * `StorageBackend`, registered as `default`), so the available list has one
- * entry; the indirection leaves room for multiple registered backends later.
+ * The server's own backends are the `ServerBackends` set (lib/serverBackends.ts):
+ * every Space's backends-available opens with the `default` alias and each
+ * configured server backend under its fixed id, followed by the Space's
+ * registered `external` records.
  */
 import type {
   BackendDescriptor,
   BackendConnectionPublic,
   BackendRegistration,
   CollectionMetadata,
-  StorageBackend,
   StoredBackendRecord
 } from '../types.js'
 import { InvalidRequestBodyError, UnsupportedBackendError } from '../errors.js'
 import { isUrlSafeSegment } from './validateId.js'
-
-/** The conventional id of the server-assigned default backend (spec). */
-export const DEFAULT_BACKEND_ID = 'default'
+import {
+  DEFAULT_BACKEND_ID,
+  isServerBackendId,
+  type ServerBackendId,
+  type ServerBackends
+} from './serverBackends.js'
 
 /**
  * Builds the self-description a server-configured backend advertises at
- * `GET /space/:spaceId/backends`. Every such backend is the server's `default`,
- * is server-managed, stores both JSON documents and binary blobs, and survives
- * restarts -- only the display `name` distinguishes them.
+ * `GET /space/:spaceId/backends`. Every such backend is server-managed,
+ * stores both JSON documents and binary blobs, and survives restarts -- its
+ * fixed `id` and display `name` distinguish them.
  *
  * The descriptor advertises no affordances. The guarantees a Collection needs
  * -- conditional writes, the `epoch` stamp, the `writerId` writer-attribution
@@ -41,16 +44,19 @@ export const DEFAULT_BACKEND_ID = 'default'
  * the stricter `Required<Omit<..., 'provider' | 'connection'>>` (which also
  * lets the quota reports read a non-optional `managedBy` off `describe()`).
  * @param options {object}
+ * @param options.id {string}   the backend's fixed id (`fs`, `postgres`)
  * @param options.name {string}   the backend's display name
  * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
  */
 export function serverBackendDescriptor({
+  id,
   name
 }: {
+  id: ServerBackendId
   name: string
 }): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
   return {
-    id: DEFAULT_BACKEND_ID,
+    id,
     name,
     managedBy: 'server',
     persistence: 'durable'
@@ -58,7 +64,7 @@ export function serverBackendDescriptor({
 }
 
 // `listRegisteredBackends` (defined below, with the registration helpers) is the
-// single source of a Space's selectable backends -- the server `default` plus
+// single source of a Space's selectable backends -- the server backends plus
 // its registered `external` records -- used by both the selection-validation
 // (`assertSupportedBackend`) and descriptor-resolution (`resolveBackendDescriptor`)
 // paths below.
@@ -76,25 +82,25 @@ const PUBLIC_CONNECTION_FIELDS = [
  * normalized `{ id }` to persist. An absent value defaults to the server's
  * default backend. A present-but-malformed value (not an object, or no string
  * `id`) is `invalid-request-body` (400); a well-formed value whose `id` is not
- * in the Space's backends-available (the server `default` plus its registered
- * `external` backends) is `unsupported-backend` (409). A registered `external`
- * backend is now selectable here -- routing its data plane to the resolved
- * adapter is the resolver's job (lib/backendRegistry.ts).
+ * in the Space's backends-available (the server backends plus its registered
+ * `external` backends) is `unsupported-backend` (409). The id is stored as
+ * sent: `default` stays the alias. Routing the data plane of the selected
+ * backend is the resolver's job (lib/backendRegistry.ts).
  *
  * @param options {object}
- * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.serverBackends {ServerBackends}   the server's own backends
  * @param options.spaceId {string}   the Space whose backends-available is checked
  * @param [options.backend] {unknown}   the request body's `backend` value
  * @param [options.requestName] {string}   request name for the 400 error title
  * @returns {Promise<{ id: string }>}   the normalized backend reference to store
  */
 export async function assertSupportedBackend({
-  storage,
+  serverBackends,
   spaceId,
   backend,
   requestName
 }: {
-  storage: StorageBackend
+  serverBackends: ServerBackends
   spaceId: string
   backend?: unknown
   requestName?: string
@@ -114,12 +120,12 @@ export async function assertSupportedBackend({
     })
   }
   const { id } = backend as { id: string }
-  // The server's own backend heads every Space's backends-available, so
-  // selecting it needs no read of the registered records.
-  if (id === storage.describe().id) {
+  // The server's own backends head every Space's backends-available, so
+  // selecting one needs no read of the registered records.
+  if (serverBackends.has(id)) {
     return { id }
   }
-  const available = await listRegisteredBackends({ storage, spaceId })
+  const available = await listRegisteredBackends({ serverBackends, spaceId })
   if (!available.some(entry => entry.id === id)) {
     throw new UnsupportedBackendError({ backendId: id })
   }
@@ -129,31 +135,31 @@ export async function assertSupportedBackend({
 /**
  * Resolves a Collection's selected backend to its full descriptor, for the
  * `GET .../backend` ("Collection Backend Selected") response, consulting the
- * Space's backends-available (server `default` plus registered `external`
- * records). A stored description without a `backend` (created before the property
- * existed) defaults to the server's default backend.
+ * Space's backends-available (the server backends plus the registered
+ * `external` records). A stored description without a `backend` (created
+ * before the property existed) resolves as `default`.
  *
  * @param options {object}
- * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.serverBackends {ServerBackends}   the server's own backends
  * @param options.spaceId {string}   the Space whose backends-available is checked
  * @param options.collectionMetadata {CollectionMetadata}
  * @returns {Promise<BackendDescriptor>}
  */
 export async function resolveBackendDescriptor({
-  storage,
+  serverBackends,
   spaceId,
   collectionMetadata
 }: {
-  storage: StorageBackend
+  serverBackends: ServerBackends
   spaceId: string
   collectionMetadata: CollectionMetadata
 }): Promise<BackendDescriptor> {
   const id = collectionMetadata.backend?.id ?? DEFAULT_BACKEND_ID
-  const available = await listRegisteredBackends({ storage, spaceId })
+  const available = await listRegisteredBackends({ serverBackends, spaceId })
   const descriptor = available.find(entry => entry.id === id)
   // A stored backend id should always resolve (it was validated on write); fall
-  // back to the default descriptor defensively rather than returning undefined.
-  return descriptor ?? storage.describe()
+  // back to the default alias defensively rather than returning undefined.
+  return descriptor ?? serverBackends.describeDefault()
 }
 
 // --- External backend registration (spec "Backends") ---
@@ -204,22 +210,27 @@ export function sanitizeBackendRecord(
 
 /**
  * The backends advertised at `GET /space/:spaceId/backends`: the server's
- * `default` backend first, followed by the Space's sanitized registered
- * `external` backends. Also the single source of a Space's selectable backends
- * for `assertSupportedBackend` / `resolveBackendDescriptor`.
+ * own backends first (the `default` alias, then each under its fixed id),
+ * followed by the Space's sanitized registered `external` backends, read from
+ * the default backend, which holds the registrations. Also the single source
+ * of a Space's selectable backends for `assertSupportedBackend` /
+ * `resolveBackendDescriptor`.
  * @param options {object}
- * @param options.storage {StorageBackend}
+ * @param options.serverBackends {ServerBackends}
  * @param options.spaceId {string}
  * @returns {Promise<BackendDescriptor[]>}
  */
 export async function listRegisteredBackends({
-  storage,
+  serverBackends,
   spaceId
 }: {
-  storage: StorageBackend
+  serverBackends: ServerBackends
   spaceId: string
 }): Promise<BackendDescriptor[]> {
-  return [storage.describe(), ...(await storage.listBackends({ spaceId }))]
+  return [
+    ...serverBackends.describeAll(),
+    ...(await serverBackends.default.listBackends({ spaceId }))
+  ]
 }
 
 /**
@@ -351,25 +362,26 @@ export function assertValidBackendId(
 }
 
 /**
- * Rejects the reserved `default` id for a registered backend: it names the
- * server backend and cannot be registered (or replaced) by a client. Throws
- * `InvalidRequestBodyError` (400) with pointer `#/id`.
+ * Rejects a server backend id for a registered backend: `default` and each
+ * fixed server backend id (`fs`, `postgres`) name the server's own backends,
+ * configured or not, and cannot be registered (or replaced) by a client.
+ * Throws `InvalidRequestBodyError` (400) with pointer `#/id`.
  * @param options {object}
  * @param options.backendId {string}   the backend id being registered
  * @param [options.requestName] {string}   request name for the 400 error title
  * @returns {void}
  */
-export function assertNotDefaultBackendId({
+export function assertNotServerBackendId({
   backendId,
   requestName
 }: {
   backendId: string
   requestName?: string
 }): void {
-  if (backendId === DEFAULT_BACKEND_ID) {
+  if (backendId === DEFAULT_BACKEND_ID || isServerBackendId(backendId)) {
     throw new InvalidRequestBodyError({
       requestName,
-      detail: `"${DEFAULT_BACKEND_ID}" is the reserved server backend id and cannot be registered.`,
+      detail: `"${backendId}" is a reserved server backend id and cannot be registered.`,
       pointer: '#/id'
     })
   }
