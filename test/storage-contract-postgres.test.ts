@@ -15,7 +15,6 @@
  */
 import { it, describe, expect } from 'vitest'
 import assert from 'node:assert'
-import crypto from 'node:crypto'
 import { Readable } from 'node:stream'
 import pg from 'pg'
 import { PostgresBackend } from '../src/backends/postgres.js'
@@ -25,7 +24,7 @@ import {
   describeStorageBackendContract,
   type BackendHarness
 } from './storage-backend-contract.js'
-import { importArchive, openTempBackend } from './helpers.js'
+import { importArchive, openTempBackend, openTempPostgres } from './helpers.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 
@@ -38,24 +37,13 @@ async function makePostgresHarness(
     maxCollectionsPerSpace?: number
   } = {}
 ): Promise<BackendHarness & { schema: string }> {
-  const schema = `was_test_${crypto.randomBytes(8).toString('hex')}`
-  const backend = await PostgresBackend.open({
-    connectionString: connectionString!,
-    schema,
-    ...options
-  })
+  const { backend, schema, dropSchema } = await openTempPostgres(options)
   return {
     backend,
     schema,
     async cleanup() {
       await backend.close()
-      const admin = new pg.Client({ connectionString: connectionString! })
-      await admin.connect()
-      try {
-        await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
-      } finally {
-        await admin.end()
-      }
+      await dropSchema()
     }
   }
 }

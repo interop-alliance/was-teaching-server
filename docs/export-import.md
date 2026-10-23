@@ -49,6 +49,34 @@ it. How the statements are built and judged is described in
 `test/space-archive-fixture.test.ts` pins this server's entry trees against the
 archive fixture that the codec package checks in.
 
+## Across backends
+
+Export composes the archive across the server backends
+(`src/lib/exportArchive.ts`). Each backend exposes `exportSpaceEntries`, its
+entry tree before packing. The default backend's tree supplies every Space-level
+file and each Collection directory's Metadata object, policies and log. A
+Collection on the other server backend takes its Resource files, sidecars and
+chunk directories from that backend's tree. Provenance statements are signed
+over the composed tree, and `packExportArchive` packs it. A backend's own
+`exportSpace` is entries plus pack. The archived Space Metadata entry lists the
+served `backends` (alias, fixed ids, registrations) when exported through the
+route, and only that backend's descriptor when a backend exports directly.
+
+Import splits the plan (`src/lib/importAcrossBackends.ts`). The default backend
+takes the whole plan less the Resources of Collections on another server
+backend. Each such backend imports its own Collections over a Space copy written
+first: Resources, sidecars and chunks, plus the Metadata object and the
+governing log as its copies, and no policies. A Collection the destination
+already holds is routed by the live object's `backend.id`, since import keeps
+that object; the archive's selection decides only for a Collection the import
+creates. The other backends import first and the default backend last, so a
+fault in one of them leaves the default backend untouched and a retry skips what
+landed. Resource counts add up, and the Collection count is the default
+backend's. An archived Collection that names a backend absent from the
+destination Space's backends listing, an unconfigured server backend or an
+unregistered external id, is refused with 409 `unsupported-backend` before
+anything is written.
+
 ## The Space Metadata entry
 
 The archive's `.space.<id>.json` entry is the stored Space Metadata object in

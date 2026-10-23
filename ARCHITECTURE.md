@@ -195,10 +195,38 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   write re-checks its container under the delete lock. See
   [docs/export-import.md](docs/export-import.md).
 - **`src/storage.ts`** -- supplies `defaultBackend()`, which opens the
-  `FileSystemBackend` (rooted at `data/`) that `createApp()` uses when no
-  backend is injected. The active backend is injected via
-  `createApp({ backend })` and decorated onto the instance as
-  `request.server.storage`.
+  `FileSystemBackend` that the plugin uses when no `backends` option is given.
+  The open backends form a `ServerBackends` set, decorated onto the instance as
+  `request.server.serverBackends`; its default is `request.server.storage`.
+- **`src/lib/serverBackends.ts`** -- the set of server backends. Each reports a
+  fixed id from `describe()` (`fs`, `postgres`), and `WAS_DEFAULT_BACKEND` names
+  the one that `default` aliases. The default is the control plane. The set
+  refuses two backends under one id, a default that is not configured, no
+  backend at all, and differing origin ids. It also builds the server-managed
+  entries of a Space's backends listing: the `default` alias, then each fixed
+  id. A Collection's `backend.id` is stored as sent and resolves through the
+  alias on every read.
+- **`src/lib/backendMirror.ts`** -- the copies of the Space and Collection
+  Metadata objects and of the Collection's governing history log kept in a
+  non-default server backend, so that backend accepts a Resource write and reads
+  the `unique` declarations and the write-once rule under its own lock. The
+  copies follow the write: the set serves the default backend wrapped by
+  `mirroringControlPlane`, and each write, delete or replicated apply of a
+  container object through it is followed by the copy it calls for, so the
+  handlers and the pull loop keep them alike. The Space copy is written on the
+  first Collection the backend serves and refreshed by Update Space, the
+  Collection copy after every Create and Update Collection, and the log copy
+  after every governed-log write. Reads never consult a copy. Delete Collection
+  sweeps every other server backend for a copy after the control plane's delete,
+  on a repeat delete too, and Delete Space removes the Space copies. A
+  Collection's `backend` cannot change once set (`backend-immutable`, 409); it
+  may be restated under another id of the same backend.
+- **`src/lib/exportArchive.ts`**, **`src/lib/importAcrossBackends.ts`** --
+  Export and Import Space across the set. Export composes one entry tree from
+  the control plane and the other backend, signs provenance over it and packs
+  it. Import gives the control plane the plan less the Resources of Collections
+  on another backend, then each such backend imports its own Collections. See
+  [docs/export-import.md](docs/export-import.md).
 - **`src/backends/*.ts`** -- interchangeable persistence implementations
   (`implements StorageBackend` from `src/types.ts`), obtained only from a static
   async `open()`, which runs the layout migrations and settles the store's
@@ -331,6 +359,18 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
   stores what it reads through the apply path (`sync/replication.ts`). Its state
   per Collection is `synced`, `syncing`, `stalled` or `skipped`. Avoid: sync
   job, replicator.
+- **Server backend** -- a storage backend this server configures: the filesystem
+  backend (`WAS_DATA_DIR`, fixed id `fs`) or the Postgres backend
+  (`DATABASE_URL`, fixed id `postgres`). `default` is the alias of the one
+  `WAS_DEFAULT_BACKEND` names, and that backend is the control plane. A
+  Collection selects one with `backend: { id }`. Avoid: dual mode, primary
+  backend.
+- **Mirror** -- the copy of a Space or Collection Metadata object, or of a
+  Collection's governing history log, that the server keeps in a non-default
+  server backend, so that backend accepts the Collection's Resource writes and
+  decides the write-once rule under its own lock. It carries that backend's own
+  stamp and generation and is never read for an answer. Avoid: replica (reserved
+  for replica registrations), shadow copy.
 - **Collection tombstone** -- what Delete Collection leaves in place of the
   Collection Metadata object: `deleted: true`, the Collection's generation, and
   the delete's write stamp, and nothing else of the old body. It reads as absent

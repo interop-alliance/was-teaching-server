@@ -9,14 +9,13 @@
  */
 import { it, describe, beforeEach, afterEach } from 'vitest'
 import assert from 'node:assert'
-import crypto from 'node:crypto'
 import { Readable } from 'node:stream'
 import { text as streamText } from 'node:stream/consumers'
-import pg from 'pg'
-import { PostgresBackend } from '../src/backends/postgres.js'
+import type { PostgresBackend } from '../src/backends/postgres.js'
 import { MIGRATIONS } from '../src/backends/postgresSchema.js'
 import { IdConflictError, SpaceNotFoundError } from '../src/errors.js'
 import { formatEtag } from '../src/lib/etag.js'
+import { openTempPostgres, postgresAdminQuery } from './helpers.js'
 import type {
   CollectionMetadata,
   ReplicaRegistration,
@@ -61,14 +60,12 @@ if (!connectionString) {
   describe('PostgresBackend replica apply path', () => {
     let backend: PostgresBackend
     let schema: string
+    let dropSchema: () => Promise<void>
 
     beforeEach(async () => {
-      schema = `was_test_${crypto.randomBytes(8).toString('hex')}`
-      backend = await PostgresBackend.open({
-        connectionString,
-        schema,
+      ;({ backend, schema, dropSchema } = await openTempPostgres({
         physicalClock: () => NOW
-      })
+      }))
       await backend.writeSpace({
         spaceId,
         spaceMetadata: { id: spaceId, type: ['Space'], controller, name: 'One' }
@@ -77,13 +74,7 @@ if (!connectionString) {
 
     afterEach(async () => {
       await backend.close()
-      const admin = new pg.Client({ connectionString })
-      await admin.connect()
-      try {
-        await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
-      } finally {
-        await admin.end()
-      }
+      await dropSchema()
     })
 
     /**
@@ -125,17 +116,11 @@ if (!connectionString) {
 
     describe('registrations', () => {
       it('migrates the replicas table', async () => {
-        const admin = new pg.Client({ connectionString })
-        await admin.connect()
-        try {
-          const { rows } = await admin.query(
-            `SELECT MAX(version) AS version FROM "${schema}".schema_migrations`
-          )
-          assert.equal(rows[0].version, MIGRATIONS.length)
-          await admin.query(`SELECT state FROM "${schema}".replicas`)
-        } finally {
-          await admin.end()
-        }
+        const { rows } = await postgresAdminQuery(
+          `SELECT MAX(version) AS version FROM "${schema}".schema_migrations`
+        )
+        assert.equal(rows[0].version, MIGRATIONS.length)
+        await postgresAdminQuery(`SELECT state FROM "${schema}".replicas`)
       })
 
       it('creates, reads, lists and deletes a registration', async () => {

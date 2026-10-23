@@ -216,6 +216,66 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.equal(thrown.data.errors[0].pointer, '#/backend')
   })
 
+  it("a Collection's `backend` cannot change once set (409 backend-immutable), but may be restated", async () => {
+    const spaceId = await freshSpace('Immutable Selection Space')
+    await registerBackend(spaceId, 'mem-fixed')
+    const metaUrl = url(`/space/${spaceId}/docs/meta`)
+    const created = await alice.was.request({
+      url: metaUrl,
+      method: 'PUT',
+      json: { id: 'docs' }
+    })
+    assert.equal(created.status, 201)
+
+    // Onto a registered external backend: refused, nothing stored.
+    const moved = await requestError(
+      alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { id: 'docs', backend: { id: 'mem-fixed' } }
+      })
+    )
+    assert.equal(moved.response.status, 409)
+    assert.match(moved.data.type, /#backend-immutable/)
+    assert.equal(moved.data.errors[0].pointer, '#/backend')
+    const unchanged = await alice.was.request({ url: metaUrl, method: 'GET' })
+    assert.equal(unchanged.data.backend.id, 'default')
+
+    // The same backend under another of its ids is a restatement, stored as
+    // sent; an omitted `backend` keeps the stored one.
+    const restated = await alice.was.request({
+      url: metaUrl,
+      method: 'PUT',
+      json: { id: 'docs', backend: { id: 'fs' }, name: 'Docs' }
+    })
+    assert.equal(restated.status, 204)
+    const described = await alice.was.request({ url: metaUrl, method: 'GET' })
+    assert.equal(described.data.backend.id, 'fs')
+    const kept = await alice.was.request({
+      url: metaUrl,
+      method: 'PUT',
+      json: { id: 'docs', name: 'Docs again' }
+    })
+    assert.equal(kept.status, 204)
+
+    // And off a registered external backend: refused as well.
+    const external = await alice.was.request({
+      url: url(`/space/${spaceId}/notes/meta`),
+      method: 'PUT',
+      json: { id: 'notes', backend: { id: 'mem-fixed' } }
+    })
+    assert.equal(external.status, 201)
+    const back = await requestError(
+      alice.was.request({
+        url: url(`/space/${spaceId}/notes/meta`),
+        method: 'PUT',
+        json: { id: 'notes', backend: { id: 'default' } }
+      })
+    )
+    assert.equal(back.response.status, 409)
+    assert.match(back.data.type, /#backend-immutable/)
+  })
+
   it("a `unique` index declaration on a registered backend's Collection is refused (409 unsupported-backend)", async () => {
     const spaceId = await freshSpace('Unique On External Space')
     await registerBackend(spaceId, 'mem-unique')
@@ -268,7 +328,8 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.equal(added.response.status, 409)
     assert.match(added.data.type, /#unsupported-backend/)
 
-    // So is moving a declaring Collection onto the registered backend.
+    // Moving a declaring Collection onto the registered backend is refused
+    // too, by the selection's immutability, which is decided first.
     const declaring = await alice.was.request({
       url: url(`/space/${spaceId}/notes/meta`),
       method: 'PUT',
@@ -286,7 +347,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
       })
     )
     assert.equal(moved.response.status, 409)
-    assert.match(moved.data.type, /#unsupported-backend/)
+    assert.match(moved.data.type, /#backend-immutable/)
   })
 })
 

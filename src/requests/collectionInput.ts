@@ -18,7 +18,7 @@
  */
 import type { FastifyRequest } from 'fastify'
 import type { ParsedCollectionMetadataBody } from '../lib/collectionMetadataBody.js'
-import { assertSupportedBackend, DEFAULT_BACKEND_ID } from '../lib/backends.js'
+import { assertSupportedBackend } from '../lib/backends.js'
 import { assertEncryptionDescriptorTransition } from '../lib/encryption.js'
 import {
   assertPlaintextNotEncrypted,
@@ -29,8 +29,10 @@ import {
   assertRevisionsTransition
 } from '../lib/revisions.js'
 import type { GovernedDescriptors } from '../lib/governedLog.js'
+import type { ServerBackends } from '../lib/serverBackends.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import {
+  BackendImmutableError,
   EncryptionHistoryLogGovernedError,
   UnsupportedBackendError
 } from '../errors.js'
@@ -98,6 +100,33 @@ function assertCollectionMetadataTransition({
       parsed.encryption ?? existing?.encryption ?? governed?.encryption,
     requestName
   })
+}
+
+/**
+ * Whether two `backend.id` values select one backend: the same server backend
+ * under either of its ids (`default`, or its fixed id), or the same external
+ * id. An absent id is the default.
+ * @param options {object}
+ * @param options.serverBackends {ServerBackends}
+ * @param [options.stored] {string}   the stored Collection's selection
+ * @param options.incoming {string}   the selection the write composed
+ * @returns {boolean}
+ */
+function selectsSameBackend({
+  serverBackends,
+  stored,
+  incoming
+}: {
+  serverBackends: ServerBackends
+  stored?: string
+  incoming: string
+}): boolean {
+  const storedBackend = serverBackends.resolve(stored)
+  const incomingBackend = serverBackends.resolve(incoming)
+  if (storedBackend !== undefined || incomingBackend !== undefined) {
+    return storedBackend === incomingBackend
+  }
+  return stored === incoming
 }
 
 /**
@@ -169,7 +198,7 @@ export async function composeCollectionMetadata({
   governed?: GovernedDescriptors
   requestName: string
 }): Promise<CollectionMetadata> {
-  const { storage } = request.server
+  const { serverBackends } = request.server
   // An omitted `backend` keeps the stored selection on an update; only a
   // create with none gets the server default (spec "Update (or Create by Id)
   // Collection"). The carried-forward value is not re-validated against the
@@ -179,11 +208,26 @@ export async function composeCollectionMetadata({
     parsed.body.backend === undefined && existing?.backend !== undefined
       ? existing.backend
       : await assertSupportedBackend({
-          storage,
+          serverBackends,
           spaceId,
           backend: parsed.body.backend,
           requestName
         })
+  // The selection is set at creation and cannot move: the Collection's
+  // Resources live on the selected backend, so a body naming another one
+  // would leave them there while reads went elsewhere. A body may restate the
+  // selection under another id of the same backend (`default` for the
+  // backend it aliases), which is stored as sent.
+  if (
+    existing !== undefined &&
+    !selectsSameBackend({
+      serverBackends,
+      stored: existing.backend?.id,
+      incoming: backend.id
+    })
+  ) {
+    throw new BackendImmutableError({ backendId: backend.id })
+  }
   // Update Collection composes inside the backend's write, so this runs
   // against the record the write replaces.
   assertCollectionMetadataTransition({
@@ -194,14 +238,15 @@ export async function composeCollectionMetadata({
   })
   const plaintext = parsed.plaintext ?? existing?.plaintext
   // A `unique` claim is enforced inside the Resource write of the server's
-  // own backends, which read the declaration under their lock. A registered
-  // external backend's adapter never receives the Collection Metadata
-  // object, so it cannot enforce the claim; the declaration is refused rather
-  // than stored unenforced. Checked on the composed pair, so selecting an
-  // external backend on a Collection that already declares one is refused
-  // too.
+  // own backends, which read the declaration under their lock (a server
+  // backend other than the default holds a copy of the Collection Metadata
+  // object for that). A registered external backend's adapter never receives
+  // the Collection Metadata object, so it cannot enforce the claim; the
+  // declaration is refused rather than stored unenforced. Checked on the
+  // composed pair, so selecting an external backend on a Collection that
+  // already declares one is refused too.
   if (
-    backend.id !== DEFAULT_BACKEND_ID &&
+    !serverBackends.has(backend.id) &&
     declaredUniqueIndexesOf({ collectionMetadata: { plaintext } }).length > 0
   ) {
     throw new UnsupportedBackendError({

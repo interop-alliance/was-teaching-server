@@ -140,7 +140,7 @@ describe('backend option as a function', () => {
     })
     await app.ready()
     expect(backend?.logger).toBe(app.log)
-    expect(app.storage).toBe(backend)
+    expect(app.storage.describe()).toEqual(backend!.describe())
     await app.close()
     expect(backend?.closeCalls).toBe(1)
   })
@@ -165,6 +165,80 @@ describe('backend option as a function', () => {
   })
 })
 
+describe('the backends set', () => {
+  it('refuses an explicit empty `backends` list instead of opening the fallback', async () => {
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backends: [],
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'No storage backend is configured.'
+    )
+  })
+
+  it('refuses two backends under one fixed id, and closes both with the app', async () => {
+    const first = await LifecycleSpyBackend.open({
+      dataDir: path.join(dataDir, 'twin-1')
+    })
+    const second = await LifecycleSpyBackend.open({
+      dataDir: path.join(dataDir, 'twin-2'),
+      originId: first.originId
+    })
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backends: [first, second],
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'Two storage backends carry the id "fs".'
+    )
+    await app.close().catch(() => {})
+    expect(first.closeCalls).toBe(1)
+    expect(second.closeCalls).toBe(1)
+  })
+
+  it('refuses a default naming no configured backend', async () => {
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend: await FileSystemBackend.open({
+        dataDir: path.join(dataDir, 'lonely')
+      }),
+      defaultBackend: 'postgres',
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'WAS_DEFAULT_BACKEND names "postgres", which is not a configured storage backend'
+    )
+    await app.close().catch(() => {})
+  })
+
+  it('refuses `backend` beside `backends`', async () => {
+    const backend = await FileSystemBackend.open({
+      dataDir: path.join(dataDir, 'both')
+    })
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend,
+      backends: [backend],
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'backend and backends are mutually exclusive.'
+    )
+    await app.close().catch(() => {})
+  })
+
+  it('decorates the set, with the one backend as the default', async () => {
+    const app = await testApp('set')
+    await app.ready()
+    expect(app.serverBackends.default).toBe(app.storage)
+    expect(app.serverBackends.defaultId).toBe('fs')
+    expect(app.serverBackends.others()).toEqual([])
+    await app.close()
+  })
+})
+
 describe('a backend with no origin id', () => {
   it('is refused at registration, and still closed with the app', async () => {
     const backend = await UnsettledBackend.open({
@@ -176,7 +250,7 @@ describe('a backend with no origin id', () => {
       logger: false
     })
     await expect(app.ready()).rejects.toThrow(
-      'The storage backend carries no origin id.'
+      'A storage backend carries no origin id.'
     )
     // Closing an app whose boot failed reports the boot error again.
     await app.close().catch(() => {})

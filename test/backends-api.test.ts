@@ -44,12 +44,18 @@ describe('Space backend registration (/backends)', () => {
   }
 
   // The single server-configured filesystem backend, registered as `default`.
+  // The server backends head every listing: the `default` alias, then the
+  // filesystem backend under its fixed id.
   const defaultBackendDescriptor = {
     id: 'default',
     name: 'Server Filesystem',
     managedBy: 'server',
     persistence: 'durable'
   }
+  const serverBackendDescriptors = [
+    defaultBackendDescriptor,
+    { ...defaultBackendDescriptor, id: 'fs' }
+  ]
 
   beforeAll(async () => {
     backend = await openTempBackend()
@@ -118,10 +124,10 @@ describe('Space backend registration (/backends)', () => {
       method: 'GET'
     })
     assert.equal(response.status, 200)
-    assert.equal(response.data.length, 2)
-    assert.deepStrictEqual(response.data[0], defaultBackendDescriptor)
-    assert.equal(response.data[1].id, 'gdrive-1')
-    assertNoSecrets(response.data[1])
+    assert.equal(response.data.length, 3)
+    assert.deepStrictEqual(response.data.slice(0, 2), serverBackendDescriptors)
+    assert.equal(response.data[2].id, 'gdrive-1')
+    assertNoSecrets(response.data[2])
   })
 
   it('POST a duplicate id yields id-conflict (409)', async () => {
@@ -293,7 +299,7 @@ describe('Space backend registration (/backends)', () => {
       url: backendsUrl(spaceId),
       method: 'GET'
     })
-    assert.deepStrictEqual(listing.data, [defaultBackendDescriptor])
+    assert.deepStrictEqual(listing.data, serverBackendDescriptors)
   })
 
   it('a registration and a deregistration each advance the Space Metadata ETag', async () => {
@@ -305,7 +311,7 @@ describe('Space backend registration (/backends)', () => {
     const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
     const before = await alice.was.request({ url: metaUrl, method: 'GET' })
     const etagBefore = before.headers.get('etag')!
-    assert.deepStrictEqual(before.data.backends, [defaultBackendDescriptor])
+    assert.deepStrictEqual(before.data.backends, serverBackendDescriptors)
 
     await alice.was.request({
       url: backendsUrl(spaceId),
@@ -324,8 +330,8 @@ describe('Space backend registration (/backends)', () => {
     assert.notEqual(etagRegistered, etagBefore)
     // A 200 comes back as the client's parsed result, body on `data`.
     const registeredBody = (registered as any).data
-    assert.equal(registeredBody.backends.length, 2)
-    assert.equal(registeredBody.backends[1].id, 'gdrive-1')
+    assert.equal(registeredBody.backends.length, 3)
+    assert.equal(registeredBody.backends[2].id, 'gdrive-1')
     // The generation is kept: only the version advanced.
     assert.equal(
       etagGeneration(etagRegistered),
@@ -347,9 +353,10 @@ describe('Space backend registration (/backends)', () => {
     assert.equal(deregistered.status, 200)
     const etagDeregistered = deregistered.headers.get('etag')!
     assert.notEqual(etagDeregistered, etagRegistered)
-    assert.deepStrictEqual((deregistered as any).data.backends, [
-      defaultBackendDescriptor
-    ])
+    assert.deepStrictEqual(
+      (deregistered as any).data.backends,
+      serverBackendDescriptors
+    )
 
     // Deregistering an absent record changes nothing, so the validator holds
     // and the conditional read is a 304.
@@ -388,6 +395,6 @@ describe('Space backend registration (/backends)', () => {
       url: backendsUrl(dst),
       method: 'GET'
     })
-    assert.deepStrictEqual(listing.data, [defaultBackendDescriptor])
+    assert.deepStrictEqual(listing.data, serverBackendDescriptors)
   })
 })

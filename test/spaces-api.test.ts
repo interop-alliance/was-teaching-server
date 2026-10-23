@@ -21,11 +21,18 @@ import {
 
 /**
  * The server-derived `backends` member every Space Metadata read carries: this
- * suite's server runs the single filesystem backend, registered as `default`.
+ * suite's server runs the filesystem backend alone, listed under the `default`
+ * alias and under its fixed id.
  */
 const SERVED_BACKENDS = [
   {
     id: 'default',
+    name: 'Server Filesystem',
+    managedBy: 'server',
+    persistence: 'durable'
+  },
+  {
+    id: 'fs',
     name: 'Server Filesystem',
     managedBy: 'server',
     persistence: 'durable'
@@ -1150,12 +1157,18 @@ describe('Spaces', () => {
 
   describe('Space Backends (/backends)', () => {
     // The single server-configured filesystem backend, registered as `default`.
+    // The server backends head every listing: the `default` alias, then
+    // each configured backend under its fixed id.
     const defaultBackendDescriptor = {
       id: 'default',
       name: 'Server Filesystem',
       managedBy: 'server',
       persistence: 'durable'
     }
+    const serverBackendDescriptors = [
+      defaultBackendDescriptor,
+      { ...defaultBackendDescriptor, id: 'fs' }
+    ]
 
     it('[signed] GET /backends lists the default backend descriptor', async () => {
       const spaceId = crypto.randomUUID()
@@ -1171,7 +1184,7 @@ describe('Spaces', () => {
       })
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/json/)
-      assert.deepStrictEqual(response.data, [defaultBackendDescriptor])
+      assert.deepStrictEqual(response.data, serverBackendDescriptors)
     })
 
     it('anonymous GET /backends of a private space 404s (no leak)', async () => {
@@ -1202,7 +1215,7 @@ describe('Spaces', () => {
       )
       assert.equal(response.status, 200)
       const backends = (await response.json()) as unknown[]
-      assert.deepStrictEqual(backends, [defaultBackendDescriptor])
+      assert.deepStrictEqual(backends, serverBackendDescriptors)
     })
   })
 })

@@ -35,7 +35,7 @@ import {
   REPLICATION_PULL_INTERVAL_MS
 } from '../config.default.js'
 import { PeerRequestError, ProblemError } from '../errors.js'
-import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
+import { DEFAULT_BACKEND_ID } from '../lib/serverBackends.js'
 import { bufferedBodyLimit } from '../lib/bodyLimit.js'
 import { generationOfEtag } from '../lib/etag.js'
 import { invalidateCollectionGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
@@ -1038,13 +1038,17 @@ export class ReplicationManager {
           'creating stamp, or no validator.'
       })
     }
+    // The apply path checks the replica registration on the backend it writes
+    // to, and the registration is stored on the default backend alone, so a
+    // Collection selecting any other backend id stalls, a server backend of
+    // this deployment included.
     const backendId = metadata.backend?.id
     if (backendId !== undefined && backendId !== DEFAULT_BACKEND_ID) {
       return this.#recordStall({
         ...options,
         reason: 'unsupported-backend',
         detail:
-          `The Collection is stored on backend "${backendId}" on the peer. ` +
+          `The Collection selects backend "${backendId}" on the peer. ` +
           'This server replicates into its own default backend only.'
       })
     }

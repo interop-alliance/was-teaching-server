@@ -158,6 +158,11 @@ log runs on the exclusive side of the Space gate, so it cannot land between a
 write's log read and its bytes. An append stays on the shared side. In the
 Postgres backend, the recheck reads the log under the `collections` row lock a
 log write takes. See [filesystem-layout.md](filesystem-layout.md) for the gate.
+A Collection on a non-default server backend runs its Resource writes under that
+backend's lock, so the server writes the log through to that backend as a copy
+after each control-plane write of it (`src/lib/backendMirror.ts`), and the
+recheck there reads the copy. A Resource write that lands between the two
+commits committed before the log write was answered.
 
 Inside the critical section, after its preconditions pass, the backend compares
 a write over a live Resource or chunk with the stored representation. The media

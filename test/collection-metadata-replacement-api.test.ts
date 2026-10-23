@@ -24,6 +24,7 @@ import {
   openTempBackend,
   provisionProviderContainers,
   startTestServer,
+  requestError,
   zcapClients
 } from './helpers.js'
 
@@ -147,7 +148,7 @@ describe('Collection Metadata full replacement', () => {
       assert.deepStrictEqual(created.data.backend, { id: 'default' })
     })
 
-    it('still accepts an explicit change of the selection', async () => {
+    it('refuses an explicit change of the selection (409 backend-immutable)', async () => {
       const spaceId = await freshSpace()
       await alice.was.request({
         path: `/space/${spaceId}/backends`,
@@ -164,14 +165,17 @@ describe('Collection Metadata full replacement', () => {
         method: 'PUT',
         json: { id: 'docs' }
       })
-      const updated = await alice.was.request({
-        path: `/space/${spaceId}/docs/meta`,
-        method: 'PUT',
-        json: { id: 'docs', backend: { id: 'mem-2' } }
-      })
-      assert.equal(updated.status, 204)
+      const moved = await requestError(
+        alice.was.request({
+          path: `/space/${spaceId}/docs/meta`,
+          method: 'PUT',
+          json: { id: 'docs', backend: { id: 'mem-2' } }
+        })
+      )
+      assert.equal(moved.response.status, 409)
+      assert.match(moved.data.type, /#backend-immutable/)
       assert.deepStrictEqual((await readMeta(spaceId, 'docs')).backend, {
-        id: 'mem-2'
+        id: 'default'
       })
     })
   })

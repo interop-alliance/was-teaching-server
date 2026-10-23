@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 216
+nextAvailableId: 220
 
 <!-- roadmap-order:index:start -->
 
@@ -42,6 +42,7 @@ Ready:
 - WAS-162 [M] (*) Research verifying zcap invocations signed by a did:webvh
   hosted elsewhere
 - WAS-194 [M] (*) `encryption` is declared only when the Collection is created
+- WAS-219 [L] (*) Changing a Collection's `backend.id` once it holds Resources
 
 **Features**
 
@@ -54,6 +55,8 @@ Ready:
 - WAS-73 [M] (*) Periodic sweep of Spaces and keystores whose did:webvh
   controller no longer resolves
 - WAS-195 [M] (*) Store the content digest of each Resource and chunk
+- WAS-217 [M] (*) Policies and the governing log of a Collection on a
+  non-default server backend in its `changes` feed
 
 Chains:
 
@@ -76,6 +79,7 @@ Ready:
 - WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
 - WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
+- WAS-218 [M] (*) Replicate into a Collection on a non-default server backend
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -703,6 +707,22 @@ gone. WAS-173 shipped the `revisions` half of the rule. This item is the
 fallbacks, so it lands with their removal. The App Connect flow already creates
 its Collections encrypted from birth.
 
+### WAS-219: [L] (*) Changing a Collection's `backend.id` once it holds Resources
+
+- status: todo
+- priority: low
+- backend: *
+- labels: backend, spec
+- discovered-from: WAS-216 (2026-10-22)
+- acceptance:
+  - [ ] Decision recorded: an Update Collection that changes `backend.id` on a
+        Collection holding Resources is refused, or moves the Resources
+  - [ ] The server implements the decision and the spec text says so
+
+Today the selection may change freely; the Resources already written stay on the
+backend they were written to and are no longer served, on a registered external
+backend as on a server backend.
+
 ## Features
 
 New capability. The Google Drive items are the remaining stages of the BYOS plan
@@ -974,6 +994,29 @@ export signs the stored digest or keeps hashing the archived bytes is open,
 since a stored value does not detect damaged bytes. The write-time statements of
 WAS-184 need a digest at write time and would read this one.
 
+### WAS-217: [M] (*) Policies and the governing log of a Collection on a non-default server backend in its `changes` feed
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: backend, changes-feed
+- discovered-from: WAS-216 (2026-10-22)
+- acceptance:
+  - [ ] The `changes` feed of a Collection whose `backend.id` names a server
+        backend other than the default carries its Collection- and
+        Resource-level policy documents and its governing-log documents, with
+        the validator the control plane serves for each
+  - [ ] The `collection-metadata` document of such a feed carries the control
+        plane's validator rather than the copy's
+  - [ ] A test over `WAS_TEST_DATABASE_URL` pins each document kind
+
+The feed is served by the Collection's data backend, which holds a copy of the
+Collection Metadata object (under its own stamp) and no policies or log, since
+those stay on the default backend. Either the control-plane writes of those
+records take a position in the data backend's feed, or the feed is composed from
+both stores. Whichever is picked has to keep one per-Collection position
+sequence.
+
 ### WAS-5: [L] (*) [after WAS-1] Drive API ToS use-case clearance
 
 - status: todo
@@ -1169,6 +1212,41 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 `keep-conflicts` and stale-`If-Match`-as-sibling.
 
 ---
+
+### WAS-218: [M] (*) Replicate into a Collection on a non-default server backend
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: backend, replication
+- discovered-from: WAS-216 (2026-10-22)
+- acceptance:
+  - [ ] The pull loop applies a peer Collection whose `backend.id` names a
+        server backend of this deployment into that backend, through its
+        `apply*` methods, under the peer's stamps
+  - [ ] The replica registration the apply path checks is found whichever
+        backend the write lands on
+  - [ ] The loop routes the Collection's Resource, chunk and `/meta` applies to
+        the selected backend, as the request layer's data-plane resolver does,
+        and the Metadata object, log, policy and tombstone applies stay on the
+        control plane
+  - [ ] A test over `WAS_TEST_DATABASE_URL` replicates one such Collection
+
+The apply path refuses a write under a replica registration it cannot read from
+its own store (`guardApply`, reason `unregistered`), and registrations live on
+the default backend alone, so the loop stalls such a Collection with reason
+`unsupported-backend`.
+
+The control plane the loop writes through is the mirroring wrapper
+(`mirroringControlPlane`), so an applied Metadata object, log or tombstone of a
+Collection already held on another server backend reaches that backend's copy,
+and a replicated update keeps the held `backend` selection. What remains is the
+first apply of such a Collection from a peer and the Resource applies.
+
+Open before coding: a peer's `backend.id` names the peer's backend, not this
+server's. Whether `postgres` on the peer maps onto this deployment's `postgres`,
+or the registration states where pulled Collections land regardless of the
+peer's choice, is a wire-level decision to settle first.
 
 ### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 

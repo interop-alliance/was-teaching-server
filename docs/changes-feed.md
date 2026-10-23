@@ -58,6 +58,11 @@ Every document carries the record's write stamp, its `generation`, and its
 position with a new `meta` stamp, and its top-level stamp and `etag` stay the
 content record's.
 
+A Collection on a non-default server backend is fed from that backend. Its
+`collection-metadata` document carries the validator of the backend's copy of
+the Metadata object, and the feed has no `policy` or `log` documents, since
+policies and the governing log stay on the default backend.
+
 A tombstone is marked `deleted: true`. A Collection's own tombstone is not in
 the feed, since the feed goes with the Collection.
 

@@ -10,7 +10,7 @@
 import type { FastifyRequest } from 'fastify'
 import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
+import { DEFAULT_BACKEND_ID } from '../lib/serverBackends.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { stripMetadataValidator } from '../lib/metadataValidator.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'

@@ -579,6 +579,27 @@ advertises it as `originId` on the core `https://w3id.org/pws` specs entry.
 - A data wipe mints a fresh id. That is fine, since a wiped store has no writes
   to replicate.
 
+## Storage backends
+
+The server runs the filesystem backend (`WAS_DATA_DIR`), the Postgres backend
+(`DATABASE_URL`), or both. With neither set, startup fails.
+`WAS_DEFAULT_BACKEND` (`fs` or `postgres`) names the backend that the id
+`default` aliases. Unset, it is `fs` when the filesystem backend is configured,
+else the only backend. Naming an unconfigured backend is a startup error. The
+default backend is the control plane and holds every Space and Collection
+Metadata object, the policies, the registrations, keystores and revocations.
+
+A Collection's `backend.id` is stored as the client sent it, so `default` stays
+`default` and resolves through the alias on every read. Changing
+`WAS_DEFAULT_BACKEND` on a store that already has Collections moves every
+`default` Collection's data plane to the other backend, and their Resources
+appear missing. Set it once and keep it.
+
+The origin id is one value across the configured backends. With `WAS_ORIGIN_ID`
+unset and two stores that each minted their own, startup fails and names both
+ids. To add Postgres beside an existing filesystem store, set `WAS_ORIGIN_ID` to
+the filesystem store's id. The fresh Postgres store adopts it.
+
 ## Write stamps
 
 Every versioned record a store writes carries a write stamp: `updatedAt`,

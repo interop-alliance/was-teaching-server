@@ -27,6 +27,7 @@ import type {
   StoredSpaceMetadata
 } from '../types.js'
 import { listRegisteredBackends } from './backends.js'
+import type { ServerBackends } from './serverBackends.js'
 import {
   embedMetadataValidator,
   stripMetadataValidator
@@ -94,37 +95,36 @@ export async function listReplicaSummaries({
  * server-derived `url`, `linkset`, `backends` and `replicas` stamped on.
  *
  * @param options {object}
- * @param options.storage {StorageBackend}   the request's storage backend,
- *   read for the Space's backends-available listing
+ * @param options.serverBackends {ServerBackends}   the server's own backends;
+ *   the default is read for the Space's registrations and replicas
  * @param options.spaceId {string}
  * @param options.spaceMetadata {SpaceMetadata}   the stored object (a
  *   validator-bearing read result is accepted; the validator is stripped)
- * @param [options.backends] {BackendDescriptor[]}   passed only by a create
- *   echo, which marks the Space as just created: it did not exist before the
- *   write, so it has no registrations (registering one needs the Space
- *   Metadata object to authorize against). The listing is then used as given
- *   and `replicas` is empty, with no storage read for either. Without it, both
+ * @param [options.created] {boolean}   passed by a create echo, which marks
+ *   the Space as just created: it did not exist before the write, so it has
+ *   no registrations (registering one needs the Space Metadata object to
+ *   authorize against). The listing is then the server backends alone and
+ *   `replicas` is empty, with no storage read for either. Without it, both
  *   are read from storage.
  * @returns {Promise<SpaceMetadata>}
  */
 export async function projectSpaceMetadata({
-  storage,
+  serverBackends,
   spaceId,
   spaceMetadata,
-  backends
+  created = false
 }: {
-  storage: StorageBackend
+  serverBackends: ServerBackends
   spaceId: string
   spaceMetadata: SpaceMetadata
-  backends?: BackendDescriptor[]
+  created?: boolean
 }): Promise<SpaceMetadata> {
   const body = stripMetadataValidator(spaceMetadata)
-  const isCreateEcho = backends !== undefined
-  const [listedBackends, replicas] = isCreateEcho
-    ? [backends, []]
+  const [listedBackends, replicas] = created
+    ? [serverBackends.describeAll(), []]
     : await Promise.all([
-        listRegisteredBackends({ storage, spaceId }),
-        listReplicaSummaries({ storage, spaceId })
+        listRegisteredBackends({ serverBackends, spaceId }),
+        listReplicaSummaries({ storage: serverBackends.default, spaceId })
       ])
   return {
     ...body,
@@ -141,35 +141,44 @@ export async function projectSpaceMetadata({
  * `.space.<spaceId>.json` entry: the stored body, stamp members included,
  * with its generation embedded under the reserved `_generation` member (the
  * filesystem backend's on-disk layout, so archives stay interchangeable
- * between backends) and the server-derived `backends` listing added. The
- * local validator segment is this server's own and is left out. The listing is
+ * between backends) and the server-derived `backends` listing added: the
+ * server backends the caller names (the exporting backend's own descriptor
+ * when it exports on its own) and the Space's registrations. The local
+ * validator segment is this server's own and is left out. The listing is
  * informational in an archive: import restores user-writable members only,
- * never a server-derived one. Both backends' `exportSpace` build the entry
- * here, from the record they already read.
+ * never a server-derived one. Both backends' export build the entry here,
+ * from the record they already read.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the exporting backend, read for
- *   the Space's backends-available listing
+ *   the Space's registered backends
  * @param options.spaceId {string}
  * @param options.spaceMetadata {StoredSpaceMetadata}   the stored record,
  *   validator included
+ * @param [options.serverBackends] {BackendDescriptor[]}   the server-managed
+ *   entries of the listing; defaults to the exporting backend's descriptor
  * @returns {Promise<Buffer>}   the entry's bytes
  */
 export async function archivedSpaceMetadata({
   storage,
   spaceId,
-  spaceMetadata
+  spaceMetadata,
+  serverBackends = [storage.describe()]
 }: {
   storage: StorageBackend
   spaceId: string
   spaceMetadata: StoredSpaceMetadata
+  serverBackends?: BackendDescriptor[]
 }): Promise<Buffer> {
   return Buffer.from(
     JSON.stringify(
       embedMetadataValidator({
         body: {
           ...stripMetadataValidator(spaceMetadata),
-          backends: await listRegisteredBackends({ storage, spaceId })
+          backends: [
+            ...serverBackends,
+            ...(await storage.listBackends({ spaceId }))
+          ]
         },
         generation: spaceMetadata.metaGeneration
       })

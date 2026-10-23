@@ -290,7 +290,6 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Collection Backend'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -315,7 +314,7 @@ export class CollectionRequest {
     })
 
     const backend = await resolveBackendDescriptor({
-      storage,
+      serverBackends: request.server.serverBackends,
       spaceId,
       collectionMetadata
     })

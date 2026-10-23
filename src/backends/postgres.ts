@@ -32,6 +32,7 @@ import { Readable } from 'node:stream'
 import pg from 'pg'
 import pino from 'pino'
 import type { FastifyBaseLogger } from 'fastify'
+import { POSTGRES_BACKEND_ID } from '../lib/serverBackends.js'
 import {
   StorageError,
   ResourceImmutableError,
@@ -66,8 +67,7 @@ import {
   resourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionLogFileName,
-  packSpaceArchive
+  collectionLogFileName
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
@@ -96,7 +96,7 @@ import {
   serverBackendDescriptor
 } from '../lib/backends.js'
 import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
-import { attestArchiveEntries } from '../lib/exportProvenance.js'
+import { packExportArchive } from '../lib/exportArchive.js'
 import type { ExportAttestor } from '../lib/exportProvenance.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
 import { sameMediaType } from '../lib/mediaType.js'
@@ -234,7 +234,8 @@ import type {
   FeedDocument,
   ReplicaRegistration,
   ReplicaLoopState,
-  StoredReplica
+  StoredReplica,
+  SpaceExportEntries
 } from '../types.js'
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
@@ -1057,7 +1058,10 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
-    return serverBackendDescriptor({ name: 'Server PostgreSQL' })
+    return serverBackendDescriptor({
+      id: POSTGRES_BACKEND_ID,
+      name: 'Server PostgreSQL'
+    })
   }
 
   /**
@@ -6243,6 +6247,33 @@ export class PostgresBackend implements StorageBackend {
     service?: ServiceDescription
     attestor?: ExportAttestor
   }): Promise<Readable> {
+    const { entries, revocations } = await this.exportSpaceEntries({ spaceId })
+    return packExportArchive({
+      spaceId,
+      entries,
+      revocations,
+      service,
+      attestor
+    })
+  }
+
+  /**
+   * The Space's archive entry tree, read from the rows: metadata up front,
+   * content bytes fetched one entry at a time while packing.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.serverBackends] {BackendDescriptor[]}   the
+   *   server-managed entries of the archived Space Metadata object's
+   *   backends listing; defaults to this backend's descriptor
+   * @returns {Promise<SpaceExportEntries>}
+   */
+  async exportSpaceEntries({
+    spaceId,
+    serverBackends
+  }: {
+    spaceId: string
+    serverBackends?: BackendDescriptor[]
+  }): Promise<SpaceExportEntries> {
     const [
       spaceMetadata,
       { rows: policyRows },
@@ -6350,7 +6381,8 @@ export class PostgresBackend implements StorageBackend {
         bytes: await archivedSpaceMetadata({
           storage: this,
           spaceId,
-          spaceMetadata
+          spaceMetadata,
+          serverBackends
         })
       }
     ]
@@ -6535,27 +6567,7 @@ export class PostgresBackend implements StorageBackend {
         bytes: Buffer.from(JSON.stringify(row.record, null, 2))
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
-
-    // One signed statement per exported object, over the entry tree about to
-    // be packed, plus the log snapshot they verify against.
-    const provenance =
-      attestor === undefined
-        ? undefined
-        : await attestArchiveEntries({ spaceId, entries: topLevel, attestor })
-
-    // `packSpaceArchive` resolves a tar-stream `Pack`, a streamx readable;
-    // `exportSpace` hands its callers a Node `Readable`.
-    const pack = await packSpaceArchive({
-      spaceId,
-      entries: topLevel,
-      revocations,
-      // Written verbatim as the archive's `service.json`; absent when the
-      // caller had no description to declare.
-      service,
-      provenance,
-      didLog: attestor?.didLog
-    })
-    return Readable.from(pack)
+    return { entries: topLevel, revocations }
   }
 
   /**

@@ -424,6 +424,31 @@ export class RevisionsImmutableError extends ProblemError {
 }
 
 /**
+ * 409 -- an Update Collection body named a `backend` that resolves to a
+ * backend other than the one the stored Collection selects. The selection is
+ * made when the Collection is created and cannot move afterward: the
+ * Collection's Resources live on the selected backend, and a move would leave
+ * them there while reads went elsewhere. Only observable by a caller already
+ * authorized to update the Collection.
+ * @param options {object}
+ * @param options.backendId {string}   the backend id the body named
+ */
+export class BackendImmutableError extends ProblemError {
+  constructor({ backendId }: { backendId: string }) {
+    const detail =
+      `A Collection's 'backend' is set at creation and cannot be changed; ` +
+      `'${backendId}' selects a different backend than the stored one.`
+    super({
+      type: ProblemTypes.BACKEND_IMMUTABLE,
+      title: 'Collection backend selection is immutable.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/backend' }]
+    })
+  }
+}
+
+/**
  * 409 -- a Resource or chunk write into a Collection whose `revisions`
  * descriptor sets `immutable` would change stored bytes: an update of a live
  * Resource or chunk, or a repeat create whose body differs from the stored

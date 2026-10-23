@@ -9,10 +9,8 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import crypto from 'node:crypto'
-import pg from 'pg'
 import type { FastifyInstance } from 'fastify'
 
-import { PostgresBackend } from '../src/backends/postgres.js'
 import { stampOf } from '../src/lib/hlc.js'
 import type { StorageBackend } from '../src/types.js'
 import {
@@ -23,7 +21,8 @@ import {
   requestError,
   splitResourceMetaEtag,
   startTestServer,
-  zcapClients
+  zcapClients,
+  openTempPostgres
 } from './helpers.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
@@ -66,23 +65,8 @@ async function openFilesystem(): ReturnType<BackendOpener> {
  * @returns {ReturnType<BackendOpener>}
  */
 async function openPostgres(): ReturnType<BackendOpener> {
-  const schema = `was_test_${crypto.randomBytes(8).toString('hex')}`
-  const backend = await PostgresBackend.open({
-    connectionString: connectionString!,
-    schema
-  })
-  return {
-    backend,
-    async cleanup() {
-      const admin = new pg.Client({ connectionString: connectionString! })
-      await admin.connect()
-      try {
-        await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
-      } finally {
-        await admin.end()
-      }
-    }
-  }
+  const { backend, dropSchema } = await openTempPostgres()
+  return { backend, cleanup: dropSchema }
 }
 
 /**

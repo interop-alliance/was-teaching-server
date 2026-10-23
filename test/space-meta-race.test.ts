@@ -114,7 +114,7 @@ describe('Update Space against a concurrently changing Space', () => {
 
   async function deleteSpace(spaceId: string): Promise<void> {
     await backend.deleteSpace({ spaceId })
-    invalidateSpaceMetadata({ storage: backend, spaceId })
+    invalidateSpaceMetadata({ storage: fastify.storage, spaceId })
   }
 
   it("an update whose Space is re-created by another controller leaves the new controller's Space untouched", async () => {

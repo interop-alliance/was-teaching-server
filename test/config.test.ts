@@ -291,6 +291,7 @@ describe('loadConfigFromEnv', () => {
       PORT: '8080',
       DATABASE_URL: ' postgres://was:was@localhost:5433/was ',
       WAS_DATA_DIR: ' ./scratch/was-data ',
+      WAS_DEFAULT_BACKEND: ' postgres ',
       STORAGE_LIMIT_PER_SPACE: '1048576',
       MAX_UPLOAD_BYTES: '65536',
       WAS_ENABLED_BACKENDS: 'gdrive, s3',
@@ -302,11 +303,28 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.databaseUrl, 'postgres://was:was@localhost:5433/was')
     // A relative WAS_DATA_DIR resolves against the process working directory.
     assert.equal(config.dataDir, path.resolve('./scratch/was-data'))
+    assert.equal(config.defaultBackend, 'postgres')
     assert.equal(config.storageLimitPerSpace, 1048576)
     assert.equal(config.maxUploadBytes, 65536)
     assert.deepEqual(config.enabledBackendProviders, ['gdrive', 's3'])
     assert.equal(config.onboardingToken, 'abc123')
     assert.equal(config.discloseVersion, false)
+  })
+
+  it('reads an unset WAS_DEFAULT_BACKEND as undefined and refuses an unknown id', () => {
+    assert.equal(
+      loadConfigFromEnv({ SERVER_URL: 'https://was.example.com' })
+        .defaultBackend,
+      undefined
+    )
+    assert.throws(
+      () =>
+        loadConfigFromEnv({
+          SERVER_URL: 'https://was.example.com',
+          WAS_DEFAULT_BACKEND: 'sqlite'
+        }),
+      /WAS_DEFAULT_BACKEND must be one of fs, postgres; got "sqlite"/
+    )
   })
 
   it('refuses an empty or whitespace WAS_ONBOARDING_TOKEN', () => {

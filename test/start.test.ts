@@ -49,6 +49,14 @@ describe('start.ts entry point', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
+  it('refuses to start with no storage backend configured', async () => {
+    const { output, exited } = startProcess({
+      SERVER_URL: 'http://localhost:3002'
+    })
+    assert.equal(await exited, 1)
+    assert.match(output.stderr, /No storage backend is configured/)
+  })
+
   it('a startup failure writes its message to a piped stderr and exits 1', async () => {
     const { output, exited } = startProcess({
       SERVER_URL: 'http://localhost:3002',

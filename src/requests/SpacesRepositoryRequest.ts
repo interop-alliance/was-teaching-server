@@ -351,14 +351,14 @@ export class SpacesRepositoryRequest {
     // Space serves, so the create response and a subsequent read agree. An
     // id already in use was refused as a 409 by the guarded write, so it
     // created the Space. A Space that did not exist has no registered
-    // backends, so the projection lists the server's own descriptor without
-    // a read.
+    // backends, so the projection lists the server's own backends without a
+    // read.
     return reply.status(201).send(
       await projectSpaceMetadata({
-        storage,
+        serverBackends: request.server.serverBackends,
         spaceId,
         spaceMetadata: written.metadata,
-        backends: [storage.describe()]
+        created: true
       })
     )
   }

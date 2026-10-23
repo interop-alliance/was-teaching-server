@@ -76,6 +76,8 @@ import { parseIncludeSections, parsePageParams } from '../lib/pagination.js'
 import { loadExportAttestor } from '../lib/exportProvenance.js'
 import { prepareImportPlan } from '../lib/importPlan.js'
 import { installImportRevocations } from '../lib/importRevocations.js'
+import { importSpaceAcrossBackends } from '../lib/importAcrossBackends.js'
+import { exportSpaceArchive } from '../lib/exportArchive.js'
 import {
   ProblemError,
   InvalidImportError,
@@ -188,7 +190,7 @@ export class SpaceRequest {
     // agrees.
     return withEtag({ reply: reply.status(200), etag: metaEtag }).send(
       await projectSpaceMetadata({
-        storage: request.server.storage,
+        serverBackends: request.server.serverBackends,
         spaceId,
         spaceMetadata: storedMetadata
       })
@@ -344,14 +346,14 @@ export class SpaceRequest {
     // the stored object as the write left it, through the projection Read
     // Space serves. A Space that did not exist before this write has no
     // registered backends, so the projection lists the server's own
-    // descriptor without a read.
+    // backends without a read.
     reply.header('Location', spaceUrl)
     return reply.status(201).send(
       await projectSpaceMetadata({
-        storage,
+        serverBackends: request.server.serverBackends,
         spaceId,
         spaceMetadata: metadata,
-        backends: [storage.describe()]
+        created: true
       })
     )
   }
@@ -448,7 +450,6 @@ export class SpaceRequest {
       }
       throw err
     }
-
     // `Location` names the Collection in its canonical trailing-slash
     // (container) form.
     const createdUrl = absoluteUrl({
@@ -512,7 +513,7 @@ export class SpaceRequest {
       containerRule: 'exact-delete'
     })
 
-    // zCap checks out, continue
+    // zCap checks out, continue.
     try {
       await storage.deleteSpace({ spaceId })
     } finally {
@@ -599,7 +600,14 @@ export class SpaceRequest {
       )
     }
     const attestor = 'attestor' in loaded ? loaded.attestor : undefined
-    const tarFile = await storage.exportSpace({ spaceId, service, attestor })
+    // The Space's Collections may span the server backends; the archive is
+    // composed from each one's tree.
+    const tarFile = await exportSpaceArchive({
+      serverBackends: request.server.serverBackends,
+      spaceId,
+      service,
+      attestor
+    })
 
     return reply.status(200).type('application/x-tar').send(tarFile)
   }
@@ -652,7 +660,8 @@ export class SpaceRequest {
         tarStream: request.body,
         logger: request.log
       })
-      const summary = await storage.importSpace({
+      const summary = await importSpaceAcrossBackends({
+        serverBackends: request.server.serverBackends,
         spaceId,
         plan,
         provenance,
@@ -805,7 +814,6 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    const { storage } = request.server
     const requestName = 'List Backends'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -823,15 +831,22 @@ export class SpaceRequest {
     return reply
       .status(200)
       .type('application/json')
-      .send(await listRegisteredBackends({ storage, spaceId }))
+      .send(
+        await listRegisteredBackends({
+          serverBackends: request.server.serverBackends,
+          spaceId
+        })
+      )
   }
 
   /**
    * GET /space/:spaceId/quotas
    * Request handler for the "Quotas" request: the Space's storage report,
-   * grouped by backend (spec "Quotas"). This reference server ships a single
-   * server-configured backend, so the `backends` array has one entry, measured
-   * from the active backend's `reportUsage()`.
+   * grouped by backend (spec "Quotas"): one entry per server backend, each
+   * measured by that backend's `reportUsage()` under its fixed id, the
+   * default first. A backend holding no copy of the Space reports zero
+   * usage. Each backend enforces its per-Space limit against its own
+   * usage.
    *
    * The per-Collection `usageByCollection` breakdown is opt-in via the spec's
    * `?include=collections` query parameter (omitted otherwise, to keep the
@@ -861,7 +876,6 @@ export class SpaceRequest {
       params: { spaceId },
       query: { include }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Quotas'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -885,14 +899,18 @@ export class SpaceRequest {
     const includeCollections =
       parseIncludeSections(include).includes('collections')
 
-    const usage = await storage.reportUsage({ spaceId, includeCollections })
+    const backends = await Promise.all(
+      request.server.serverBackends
+        .all()
+        .map(backend => backend.reportUsage({ spaceId, includeCollections }))
+    )
 
     return reply
       .status(200)
       .type('application/json')
       .send({
         respondedAt: new Date().toISOString(),
-        backends: [usage]
+        backends
       } satisfies SpaceQuotaReport)
   }
 }

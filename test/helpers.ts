@@ -1,7 +1,8 @@
 import assert from 'node:assert'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { Readable } from 'node:stream'
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify'
+import pg from 'pg'
 import pino from 'pino'
 import { vi } from 'vitest'
 import { ZcapClient } from '@interop/ezcap'
@@ -27,6 +28,8 @@ import {
   ENCRYPTED_COLLECTIONS_IDENTIFIER,
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
+import { PostgresBackend } from '../src/backends/postgres.js'
+import type { PostgresBackendOptions } from '../src/backends/postgres.js'
 import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
 import { prepareImportPlan } from '../src/lib/importPlan.js'
@@ -320,6 +323,72 @@ export function etagGeneration(etag: string): string {
   const match = new RegExp(`^"${VALIDATOR_SEGMENTS}(?:\\.\\d+)?"$`).exec(etag)
   assert.ok(match, `expected a quoted stamp ETag, got ${etag}`)
   return match![1]!
+}
+
+/**
+ * The disposable Postgres database the Postgres suites run against, from
+ * `WAS_TEST_DATABASE_URL`. A suite skips itself when it is unset, so a call
+ * with it unset is the suite's own mistake.
+ * @returns {string}
+ */
+function testDatabaseUrl(): string {
+  const connectionString = process.env.WAS_TEST_DATABASE_URL
+  assert.ok(connectionString, 'WAS_TEST_DATABASE_URL is unset')
+  return connectionString
+}
+
+/**
+ * Runs one statement against the test database as an admin client outside
+ * any backend's pool.
+ * @param sql {string}
+ * @param [values] {unknown[]}
+ * @returns {Promise<pg.QueryResult>}
+ */
+export async function postgresAdminQuery(
+  sql: string,
+  values?: unknown[]
+): Promise<pg.QueryResult> {
+  const admin = new pg.Client({ connectionString: testDatabaseUrl() })
+  await admin.connect()
+  try {
+    return await admin.query(sql, values)
+  } finally {
+    await admin.end()
+  }
+}
+
+/**
+ * Opens a Postgres backend over a throwaway `was_test_<hex>` schema of the
+ * test database, the Postgres analogue of `openTempBackend()`'s temp dir.
+ * `schema` reopens one an earlier call minted, for a reboot over the same
+ * store. `dropSchema` removes the schema with everything in it; close the
+ * backend first.
+ * @param [options] {object}   the backend's own options, less the connection
+ * @param [options.schema] {string}
+ * @returns {Promise<{ backend: PostgresBackend, schema: string, dropSchema: () => Promise<void> }>}
+ */
+export async function openTempPostgres({
+  schema = `was_test_${randomBytes(8).toString('hex')}`,
+  ...options
+}: Omit<PostgresBackendOptions, 'connectionString' | 'schema'> & {
+  schema?: string
+} = {}): Promise<{
+  backend: PostgresBackend
+  schema: string
+  dropSchema: () => Promise<void>
+}> {
+  const backend = await PostgresBackend.open({
+    ...options,
+    connectionString: testDatabaseUrl(),
+    schema
+  })
+  return {
+    backend,
+    schema,
+    async dropSchema() {
+      await postgresAdminQuery(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+    }
+  }
 }
 
 /**
