@@ -74,9 +74,12 @@ jobs:
       # with an onboarding token required server-side and supplied client-side.
       # The CLI exit code gates the job (0 = conformant, 1 = failures,
       # 2 = usage error / server unreachable); the JSON reports are uploaded as
-      # build artifacts.
+      # build artifacts. The server has no default data directory, so each run
+      # gets its own WAS_DATA_DIR and starts over an empty store.
       - name: Conformance (open provisioning)
         shell: bash
+        env:
+          WAS_DATA_DIR: data-conformance-open
         run: |
           node dist/start.js > server-open.log 2>&1 &
           SERVER_PID=$!
@@ -92,6 +95,7 @@ jobs:
         shell: bash
         env:
           WAS_ONBOARDING_TOKEN: ci-conformance-token
+          WAS_DATA_DIR: data-conformance-token
         run: |
           node dist/start.js > server-token.log 2>&1 &
           SERVER_PID=$!

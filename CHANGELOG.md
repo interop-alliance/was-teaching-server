@@ -50,6 +50,10 @@
 
 ### Fixed
 
+- The CI conformance job sets `WAS_DATA_DIR` for each of its two server runs,
+  since the server no longer has a default data directory. The conformance suite
+  is raised to 0.32.0, whose backends and quota cases accept the `default` alias
+  listed beside the backend's fixed id.
 - Update Collection composed the object it stored from a read made before the
   backend's lock, so a full replacement racing another write carried forward
   what that read saw: an unconditional rename could drop a just-declared
