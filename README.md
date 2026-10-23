@@ -572,11 +572,18 @@ pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem"
 # From far away, use more clients so the round trip doesn't cap every rate
 # (5 clients / 185 ms is about 27 req/s):
 pnpm perf:remote --url https://staging.freewallet.me --clients 25 --payloads json,small
+# From a machine with little memory (512 MB), cap the clients of the 10 MiB
+# tests: five clients each sending a 10 MiB file run Node out of memory there:
+pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem" --large-file-clients 2
 ```
 
 Every number includes the round trip from the machine running it, so compare
-runs made from the same machine against hosts in the same region. Without
-`--payloads json,small`, a run from a slow uplink stops while filling, with
+runs made from the same machine against hosts in the same region.
+`--large-file-clients` (`pnpm perf:fs`, `pnpm perf:pg` and `pnpm perf:remote`
+take it; it defaults to `--clients`) runs only the payload matrix's 10 MiB tests
+with fewer clients, and the report header names the cap, so compare a capped run
+only with one capped the same way. Without `--payloads json,small`, a run from a
+slow uplink stops while filling, with
 `Request to ".../space/perf-matrix-read/public/large" timed out.`, and deletes
 the Spaces it created so far.
 

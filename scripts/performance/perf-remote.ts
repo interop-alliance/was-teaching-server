@@ -22,7 +22,8 @@
  *
  * Usage: pnpm perf:remote --url https://staging.freewallet.me
  * [--label "Filesystem (staging)"] [--sizes 1,500,2000] [--clients 5]
- * [--duration 10] [--writes 100] [--payloads json,small,large].
+ * [--duration 10] [--writes 100] [--payloads json,small,large]
+ * [--large-file-clients 2].
  */
 import { randomBytes } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -43,6 +44,7 @@ import {
 import {
   connect,
   findK6,
+  loadTestOptions,
   matrixReport,
   printEstimate,
   reportHeader,
@@ -55,9 +57,7 @@ import {
 
 const { values: args } = parseArgs({
   options: {
-    clients: { type: 'string', default: '5' },
-    duration: { type: 'string', default: '10' },
-    writes: { type: 'string', default: '100' },
+    ...loadTestOptions,
     sizes: { type: 'string', default: '1,500,2000' },
     payloads: { type: 'string', default: 'json,small,large' },
     url: { type: 'string' },

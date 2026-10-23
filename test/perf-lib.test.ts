@@ -15,6 +15,7 @@ import {
   formatProgressLine,
   formatScalingSummary,
   load,
+  parseLoadSettings,
   parseSizes,
   pivotRows,
   positiveInteger,
@@ -554,5 +555,28 @@ describe('retryOnTimeout', () => {
       /403/
     )
     assert.equal(calls, 1)
+  })
+})
+
+describe('parseLoadSettings', () => {
+  const values = { clients: '5', duration: '10', writes: '100' }
+
+  it('runs the 10 MiB tests with every client unless capped', () => {
+    assert.equal(parseLoadSettings(values).largeFileClients, 5)
+  })
+
+  it("takes --large-file-clients as the 10 MiB tests' client count", () => {
+    assert.equal(
+      parseLoadSettings({ ...values, 'large-file-clients': '2' })
+        .largeFileClients,
+      2
+    )
+  })
+
+  it('rejects a --large-file-clients that is not a positive integer', () => {
+    assert.throws(
+      () => parseLoadSettings({ ...values, 'large-file-clients': '0' }),
+      /positive integer/
+    )
   })
 })

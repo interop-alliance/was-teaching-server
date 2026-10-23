@@ -61,6 +61,15 @@
   so one response lost on a long network path no longer ends a run. A timed
   request is still never retried and counts as a failure. A delete test's refill
   now writes 10 at a time instead of every client's Resources at once.
+- The perf runs' public read and list tests discard the response bodies k6
+  reads, so reading the 10 MiB file no longer runs k6 out of memory on a small
+  machine; the measured rates are unchanged, since each body is still read in
+  full. A k6 killed by a signal is now reported by that signal, instead of as
+  "exited with code 1" with no output.
+- The perf runs take `--large-file-clients`, which caps the clients of the
+  payload matrix's 10 MiB tests (it defaults to `--clients`), so a run fits a
+  512 MB machine, where five clients each sending a 10 MiB file ran Node out of
+  memory. The report header names the cap.
 - Chunk replication. A pull loop that applies a chunked Resource now reads the
   source server's chunk listing, stages each listed chunk it does not hold under
   the `etag` the listing names, and applies the parent and its chunk set in one

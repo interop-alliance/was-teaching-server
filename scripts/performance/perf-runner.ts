@@ -56,7 +56,8 @@ const warmUpWrites = 20
 export const loadTestOptions = {
   clients: { type: 'string', default: '5' },
   duration: { type: 'string', default: '10' },
-  writes: { type: 'string', default: '100' }
+  writes: { type: 'string', default: '100' },
+  'large-file-clients': { type: 'string' }
 } as const
 
 /**
@@ -274,7 +275,10 @@ export function reportHeader({
     `- Date: ${new Date().toISOString()}`,
     `- Node ${process.version}, ${k6Version ?? 'k6 not installed'}`,
     `- ${describeMachine()}`,
-    `- ${settings.clients} clients, ${settings.durationSeconds} s per load test`,
+    `- ${settings.clients} clients, ${settings.durationSeconds} s per load test` +
+      (settings.largeFileClients === settings.clients
+        ? ''
+        : `; ${settings.largeFileClients} for the 10 MiB file`),
     ...extraLines,
     ''
   ]
@@ -520,7 +524,10 @@ async function k6Get({
   settings: LoadSettings
 }): Promise<Measurement> {
   const output: string[] = []
-  const exitCode = await new Promise<number>((resolve, reject) => {
+  const { exitCode, signal } = await new Promise<{
+    exitCode: number | null
+    signal: NodeJS.Signals | null
+  }>((resolve, reject) => {
     const k6 = spawn('k6', [
       'run',
       '--quiet',
@@ -539,9 +546,19 @@ async function k6Get({
     ])
     k6.stdout.on('data', chunk => output.push(chunk.toString()))
     k6.stderr.on('data', chunk => output.push(chunk.toString()))
-    k6.on('exit', code => resolve(code ?? 1))
+    k6.on('exit', (code, killedBy) =>
+      resolve({ exitCode: code, signal: killedBy })
+    )
     k6.on('error', reject)
   })
+  if (signal) {
+    // The kernel's out-of-memory killer sends SIGKILL, and k6 prints nothing.
+    throw new Error(
+      `k6 was killed by ${signal}` +
+        (signal === 'SIGKILL' ? ' (out of memory?)' : '') +
+        `:\n${output.join('')}`
+    )
+  }
   if (exitCode !== 0) {
     throw new Error(`k6 exited with code ${exitCode}:\n${output.join('')}`)
   }
@@ -574,14 +591,19 @@ export function unsignedReader({
   outDir: string
   k6Version: string | undefined
   settings: LoadSettings
-}): (path: string) => Promise<Measurement | string> {
+}): (path: string, clients?: number) => Promise<Measurement | string> {
   let runs = 0
-  return async path => {
+  return async (path, clients = settings.clients) => {
     if (!k6Version) {
       return 'skipped (no k6)'
     }
     const summaryPath = join(outDir, `k6-${runs++}.json`)
-    return k6Get({ serverUrl, path, summaryPath, settings })
+    return k6Get({
+      serverUrl,
+      path,
+      summaryPath,
+      settings: { ...settings, clients }
+    })
   }
 }
 
@@ -676,7 +698,7 @@ export function seededTargets({
  * @param options.sizes {number[]}
  * @param options.targets {TestTargets}
  * @param options.settings {LoadSettings}
- * @param options.publicRead {(path: string) => Promise<Measurement | string>}
+ * @param options.publicRead {(path: string, clients?: number) => Promise<Measurement | string>}
  *   see `unsignedReader`
  * @returns {Promise<Row[]>}
  */
@@ -691,7 +713,7 @@ export async function runTests({
   sizes: number[]
   targets: TestTargets
   settings: LoadSettings
-  publicRead: (path: string) => Promise<Measurement | string>
+  publicRead: (path: string, clients?: number) => Promise<Measurement | string>
 }): Promise<Row[]> {
   const { publicSpaceId, privateSpaceId, edgeSpaces } = targets
   const { clients, durationSeconds, serialWrites } = settings
@@ -789,7 +811,7 @@ export function sizeReport({
  * @param options.was {WasClient}
  * @param options.settings {LoadSettings}
  * @param options.encryptedIds {EncryptedReadIds}
- * @param options.publicRead {(path: string) => Promise<Measurement | string>}
+ * @param options.publicRead {(path: string, clients?: number) => Promise<Measurement | string>}
  *   see `unsignedReader`
  * @returns {Promise<MatrixRow[]>}
  */
@@ -802,7 +824,7 @@ export async function runPayloadMatrix({
   was: WasClient
   settings: LoadSettings
   encryptedIds: EncryptedReadIds
-  publicRead: (path: string) => Promise<Measurement | string>
+  publicRead: (path: string, clients?: number) => Promise<Measurement | string>
 }): Promise<MatrixRow[]> {
   console.log('\nRunning the payload matrix...')
   return runMatrix({
