@@ -278,9 +278,9 @@ synonyms this repo does not use, so a term that drifts can be challenged in
 review. The convention is canonical in isomorphic-lib-template's ARCHITECTURE.md
 Glossary section. The protocol terms (Space, Collection, Resource, controller,
 zcap, root capability, invocation target) are owned by the
-[WAS spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)'s
-Terminology section; entries below restate one only to say how this server uses
-it, and otherwise cover this repo's own concepts.
+[PWS spec](https://github.com/w3c-ccg/portable-web-spaces-spec)'s Terminology
+section; entries below restate one only to say how this server uses it, and
+otherwise cover this repo's own concepts.
 
 Containment: **SpacesRepository > Space > Collection > Resource**.
 

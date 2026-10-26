@@ -3,7 +3,7 @@
 [![Node.js CI](https://github.com/interop-alliance/was-teaching-server/workflows/CI/badge.svg)](https://github.com/interop-alliance/was-teaching-server/actions?query=workflow%3A%22CI%22)
 
 > A basic
-> [Wallet Attached Storage](https://w3c-ccg.github.io/wallet-attached-storage-spec/)
+> [Wallet Attached Storage](https://w3c-ccg.github.io/portable-web-spaces-spec/)
 > Server used to demonstrate the specification
 
 ## Table of Contents
@@ -18,7 +18,7 @@
 
 See:
 
-- [Wallet Attached Storage Specification](https://w3c-ccg.github.io/wallet-attached-storage-spec/)
+- [Wallet Attached Storage Specification](https://w3c-ccg.github.io/portable-web-spaces-spec/)
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- request flow, domain model, and ZCap
   authorization structure
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- code style and contribution conventions
@@ -40,51 +40,51 @@ sub-resource. The no-slash form of a container URL redirects to the slash form
 with a `308`, so a client should build the canonical form directly (a signed
 request must be re-signed for the redirect target).
 
-- [Create Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#http-api-post-spaces)
+- [Create Space](https://w3c-ccg.github.io/portable-web-spaces-spec/#http-api-post-spaces)
   (`POST /spaces/`)
-- [List Spaces](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-spaces-operation)
+- [List Spaces](https://w3c-ccg.github.io/portable-web-spaces-spec/#list-spaces-operation)
   (`GET /spaces/`)
-- [Read Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-space-operation)
+- [Read Space](https://w3c-ccg.github.io/portable-web-spaces-spec/#read-space-operation)
   (`GET /space/:spaceId/meta` -- the Space Metadata object)
-- [Update Space (or Create Space by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-space-operation)
+- [Update Space (or Create Space by Id)](https://w3c-ccg.github.io/portable-web-spaces-spec/#update-or-create-by-id-space-operation)
   (`PUT /space/:spaceId/meta`)
-- [Delete Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-space-operation)
+- [Delete Space](https://w3c-ccg.github.io/portable-web-spaces-spec/#delete-space-operation)
   (`DELETE /space/:spaceId/`)
 
 #### Collections API
 
-- [List Collections](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-all-collections-operation)
+- [List Collections](https://w3c-ccg.github.io/portable-web-spaces-spec/#list-all-collections-operation)
   (`GET /space/:spaceId/`; the retired `/space/:spaceId/collections/` redirects
   here with a `308`)
-- [Create Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#create-collection-add-collection-to-a-space-operation)
+- [Create Collection](https://w3c-ccg.github.io/portable-web-spaces-spec/#create-collection-add-collection-to-a-space-operation)
   (`POST /space/:spaceId/`)
-- [Read Collection Metadata](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-collection-metadata-operation)
+- [Read Collection Metadata](https://w3c-ccg.github.io/portable-web-spaces-spec/#read-collection-metadata-operation)
   (`GET /space/:spaceId/:collectionId/meta` -- the merged Collection Metadata
   object: configuration members beside `createdAt`, the write stamp
   (`updatedAt`, `updatedAtCounter`, `originId`), `custom` and `epoch`, under one
   `ETag`)
-- [Update Collection (or Create Collection by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-collection-operation)
+- [Update Collection (or Create Collection by Id)](https://w3c-ccg.github.io/portable-web-spaces-spec/#update-or-create-by-id-collection-operation)
   (`PUT /space/:spaceId/:collectionId/meta` -- a full replacement that creates
   the Collection when absent)
-- [List Resources in a Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-collection-operation)
+- [List Resources in a Collection](https://w3c-ccg.github.io/portable-web-spaces-spec/#list-collection-operation)
   (`GET /space/:spaceId/:collectionId/`)
-- [Delete Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-collection-operation)
+- [Delete Collection](https://w3c-ccg.github.io/portable-web-spaces-spec/#delete-collection-operation)
   (`DELETE /space/:spaceId/:collectionId/`)
 
 #### Resources API
 
-- [Create Resource](https://w3c-ccg.github.io/wallet-attached-storage-spec/#create-resource-add-resource-to-collection-operation)
+- [Create Resource](https://w3c-ccg.github.io/portable-web-spaces-spec/#create-resource-add-resource-to-collection-operation)
   (`POST /space/:spaceId/:collectionId/`)
   - both JSON objects and binary blobs
-- [Get Resource by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-resource-operation)
+- [Get Resource by Id](https://w3c-ccg.github.io/portable-web-spaces-spec/#read-resource-operation)
   (`GET /space/:spaceId/:collectionId/:resourceId`)
-- [Head Resource by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#content-types-and-representations)
+- [Head Resource by Id](https://w3c-ccg.github.io/portable-web-spaces-spec/#content-types-and-representations)
   (`HEAD /space/:spaceId/:collectionId/:resourceId`)
   - same headers as `GET` with no body; `Content-Type`/`Content-Length` from the
     Resource's Metadata
-- [Update Resource (or Create Resource by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-resource-operation)
+- [Update Resource (or Create Resource by Id)](https://w3c-ccg.github.io/portable-web-spaces-spec/#update-or-create-by-id-resource-operation)
   (`PUT /space/:spaceId/:collectionId/:resourceId`)
-- [Delete Resource by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-resource-operation)
+- [Delete Resource by Id](https://w3c-ccg.github.io/portable-web-spaces-spec/#delete-resource-operation)
   (`DELETE /space/:spaceId/:collectionId/:resourceId`)
 
 **Uploading binary resources (and large files).** Send the file as the **raw

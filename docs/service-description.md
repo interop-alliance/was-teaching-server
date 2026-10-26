@@ -40,7 +40,7 @@ here. See [validators-and-stamps.md](validators-and-stamps.md).
 The entry under `https://w3id.org/pws/authz-profile` names the zCap
 authorization profile version (`0.1`) and its rendered location. It carries the
 accepted `signatureAlgorithms` and `zcapCryptosuites` (profile
-["Service Description Entry"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry)).
+["Service Description Entry"](https://w3c-ccg.github.io/portable-web-spaces-spec/authz-profile/#service-description-entry)).
 
 Listing the profile is how a client learns this server authorizes with
 capability invocations, before its first signed request. The last two members

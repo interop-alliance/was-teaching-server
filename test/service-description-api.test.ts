@@ -95,7 +95,7 @@ describe('Service description API', () => {
             {
               version: '0.1',
               url:
-                'https://w3c-ccg.github.io/wallet-attached-storage-spec/' +
+                'https://w3c-ccg.github.io/portable-web-spaces-spec/' +
                 'authz-profile/',
               signatureAlgorithms: ['EdDSA'],
               zcapCryptosuites: ['eddsa-jcs-2022']

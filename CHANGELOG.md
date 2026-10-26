@@ -123,6 +123,8 @@
 
 ### Changed
 
+- Export archive manifests point at the renamed Portable Web Spaces
+  specification (`@interop/space-archive` 0.8.3).
 - Codebase-wide cleanup pass with no change in behavior: duplicated logic in the
   two storage backends, the request layer, the authorization path, the
   replication loop and the import/export path now goes through shared helpers

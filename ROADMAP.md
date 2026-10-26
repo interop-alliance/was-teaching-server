@@ -79,6 +79,7 @@ Ready:
 - WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
 - WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
+- WAS-14 [M] (*) Chunk replication for sync
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -126,7 +127,6 @@ Ready:
 
 - WAS-12 [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
 - WAS-13 [L] (*) Tombstone GC / retention policy
-- WAS-14 [M] (*) Attachment / blob replication for sync
 - WAS-15 [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
 - WAS-16 [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
 - WAS-18 [L] (*) Publish the StorageBackend port for npm-installable backends
@@ -156,7 +156,7 @@ Ready:
 
 Open work on the Wallet Attached Storage (WAS) reference server, measured
 against `spec.md` in the
-[w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
+[w3c-ccg/portable-web-spaces-spec](https://github.com/w3c-ccg/portable-web-spaces-spec)
 repo. The problem-type registry and the shared WAS wire model live in
 `@interop/storage-core`.
 
@@ -533,7 +533,7 @@ behaved this way, but wire-observable and uncovered by any test.
 - labels: data-model, replication, encryption
 - discovered-from: WAS-172 review (2026-10-03)
 - touches:
-  - wallet-attached-storage-spec: Update Resource Metadata, the `epoch` member
+  - portable-web-spaces-spec: Update Resource Metadata, the `epoch` member
   - was-teaching-server: both backends' `/meta` write path, the WAS-96 design
     doc section 5.3
 - acceptance:
@@ -639,9 +639,9 @@ rendering identically) may each need an explicit stance.
 - labels: spec-side, policy, serving
 - discovered-from: agent storage demo next steps (2026-08-21)
 - touches:
-  - wallet-attached-storage-spec -- which URL serves the default document and
-    how it interacts with the JSON listing is a spec decision; the server
-    implements the decided text
+  - portable-web-spaces-spec -- which URL serves the default document and how it
+    interacts with the JSON listing is a spec decision; the server implements
+    the decided text
 - acceptance:
   - [ ] Decide, in the spec, the URL and precedence: whether the collection URL
         (`.../{collectionId}` and/or `.../{collectionId}/`) serves a resource
@@ -674,7 +674,7 @@ document.
 - touches:
   - `src/zcap.ts` and `src/lib/webvhController.ts` -- today's resolver context,
     which serves only a did:webvh whose log this server stores
-  - wallet-attached-storage-spec -- whether the spec names which DID methods an
+  - portable-web-spaces-spec -- whether the spec names which DID methods an
     invoker or delegate may use, and what a server fetches
   - freewallet -- FW-478 (audience members identified by an account did:webvh,
     deferred on this item)
@@ -707,8 +707,8 @@ keeps the member layout open for account DIDs, pending this item.
 - labels: collection-metadata, encryption, wire-contract
 - discovered-from: WAS-173 (2026-10-03)
 - touches:
-  - wallet-attached-storage-spec: WASS-49 (the sentence permitting a declaration
-    on a Collection that lacks one is withdrawn)
+  - portable-web-spaces-spec: WASS-49 (the sentence permitting a declaration on
+    a Collection that lacks one is withdrawn)
   - was-client: the `edv` branch of `sync/provisioning.ts`, which declares
     `encryption` on an existing Collection, is removed
   - was-react: `markCollectionEncrypted` is removed
@@ -885,7 +885,7 @@ text.
   - [ ] Implement the decided shape, with server `test/` coverage and
         conformance tests where the payload is spec-facing
 
-Typed auxiliary Spaces (see the wallet-attached-storage-spec decision record
+Typed auxiliary Spaces (see the portable-web-spaces-spec decision record
 `decisions/0001-typed-auxiliary-spaces.md`) split an account's data across the
 account Space and its auxiliary annex Space. `GET /space/{spaceId}/quotas`
 reports per-Space only, so neither number is the account's usage on its own.
@@ -1091,15 +1091,15 @@ pull; it is an existing defect independent of replication.
 - labels: data-model, replication, changes-feed, etag, sync
 - design: designs/WAS-96-multi-primary-spaces.md
 - design-approved: 2026-10-02
-- decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
-  this repo's decisions/0003 to 0005 (server-internal)
+- decisions: portable-web-spaces-spec decisions 0009 to 0013 (contract); this
+  repo's decisions/0003 to 0005 (server-internal)
 - touches:
-  - wallet-attached-storage-spec: the Resource data model (the origin stamp
-    members and the validator), the `changes` profile (stamp members on the
-    change document; `updatedAt`/`writerId` LWW text revised), the Collection
-    Metadata object (`revisions`), Collection tombstones, and `originId` on the
-    core service description entry; a separate replication specification,
-    versioned on its own (`https://w3id.org/pws/replication`, `0.1`), for the
+  - portable-web-spaces-spec: the Resource data model (the origin stamp members
+    and the validator), the `changes` profile (stamp members on the change
+    document; `updatedAt`/`writerId` LWW text revised), the Collection Metadata
+    object (`revisions`), Collection tombstones, and `originId` on the core
+    service description entry; a separate replication specification, versioned
+    on its own (`https://w3id.org/pws/replication`, `0.1`), for the
     registration, the pull loop, the apply rule and the clock bound. Filed:
     WASS-47 (stamps and validator), WASS-48 (tombstones), WASS-49 (`revisions`),
     WASS-50 (replication spec), WASS-51 (widened `changes` profile), WASS-52
@@ -1197,13 +1197,13 @@ projection after one stamp comparison. By kind: Resources, their tombstones and
 Space Metadata object's `name`, and policies apply under LWW; governed history
 logs and `did.jsonl` logs fast-forward, a fork stalls the Collection with a
 durable reason; `controller`, revocations, backend registrations, quotas,
-keystores, and chunks (WAS-14) do not replicate. Discovery is the widened
-`changes` feed (WAS-182). Collections get a stamped tombstone and a listing
-channel (WAS-174); Delete Space stays a hard delete per replica, since a Space
-on two servers is two URL identities and the registration dies with the Space.
-Tombstones are never reaped in v1 (WAS-13). A received stamp more than a bound
-ahead of the receiver's clock stalls the pull at that position with a `warn`
-naming the peer.
+keystores do not replicate, and chunks replicate under WAS-14. Discovery is the
+widened `changes` feed (WAS-182). Collections get a stamped tombstone and a
+listing channel (WAS-174); Delete Space stays a hard delete per replica, since a
+Space on two servers is two URL identities and the registration dies with the
+Space. Tombstones are never reaped in v1 (WAS-13). A received stamp more than a
+bound ahead of the receiver's clock stalls the pull at that position with a
+`warn` naming the peer.
 
 Identity and registration (decision 6). Capability targets stay host-bound (a
 controller delegates once per replica; DID-relative targets are future spec
@@ -1228,6 +1228,75 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 `keep-conflicts` and stale-`If-Match`-as-sibling.
 
 ---
+
+### WAS-14: [M] (*) Chunk replication for sync
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: replication, sync
+- design: designs/WAS-14-chunk-replication.md
+- design-approved: 2026-10-25
+- touches:
+  - portable-web-spaces-spec: the Encrypted Collections profile (`ec/spec.md`,
+    now hosted in this repo) "Chunk lifecycle" says a replicating server carries
+    the chunk set with the parent write it surfaces, and a chunk-only mutation
+    stays where it was made, behavior text only; the replication specification
+    gains the chunk apply rule; its decision 0013, whose chunk sentences were a
+    deferral to this item, is amended in place with the chunk apply rule, and
+    WASS-50's acceptance line naming chunks among what does not replicate is
+    revised. Part of replication `0.1`, no version bump. Filed 2026-10-25: 0013
+    amended, WASS-50's acceptance box revised, the profile sentence written
+    (checkout `portable-web-spaces-spec`)
+  - storage-core: `ReplicaStallReason` gains `chunk-listing-obsolete` and
+    `source-unavailable`
+  - was-teaching-server: `src/sync/replication.ts`, `src/lib/replicaApply.ts`,
+    `src/sync/peerClient.ts`, both backends (`stageChunk`,
+    `applyResourceWithChunks`, `reclaimStaging`, the staging layouts, the stored
+    registration's `pullsChunks`), `docs/replication.md`,
+    `docs/changes-feed.md`, `docs/filesystem-layout.md`, ARCHITECTURE.md's
+    replication facet entry; `decisions/0006` minted at approval
+  - was-client: unaffected (no wire change)
+  - conformance-suite: unaffected (no wire change)
+- acceptance:
+  - [x] The design doc is adversarially reviewed (2026-10-24, six lenses plus a
+        critic; findings folded in, review log in its section 9)
+  - [x] The design doc is approved (2026-10-25), every open point in its section
+        8 decided, and the wire and layout names signed off (the staging layout,
+        `pullsChunks`, the two stall reasons)
+  - [ ] Each invariant in design section 2 is upheld by a test named in section
+        7, or its exemption is recorded in the doc
+  - [ ] Each changed consumer in design section 3 is handled, and each "changed"
+        or "refused" cell of section 4 has a test or a doc sentence
+  - [ ] A two-server test replicates a chunked Resource byte for byte under the
+        replica server's own chunk `ETag`s, converges a removal on the next
+        parent write, and converges a concurrent whole-stream rewrite on the
+        winning parent's set
+  - [ ] `docs/replication.md` no longer lists chunks among what does not
+        replicate, and states the chunk-only-mutation caveat
+  - [ ] The spec and profile items in `touches` are filed
+
+Pulled out of Someday / Maybe on 2026-10-23, with the design doc drafted the
+same day. The design keeps chunk writes invisible to the `changes` feed, as the
+core profile and the Encrypted Collections profile require, and discovers a
+Resource's chunk set by reading its chunk listing when the parent's own feed
+document applies, then each chunk with a conditional `GET`, so a resumed chunk
+pull moves no held bytes. A chunk delete leaves no tombstone and converges on
+the next parent write. The chunk set applies after the parent revision that won
+last-writer-wins, pinned to that revision at apply time, so two origins
+rewriting one stream converge on one origin's set.
+
+Context from the WAS-96 design (2026-10-01), which this item inherited: a chunk
+is a versioned record, so it takes the same origin stamp and four-field
+validator (WAS-172), and a puller fetching chunk bytes with a plain `GET` learns
+the stamp from the `ETag` alone. Chunks inherit the Collection's `revisions`
+descriptor. The design revised two of those sentences on 2026-10-24: chunks
+resolve with their parent revision, not per chunk under LWW (design section
+5.3), and a replicated chunk carries the replica's own stamp and generation, the
+peer's chunk `ETag` being opaque to it, so no stamp is learned from an `ETag`
+and the validator layout is not a requirement on peers (design open point 3).
+The three questions that design left open (discovery, chunk tombstones,
+whole-stream consistency) are answered in the design doc's section 1.
 
 ### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 
@@ -1342,8 +1411,8 @@ and is the part to design first.
 - backend: *
 - labels: security, replication, provenance, wire-contract
 - touches:
-  - wallet-attached-storage-spec: the provenance statement shape (two statements
-    per object), the archive's per-origin log snapshots
+  - portable-web-spaces-spec: the provenance statement shape (two statements per
+    object), the archive's per-origin log snapshots
   - storage-core: the statement types
   - space-archive: `provenance.jsonl` with several signers, one `did.jsonl`
     snapshot per signing origin
@@ -1367,8 +1436,14 @@ and is the part to design first.
         `createdBy` only when a creation statement over it verifies; the
         foreign-origin omission rule of WAS-165's successor becomes unnecessary
         and is removed
-  - [ ] A chunked Resource's revision statement is minted when the last chunk
-        lands
+  - [ ] A chunked Resource's revision statement is minted at each parent write,
+        over the parent's bytes and the chunk set as it stands at that write
+        (the composite `chunkedDigest`); a chunk write after it removes the
+        stored statement until the next parent write; on a replica, the
+        statement for an applied revision is minted when the chunk pull
+        completes (revised 2026-10-24 from "when the last chunk lands", which
+        the server cannot observe since the chunk count lives inside the
+        envelope's ciphertext; the parent write is the completion signal)
   - [ ] Tests cover both statements across a two-server replication and an
         export-import round trip from the replica
 
@@ -1382,6 +1457,12 @@ own statement has the same problem. Split in two, the creation statement travels
 with the record and `createdBy` stays verifiable by whoever actually verified
 the creating invocation. Signing costs one Ed25519 operation per write; the cost
 is in the storage, archive and import shapes.
+
+The chunked-Resource bullet follows the chunk replication design (WAS-14, design
+section 5.2): the finalizing parent write is the only server-visible event that
+says a chunk set is complete, so it is where the statement over the set is
+minted, and a replica mints its own only after the chunk pull that fetched the
+set.
 
 ### WAS-221: [L] (*) Registration check under the data backend's lock for a Resource apply
 
@@ -2044,32 +2125,6 @@ reaped before every peer has pulled past it resurrects on the next pull. The
 pull-only transport gives the serving server no view of what a peer has pulled,
 so v1 of replication never reaps (Collection tombstones included, WAS-174);
 retention needs peers to report their position back, which this item designs.
-
-### WAS-14: [M] (*) Attachment / blob replication for sync
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: someday, sync
-- acceptance:
-  - [ ] A size/streaming design produced, tied to the chunked-streams and
-        EDV-chunking work
-  - [ ] Replication implemented per that design
-
-Context from the WAS-96 design (2026-10-01), which this item inherits without
-change: a chunk is a versioned record, so it takes the same origin stamp and
-four-field validator (WAS-172), and a puller fetching chunk bytes with a plain
-`GET` learns the stamp from the `ETag` alone. Chunks inherit the Collection's
-`revisions` descriptor and resolve per chunk under LWW. Three things are this
-item's to decide: discovery (binary Resources join the changes feed under
-WAS-182, but a chunk write does not re-surface its parent, so the pull loop
-needs a chunk kind in that feed or a per-parent chunk listing walk); chunk
-tombstones (a chunk is hard-deleted today, so an individual chunk delete cannot
-replicate; either a stamped tombstone reusing the WAS-174 mechanism, or chunk
-deletion defined as cascade-only through the parent's tombstone); and
-whole-stream consistency (two origins each rewriting a whole stream converge on
-a mix of chunks under per-chunk LWW; tying a chunk's validity to the parent
-revision it was written under is one additive member on the chunk record).
 
 ### WAS-15: [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
 

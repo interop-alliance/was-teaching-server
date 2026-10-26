@@ -365,7 +365,7 @@ export const AUTHZ_PROFILE_VERSION = '0.1'
  * the `url` of its service description entry.
  */
 export const AUTHZ_PROFILE_URL =
-  'https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/'
+  'https://w3c-ccg.github.io/portable-web-spaces-spec/authz-profile/'
 
 /**
  * The Encrypted Collections profile's persistent identifier, the key of its
@@ -1429,4 +1429,4 @@ export function parseWebvhBlocklist(
 export const IMPORT_MAX_REVOCATIONS = 1_000
 
 export const SPEC_URL =
-  'https://digitalcredentials.github.io/wallet-attached-storage-spec/'
+  'https://digitalcredentials.github.io/portable-web-spaces-spec/'

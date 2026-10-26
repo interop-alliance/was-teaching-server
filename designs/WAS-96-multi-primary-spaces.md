@@ -9,7 +9,7 @@
   9, 11 and WAS-179; item 10 (the read-only-switch problem type) is WAS-179's to
   sign off
 - decision records extracted: 2026-10-02. Contract-binding, in
-  wallet-attached-storage-spec's decisions: 0009 (origin-stamped write
+  portable-web-spaces-spec's decisions: 0009 (origin-stamped write
   identity), 0010 (the stamp validator and the local container segment), 0011
   (Collection tombstones, delete wins), 0012 (immutable Collection descriptors
   are creation-only), 0013 (replication is a pull-only companion spec); the spec

@@ -2,11 +2,12 @@
 
 ## Specification
 
-This project is a reference implementation of the Wallet Attached Storage (WAS)
-protocol and data model. The specification is a W3C CCG work item; its home is
-<https://github.com/w3c-ccg/wallet-attached-storage-spec> (source:
-[spec.md](https://github.com/w3c-ccg/wallet-attached-storage-spec/blob/main/spec.md);
-rendered: <https://w3c-ccg.github.io/wallet-attached-storage-spec/>).
+This project is a reference implementation of the Portable Web Spaces (PWS,
+formerly Wallet Attached Storage / WAS) protocol and data model. The
+specification is a W3C CCG work item; its home is
+<https://github.com/w3c-ccg/portable-web-spaces-spec> (source:
+[spec.md](https://github.com/w3c-ccg/portable-web-spaces-spec/blob/main/spec.md);
+rendered: <https://w3c-ccg.github.io/portable-web-spaces-spec/>).
 
 Spec-vs-implementation gap analyses: [server roadmap](./ROADMAP.md) (features
 the spec defines that this server doesn't implement yet) and the

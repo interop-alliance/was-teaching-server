@@ -79,7 +79,7 @@ declares witnesses does not verify here, self-hosted or not, and nothing fetches
 ## The current-key-set rule
 
 Key validity is the current-key-set rule (profile
-["Current-key-set rule"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#current-key-set-rule)).
+["Current-key-set rule"](https://w3c-ccg.github.io/portable-web-spaces-spec/authz-profile/#current-key-set-rule)).
 An invocation or delegation verifies if and only if its verification method is
 in the currently resolved document, under the right verification relationship.
 
