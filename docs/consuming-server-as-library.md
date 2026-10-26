@@ -515,13 +515,13 @@ await first
 
 ## Verifying your composition
 
-The `was-conformance` CLI (from
-[`@interop/was-conformance-suite`](https://github.com/interop-alliance/was-conformance-suite))
+The `pws-conformance` CLI (from
+[`@interop/pws-conformance-suite`](https://github.com/interop-alliance/pws-conformance-suite))
 runs against any WAS server by URL and is the definition of "speaks WAS." Point
 it at your composed server:
 
 ```bash
-npx was-conformance http://localhost:3002
+npx pws-conformance http://localhost:3002
 ```
 
 The URL must be exactly the `serverUrl` the server was started with (the same

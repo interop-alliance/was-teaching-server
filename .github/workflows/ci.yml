@@ -69,7 +69,7 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      # Run the `was-conformance` CLI (from @interop/was-conformance-suite)
+      # Run the `pws-conformance` CLI (from @interop/pws-conformance-suite)
       # twice against the production build: once with open provisioning, once
       # with an onboarding token required server-side and supplied client-side.
       # The CLI exit code gates the job (0 = conformant, 1 = failures,
@@ -88,7 +88,7 @@ jobs:
             curl -fsS "$SERVER_URL/health" > /dev/null 2>&1 && break
             sleep 0.5
           done
-          pnpm exec was-conformance "$SERVER_URL" \
+          pnpm exec pws-conformance "$SERVER_URL" \
             --reporter json > conformance-open.json
 
       - name: Conformance (onboarding token)
@@ -104,7 +104,7 @@ jobs:
             curl -fsS "$SERVER_URL/health" > /dev/null 2>&1 && break
             sleep 0.5
           done
-          pnpm exec was-conformance "$SERVER_URL" \
+          pnpm exec pws-conformance "$SERVER_URL" \
             --token "$WAS_ONBOARDING_TOKEN" \
             --reporter json > conformance-token.json
 

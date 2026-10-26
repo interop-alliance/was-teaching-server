@@ -126,12 +126,12 @@ importers:
       '@interop/ezcap':
         specifier: ^7.5.4
         version: 7.5.4
+      '@interop/pws-conformance-suite':
+        specifier: ^0.33.0
+        version: 0.33.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.98.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/was-client':
         specifier: ^0.98.0
         version: 0.98.0(@interop/jsonld-signatures@11.9.0)
-      '@interop/was-conformance-suite':
-        specifier: ^0.32.0
-        version: 0.32.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.98.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/webkms-client':
         specifier: ^15.0.3
         version: 15.0.3
@@ -698,6 +698,13 @@ packages:
     resolution: {integrity: sha512-LkU7/mv6Ixab724cGKE9rXNdQ4GdqnzJyhyaBQjqpJGebx5MroVwSZwFYjF+pdk0aaUAaVLZimi6/oGHdpeltA==}
     engines: {node: '>=24.0'}
 
+  '@interop/pws-conformance-suite@0.33.0':
+    resolution: {integrity: sha512-iy70AxOV8pnVc6iZ8dsx8Cef4VS4YCgqZN/HbwdakocdKYtQSiutOyKbuu0FgJF+enDbvLYv5WpBKcXvjrabng==}
+    engines: {node: '>=24.0'}
+    hasBin: true
+    peerDependencies:
+      '@interop/was-client': '>=0.97.0 <1.0.0'
+
   '@interop/security-document-loader@10.1.6':
     resolution: {integrity: sha512-FMWqpj9KYZw29bAl41RBnRXixoJKPvvs3Jup5LEYzSpKfc6bt8ywkAI8F9zmgFmJNlZyzx9LJWm09sM35d8cRA==}
     engines: {node: '>=24.0'}
@@ -763,13 +770,6 @@ packages:
   '@interop/was-client@0.98.0':
     resolution: {integrity: sha512-+D4Hqx1SRVAtgTruItcaeEckdiS2ecL9H2gAqNTtiGZEhzm5BQcW0ufzA/uYV5B4K2Thu3B/N8TXQ0CPSey9cA==}
     engines: {node: '>=24.0'}
-
-  '@interop/was-conformance-suite@0.32.0':
-    resolution: {integrity: sha512-3vNXex89HPGrvqvzVjFGQjbQxWtJrW+RNL0u4Y1EOf65qVaabherlhw4LaY4+fYUifP3bMu6afTeUlcmO0H7Hw==}
-    engines: {node: '>=24.0'}
-    hasBin: true
-    peerDependencies:
-      '@interop/was-client': '>=0.97.0 <1.0.0'
 
   '@interop/webkms-client@15.0.3':
     resolution: {integrity: sha512-eXKy8i6sWG1LRulMywb3QOXk5FaDHK1QwtCe/ARySRf/ZFdmQeaH/BP49uCgyZGKn5yIDrIPirjZbSumY0neTw==}
@@ -1308,8 +1308,8 @@ packages:
     resolution: {integrity: sha512-ir1UPr3dkwexU7FdV8qBBbNDRUhMmIekYMFZfi+C/sLNnRESKPl23nB9b2pltqfOQNnGzsDdId90AEtG5tCx4A==}
     engines: {node: '>=6.0.0'}
 
-  baseline-browser-mapping@2.11.32:
-    resolution: {integrity: sha512-UvuxFU9P3hM29LrQdwu0cD6w6/+SFr+UlB9s/knI7+O2rK9xFxKUwSDWxGdbbqQ9/V7BJ5s0NI5nQAE4uJp3gQ==}
+  baseline-browser-mapping@2.11.33:
+    resolution: {integrity: sha512-yiVKDX+qCMRKBE084lXvq9EcwFUhKZ2nU8TK1EQQuOgPNR/lmbGxXOeDdlGUqC2Zz11Cs9rk1d/8NfgBmlkt0w==}
     engines: {node: '>=6.0.0'}
     hasBin: true
 
@@ -1617,8 +1617,8 @@ packages:
   exponential-backoff@3.1.3:
     resolution: {integrity: sha512-ZgEeZXj30q+I0EN+CbSSpIyPaJ5HVQD18Z1m+u1FXbAeT94mr1zw50q4q6jiiC447Nl/YTcIYSAftiGqetwXCA==}
 
-  fast-copy@4.2.0:
-    resolution: {integrity: sha512-WSlnvPXaMdUjFdgxPkovE4e5aslybVod4TNKrEKKyoA8GoHZzbDLlhDXZOvqjtFgjtOHd9TYCstkUcGXy1+SEA==}
+  fast-copy@4.3.0:
+    resolution: {integrity: sha512-oWBZLHWpUYt2A471n+ayC4+bJSGDWpl2h3COgBxYX5xHFnr7KqOSrYJZX82ZmrtAfVK+SqsOuNMgsoL+lJquuQ==}
 
   fast-decode-uri-component@1.0.1:
     resolution: {integrity: sha512-WKgKWg5eUxvRZGwW8FvfbaH7AXSh2cL+3j5fMGzUMCxWBJ3dV3a7Wz8y2f/uQ0e3B6WmodD3oS54jTQ9HVTIIg==}
@@ -3553,6 +3553,25 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
+  '@interop/pws-conformance-suite@0.33.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.98.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
+    dependencies:
+      '@digitalcredentials/bnid': 5.0.0(react-native@0.88.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
+      '@interop/data-integrity-core': 8.9.0
+      '@interop/ed25519-signature': 7.2.5(@interop/jsonld-signatures@11.9.0)
+      '@interop/ed25519-verification-key': 8.2.2
+      '@interop/ezcap': 7.5.4
+      '@interop/http-digest-header': 3.2.0
+      '@interop/http-signature-zcap-invoke': 6.3.0
+      '@interop/was-client': 0.98.0(@interop/jsonld-signatures@11.9.0)
+      '@interop/x25519-key-agreement-key': 5.4.3
+      assert: 2.1.0
+      uuid: 14.0.3
+    transitivePeerDependencies:
+      - '@interop/jsonld-signatures'
+      - expo-crypto
+      - react-native
+      - react-native-get-random-values
+
   '@interop/security-document-loader@10.1.6':
     dependencies:
       '@digitalbazaar/data-integrity-context': 2.0.1
@@ -3732,25 +3751,6 @@ snapshots:
     transitivePeerDependencies:
       - '@interop/jsonld-signatures'
       - expo-crypto
-      - react-native-get-random-values
-
-  '@interop/was-conformance-suite@0.32.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.98.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
-    dependencies:
-      '@digitalcredentials/bnid': 5.0.0(react-native@0.88.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
-      '@interop/data-integrity-core': 8.9.0
-      '@interop/ed25519-signature': 7.2.5(@interop/jsonld-signatures@11.9.0)
-      '@interop/ed25519-verification-key': 8.2.2
-      '@interop/ezcap': 7.5.4
-      '@interop/http-digest-header': 3.2.0
-      '@interop/http-signature-zcap-invoke': 6.3.0
-      '@interop/was-client': 0.98.0(@interop/jsonld-signatures@11.9.0)
-      '@interop/x25519-key-agreement-key': 5.4.3
-      assert: 2.1.0
-      uuid: 14.0.3
-    transitivePeerDependencies:
-      - '@interop/jsonld-signatures'
-      - expo-crypto
-      - react-native
       - react-native-get-random-values
 
   '@interop/webkms-client@15.0.3':
@@ -4292,7 +4292,7 @@ snapshots:
 
   base64url@3.0.1: {}
 
-  baseline-browser-mapping@2.11.32: {}
+  baseline-browser-mapping@2.11.33: {}
 
   brace-expansion@5.0.12:
     dependencies:
@@ -4304,7 +4304,7 @@ snapshots:
 
   browserslist@4.29.4:
     dependencies:
-      baseline-browser-mapping: 2.11.32
+      baseline-browser-mapping: 2.11.33
       caniuse-lite: 1.0.30001819
       electron-to-chromium: 1.5.464
       node-releases: 2.0.60
@@ -4604,7 +4604,7 @@ snapshots:
 
   exponential-backoff@3.1.3: {}
 
-  fast-copy@4.2.0: {}
+  fast-copy@4.3.0: {}
 
   fast-decode-uri-component@1.0.1: {}
 
@@ -5446,7 +5446,7 @@ snapshots:
     dependencies:
       colorette: 2.0.20
       dateformat: 4.6.3
-      fast-copy: 4.2.0
+      fast-copy: 4.3.0
       fast-safe-stringify: 2.1.1
       help-me: 5.0.0
       joycon: 3.1.1

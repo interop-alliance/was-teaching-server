@@ -2,7 +2,7 @@
  * One-shot local conformance runner.
  *
  * Spins up the WAS server on a fixed local URL, waits until it answers, runs
- * the `@interop/was-conformance-suite` CLI (`was-conformance`) against it, then
+ * the `@interop/pws-conformance-suite` CLI (`pws-conformance`) against it, then
  * tears the server down (even if the suite fails). This guarantees the
  * `SERVER_URL` / conformance-target match that ZCap `invocationTarget`
  * verification requires — the two must be byte-identical host:port strings, or
@@ -56,7 +56,7 @@ async function waitForHealth(url: string): Promise<void> {
 }
 
 /**
- * Runs the `was-conformance` CLI against `serverUrl`, inheriting stdio so its
+ * Runs the `pws-conformance` CLI against `serverUrl`, inheriting stdio so its
  * output streams to the terminal. The URL is passed positionally and must stay
  * byte-identical to the `SERVER_URL` the server was started with (ZCap
  * invocation targets embed host:port). Any CLI arguments given to this script
@@ -67,7 +67,7 @@ function runConformance(): Promise<number> {
   return new Promise((resolve, reject) => {
     const suite = spawn(
       'pnpm',
-      ['exec', 'was-conformance', serverUrl, ...process.argv.slice(2)],
+      ['exec', 'pws-conformance', serverUrl, ...process.argv.slice(2)],
       { stdio: 'inherit' }
     )
     suite.on('exit', code => resolve(code ?? 1))
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   const serverLogs: string[] = []
   const tempDataDir =
     process.env.WAS_DATA_DIR === undefined
-      ? await mkdtemp(path.join(tmpdir(), 'was-conformance-'))
+      ? await mkdtemp(path.join(tmpdir(), 'pws-conformance-'))
       : undefined
   const server: ChildProcess = spawn('tsx', ['src/start.ts'], {
     env: {

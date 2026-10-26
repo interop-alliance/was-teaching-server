@@ -96,7 +96,7 @@ documents, not in commit messages, PR descriptions, or CHANGELOG.md entries.
 - `test/` holds integration tests that spin up a local Fastify server
   in-process; use these to test the implementation. Run with Vitest
   (`pnpm test-node`); config in `vite.config.ts`.
-- Protocol conformance tests live in `@interop/was-conformance-suite`, installed
+- Protocol conformance tests live in `@interop/pws-conformance-suite`, installed
   as a devDependency. `pnpm conformance:local` runs it against a freshly spawned
   local server; README.md's "Conformance Tests" section has the other
   invocations and the CLI options.

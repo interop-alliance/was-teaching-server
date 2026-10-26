@@ -123,6 +123,11 @@
 
 ### Changed
 
+- The conformance suite devDependency is now `@interop/pws-conformance-suite`
+  0.33.0 (renamed from `@interop/was-conformance-suite`); its CLI is
+  `pws-conformance`, which `pnpm conformance`, `pnpm conformance:local` and CI
+  invoke.
+
 - Export archive manifests point at the renamed Portable Web Spaces
   specification (`@interop/space-archive` 0.8.3).
 - Codebase-wide cleanup pass with no change in behavior: duplicated logic in the

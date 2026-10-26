@@ -402,8 +402,8 @@ reusable.
 ### Conformance Tests
 
 Protocol conformance testing lives in its own package,
-[`@interop/was-conformance-suite`](https://github.com/interop-alliance/was-conformance-suite),
-which ships a `was-conformance` CLI that runs against any WAS server by URL
+[`@interop/pws-conformance-suite`](https://github.com/interop-alliance/pws-conformance-suite),
+which ships a `pws-conformance` CLI that runs against any WAS server by URL
 (installed here as a devDependency). The URL passed to the CLI and the server's
 `SERVER_URL` **must be byte-for-byte identical** (including host and port) —
 ZCap `invocationTarget` URLs embed the full host:port, so even `localhost` vs
