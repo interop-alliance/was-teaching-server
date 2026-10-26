@@ -1,7 +1,7 @@
 {
   "name": "was-teaching-server",
   "description": "A basic Wallet Attached Storage server used to demonstrate the WAS specification.",
-  "version": "0.42.2",
+  "version": "0.42.3",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -88,8 +88,8 @@
     "@eslint/js": "^10.0.1",
     "@interop/did-cli": "^0.17.0",
     "@interop/ezcap": "^7.5.4",
-    "@interop/was-client": "^0.98.0",
     "@interop/pws-conformance-suite": "^0.33.0",
+    "@interop/was-client": "^0.98.0",
     "@interop/webkms-client": "^15.0.3",
     "@types/mime-types": "3.0.1",
     "@types/node": "^26.1.2",
