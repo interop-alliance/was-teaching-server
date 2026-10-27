@@ -25,8 +25,9 @@
  * `/meta` record is applied. Otherwise the loop reads the peer's chunk
  * listing, and when either server holds a chunk of the Resource it opens
  * the staging run on the data backend (`beginChunkStaging`, which checks
- * the quota), reads the listed chunks with conditional `GET`s into
- * staging, a few at once, reads the parent last as the closing check, and
+ * the quota), reads into staging each listed chunk whose `etag` is not
+ * the one an earlier run staged, a few at once, reads the parent last as
+ * the closing check, and
  * applies the parent and its set in one `applyResource` call with
  * `chunks`. So nothing live changes until the whole set is here, and the
  * parent takes its feed position only then. The loop state is persisted
@@ -1743,7 +1744,7 @@ export class ReplicationManager {
       document: chunk.document,
       dataBackend,
       // Every listed index is staged: a live chunk's validator is this
-      // server's own, so the source server never answers 304 for it.
+      // server's own, which no listed `etag` names.
       chunks: { run, staged: pulled.staged }
     })
     return { ...result, pulledBytes: pulled.pulledBytes }
@@ -1757,7 +1758,7 @@ export class ReplicationManager {
    * that fails its checks ({@link checkedChunkListing}) stalls it as
    * `source-unavailable`.
    * @param chunk {ChunkPull}
-   * @returns {Promise<{ chunks: ChunkListing['chunks'] } | ChangeResult>}
+   * @returns {Promise<{ chunks: ListedChunk[] } | ChangeResult>}
    *   the checked entries, or how the chunk pull ends
    * @throws {PeerRequestError}   a request to the peer failed
    */
@@ -1765,7 +1766,7 @@ export class ReplicationManager {
     pull,
     dataBackend,
     peerResource
-  }: ChunkPull): Promise<{ chunks: ChunkListing['chunks'] } | ChangeResult> {
+  }: ChunkPull): Promise<{ chunks: ListedChunk[] } | ChangeResult> {
     const url = pull.peerUrl(chunksContainerPath(peerResource))
     const bounds = [
       REPLICATION_DOCUMENT_MAX_BYTES,
@@ -1806,10 +1807,11 @@ export class ReplicationManager {
   }
 
   /**
-   * Reads each listed chunk into the staging of the run,
-   * `REPLICA_CHUNK_PULL_CONCURRENCY` at a time, in listing order. Before
-   * each read it checks the loop's stop signal, so a stop ends the pull at
-   * the next chunk. The first read that does not end `staged`, or that
+   * Stages each listed chunk, `REPLICA_CHUNK_PULL_CONCURRENCY` at a time, in
+   * listing order. A chunk an earlier run staged under the `ETag` the listing
+   * names is held as it stands, with no request; every other one is read.
+   * Before each chunk it checks the loop's stop signal, so a stop ends the
+   * pull at the next chunk. The first read that does not end `staged`, or that
    * throws, ends the pull: no further chunk is started, and the reads in
    * flight finish first, so what they staged is there for the re-run. The
    * registration was checked once for the set; a Delete Replica or a
@@ -1817,7 +1819,7 @@ export class ReplicationManager {
    * plane, and by the swap on any backend.
    * @param options {object}
    * @param options.chunk {ChunkPull}
-   * @param options.listed {ChunkListing['chunks']}   the peer's checked listing
+   * @param options.listed {ListedChunk[]}   the peer's checked listing
    * @param options.staged {{ index: number, peerEtag: string }[]}   what an
    *   earlier run of this pull staged
    * @returns {Promise<{ staged: number[], pulledBytes: number } | ChangeResult>}
@@ -1831,7 +1833,7 @@ export class ReplicationManager {
     staged
   }: {
     chunk: ChunkPull
-    listed: ChunkListing['chunks']
+    listed: ListedChunk[]
     staged: Array<{ index: number; peerEtag: string }>
   }): Promise<{ staged: number[]; pulledBytes: number } | ChangeResult> {
     const { pull } = chunk
@@ -1855,16 +1857,14 @@ export class ReplicationManager {
             return
           }
           const entry = listed[next++]!
-          const pulled = await this.#pullChunk({
-            chunk,
-            entry,
-            stagedEtag: stagedEtags.get(entry.index)
-          })
-          if (pulled === 'staged' || pulled === 'held') {
+          if (entry.etag === stagedEtags.get(entry.index)) {
             outcome.staged.push(entry.index)
-            if (pulled === 'staged') {
-              outcome.pulledBytes += entry.size
-            }
+            continue
+          }
+          const pulled = await this.#pullChunk({ chunk, entry })
+          if (pulled === 'staged') {
+            outcome.staged.push(entry.index)
+            outcome.pulledBytes += entry.size
           } else {
             ended ??= pulled
           }
@@ -1886,56 +1886,39 @@ export class ReplicationManager {
   }
 
   /**
-   * Reads one listed chunk with a conditional `GET` and stages it. The
-   * `If-None-Match` names the source server's `ETag` an earlier run staged
-   * the index under, when one did: a 304 leaves the index staged, and a 200
-   * is written to the run's staging. A live chunk is never sent: it carries
-   * the validator this server minted at its swap, which the source server
-   * cannot match, so a parent rewritten with its chunks untouched
-   * re-transfers them. A 404 is a `retry`.
+   * Reads one listed chunk and writes it to the run's staging, under the
+   * `ETag` the source server serves it with, which a later run's listing is
+   * compared against. A live chunk carries the validator this server minted
+   * at its swap, which no listed `etag` names, so a parent rewritten with
+   * its chunks untouched re-transfers them. A 404 is a `retry`.
    * @param options {object}
    * @param options.chunk {ChunkPull}
-   * @param options.entry {ChunkListing['chunks'][number]}   the listed chunk
-   * @param [options.stagedEtag] {string}   the source server's `ETag` an
-   *   earlier run staged the index under
-   * @returns {Promise<'staged' | 'held' | ChangeResult>}   `staged` for a
-   *   chunk read and staged, `held` for one an earlier run staged
+   * @param options.entry {ListedChunk}   the listed chunk
+   * @returns {Promise<'staged' | ChangeResult>}   `staged` for a chunk read
+   *   and staged
    * @throws {PeerRequestError}   a request to the peer failed
    */
   async #pullChunk({
     chunk: { pull, members, dataBackend, peerResource, run },
-    entry,
-    stagedEtag
+    entry
   }: {
     chunk: ChunkPull
-    entry: ChunkListing['chunks'][number]
-    stagedEtag: string | undefined
-  }): Promise<'staged' | 'held' | ChangeResult> {
+    entry: ListedChunk
+  }): Promise<'staged' | ChangeResult> {
     const { spaceId, replicaId, collectionId, resourceId } = members
     const chunkIndex = entry.index
-    // A staging record whose peer served no `ETag` holds an empty one.
-    const sentStaged = stagedEtag === '' ? undefined : stagedEtag
     const url = pull.peerUrl(chunkPath({ ...peerResource, chunkIndex }))
-    const served = await pull.peer.readStream({
-      url,
-      expect: [200, 304, 404],
-      ...(sentStaged !== undefined && { ifNoneMatch: sentStaged })
-    })
+    const served = await pull.peer.readStream({ url, expect: [200, 404] })
     if (served.status === 404) {
       return { outcome: 'retry', chunkPull: notFoundFailure(url) }
     }
-    if (served.stream === undefined) {
-      if (
-        sentStaged !== undefined &&
-        (served.etag ?? sentStaged) === sentStaged
-      ) {
-        return 'held'
-      }
+    if (served.stream === undefined || served.etag === undefined) {
+      discard(served)
       return {
         outcome: 'retry',
         chunkPull: {
           reason: 'source-unavailable',
-          detail: `The source server answered 304 to "${url}" for a validator this server did not send.`
+          detail: `The source server answered "${url}" without a body or an ETag.`
         }
       }
     }
@@ -1953,7 +1936,7 @@ export class ReplicationManager {
           declaredBytes: served.declaredBytes,
           contentType: entry.contentType
         }),
-        peerEtag: served.etag ?? ''
+        peerEtag: served.etag
       })
     } finally {
       discard(served)
@@ -2674,28 +2657,36 @@ function isStorableChunkContentType(
 }
 
 /**
+ * One entry of a source server's chunk listing, as `checkedChunkListing`
+ * checked it. The `etag` is the source server's own, opaque here, and
+ * compared only against the one an earlier run staged the index under.
+ */
+type ListedChunk = ChunkListing['chunks'][number]
+
+/**
  * The entries of a source server's chunk listing, checked before any of it
  * is used: each `index` one a chunk route addresses
  * (`parseChunkIndexSegment`), strictly
  * ascending, each `size` a non-negative safe integer, each `contentType` a
- * media type a store can hold (`isStorableChunkContentType`).
+ * media type a store can hold (`isStorableChunkContentType`), and each
+ * `etag` a string.
  * @param json {Record<string, unknown>}   the listing body
- * @returns {ChunkListing['chunks'] | undefined}   `undefined` for a
+ * @returns {ListedChunk[] | undefined}   `undefined` for a
  *   malformed listing
  */
 function checkedChunkListing(
   json: Record<string, unknown>
-): ChunkListing['chunks'] | undefined {
+): ListedChunk[] | undefined {
   if (!Array.isArray(json.chunks)) {
     return undefined
   }
-  const checked: ChunkListing['chunks'] = []
+  const checked: ListedChunk[] = []
   let previous = -1
   for (const entry of json.chunks) {
     if (!isPlainObject(entry)) {
       return undefined
     }
-    const { index, size, contentType } = entry
+    const { index, size, contentType, etag } = entry
     if (
       typeof index !== 'number' ||
       parseChunkIndexSegment(String(index)) !== index ||
@@ -2703,11 +2694,12 @@ function checkedChunkListing(
       typeof size !== 'number' ||
       !Number.isSafeInteger(size) ||
       size < 0 ||
-      !isStorableChunkContentType(contentType)
+      !isStorableChunkContentType(contentType) ||
+      typeof etag !== 'string'
     ) {
       return undefined
     }
-    checked.push({ index, size, contentType })
+    checked.push({ index, size, contentType, etag })
     previous = index
   }
   return checked

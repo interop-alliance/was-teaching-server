@@ -293,7 +293,7 @@ describe('Chunk API (chunked-streams)', () => {
   })
 
   describe('listing', () => {
-    it('[signed] lists multiple chunks in ascending index order with sizes', async () => {
+    it('[signed] lists multiple chunks in ascending index order with sizes and etags', async () => {
       const resourceId = 'multi-chunk'
       await dataCollection.put(resourceId, { id: resourceId })
 
@@ -303,6 +303,7 @@ describe('Chunk API (chunked-streams)', () => {
         new Uint8Array([3, 3, 3])
       ]
       // Write out of order to prove the listing sorts by index, not write order.
+      const putEtags: Record<number, string> = {}
       for (const index of [2, 0, 1]) {
         const response = await alice.was.request({
           url: chunkUrl(resourceId, index),
@@ -312,6 +313,7 @@ describe('Chunk API (chunked-streams)', () => {
           })
         })
         assert.equal(response.status, 204)
+        putEtags[index] = response.headers.get('etag')!
       }
 
       const listing = await alice.was.request({
@@ -334,10 +336,65 @@ describe('Chunk API (chunked-streams)', () => {
         assert.equal(chunk.contentType, 'application/octet-stream')
         assert.deepEqual(Object.keys(chunk).sort(), [
           'contentType',
+          'etag',
           'index',
           'size'
         ])
+        // The listed `etag` is the one the chunk's write returned and its
+        // own HEAD serves, so a client can pin a DELETE on it with no probe.
+        assert.equal(chunk.etag, putEtags[chunk.index])
       }
+      const heads = await Promise.all(
+        listing.data.chunks.map((chunk: { index: number }) =>
+          alice.was.request({
+            url: chunkUrl(resourceId, chunk.index),
+            method: 'HEAD'
+          })
+        )
+      )
+      heads.forEach((head, position) => {
+        assert.equal(
+          head.headers.get('etag'),
+          listing.data.chunks[position].etag
+        )
+      })
+    })
+
+    it('[signed] a listed etag pins a conditional DELETE of its chunk', async () => {
+      const resourceId = 'listed-etag-delete'
+      await dataCollection.put(resourceId, { id: resourceId })
+      for (const index of [0, 1]) {
+        const response = await alice.was.request({
+          url: chunkUrl(resourceId, index),
+          method: 'PUT',
+          body: new Blob([new Uint8Array([index])], {
+            type: 'application/octet-stream'
+          })
+        })
+        assert.equal(response.status, 204)
+      }
+      const listing = await alice.was.request({
+        url: listUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(listing.status, 200)
+      // Another entry's etag is refused, and the chunk's own succeeds.
+      assert.equal(
+        await statusOf(
+          alice.was.request({
+            url: chunkUrl(resourceId, 0),
+            method: 'DELETE',
+            headers: { 'if-match': listing.data.chunks[1].etag }
+          })
+        ),
+        412
+      )
+      const pinned = await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'DELETE',
+        headers: { 'if-match': listing.data.chunks[0].etag }
+      })
+      assert.equal(pinned.status, 204)
     })
 
     it('[signed] a Resource with no chunks lists count 0', async () => {

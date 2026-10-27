@@ -209,7 +209,10 @@ export interface ChunkMetadata extends RecordValidatorParts {
  * Return shape of `listChunks()` (the `chunked-streams` feature): a Resource's
  * stored chunks in ascending `index` order (the discovery/reassembly listing),
  * with their `count`. `count` is the number of chunks listed, not their total
- * byte size.
+ * byte size. Each entry's `etag` is the quoted strong validator the chunk's
+ * own `GET` and `HEAD` answer with, and the one its `GET` answers 304 against
+ * under `If-None-Match`, so a client can pin a `DELETE` of a listed chunk with
+ * `If-Match`, or read it conditionally, without a `HEAD` per chunk.
  */
 export interface ChunkListing {
   count: number
@@ -217,6 +220,7 @@ export interface ChunkListing {
     index: number
     size: number
     contentType: string
+    etag: string
   }>
 }
 
@@ -2025,7 +2029,8 @@ export interface StorageBackend {
   /**
    * The chunks staged under `run`, by ascending index, with the source
    * server's `ETag` each was read under, so a re-run of the chunk pull can
-   * read each one conditionally. Empty when nothing is staged.
+   * keep each one the source server still lists under that `ETag`. Empty
+   * when nothing is staged.
    */
   listStagedChunks(options: {
     spaceId: string

@@ -28,8 +28,12 @@ A chunk's stamp is local and orders nothing across servers. A replicated chunk
 does not carry the source server's stamp: the replica server mints a stamp and a
 generation for each chunk it stores, from its own clock, as it does for a chunk
 a client writes, and the chunk set follows its parent revision (see
-[replication.md](replication.md)). A chunk's `ETag` on one server therefore
-says nothing about the same index on another.
+[replication.md](replication.md)). A chunk's `ETag` on one server therefore says
+nothing about the same index on another. The chunk listing (`GET .../chunks/`)
+carries each chunk's `ETag` as the entry's `etag`, the value its own `GET` and
+`HEAD` serve and its `GET` answers 304 against, so a client that reaps chunks
+can pin each `DELETE` with `If-Match`, or read a chunk conditionally, without a
+`HEAD` per chunk.
 
 ### High-water mark
 
@@ -86,8 +90,9 @@ tombstone and its re-create, so its generation does too.
 A hard delete (a chunk, a Space) removes the record, so the next record under
 the same id mints a new generation and its validators never coincide with the
 old record's. A chunk's generation is the replica server's own on a replicated
-chunk, minted when the chunk set is swapped in, and dies with the chunk. A client's stale cached `ETag` then matches nothing instead of
-being answered 304 over different bytes.
+chunk, minted when the chunk set is swapped in, and dies with the chunk. A
+client's stale cached `ETag` then matches nothing instead of being answered 304
+over different bytes.
 
 Delete Collection leaves a tombstone (see the Collection tombstone entry in the
 [ARCHITECTURE.md](../ARCHITECTURE.md) Glossary), which keeps the generation and

@@ -7096,6 +7096,13 @@ export class FileSystemBackend implements StorageBackend {
    * discovery/reassembly listing (the server never reassembles). Resolves an
    * empty listing when the Resource has no chunk directory (including when the
    * Resource itself is absent -- existence is the parent routes' concern).
+   * Each entry's `etag` is formatted from the sidecar the listing read to
+   * judge the chunk live, by the same `etagOf` `getChunkMetadata` reports it
+   * through, so the listing costs no read beyond the `stat` per chunk. The
+   * listing takes no lock, and a chunk's `size` comes from a `stat` after
+   * its sidecar was read, so an entry read across a concurrent overwrite of
+   * the index can pair the old validator with the new file's size, as a
+   * `getChunkMetadata` across the same race does.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -7132,7 +7139,7 @@ export class FileSystemBackend implements StorageBackend {
     const chunks = (
       await Promise.all(
         chunkEntries.map(
-          async ({ resourceId: indexStr, contentType, fileName }) => {
+          async ({ resourceId: indexStr, contentType, fileName, sidecar }) => {
             const filePath = path.join(chunkDir, fileName)
             let stats
             try {
@@ -7146,7 +7153,9 @@ export class FileSystemBackend implements StorageBackend {
             return {
               index: Number(indexStr),
               size: stats.size,
-              contentType
+              contentType,
+              // A chunk sidecar always carries its validator.
+              etag: etagOf(sidecar)!
             }
           }
         )
