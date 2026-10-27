@@ -13,24 +13,29 @@
  * ones a test names. Every pull is run by hand (`replication.pullNow`) with
  * the timers paused.
  */
-import { it, describe, beforeAll, afterAll, beforeEach } from 'vitest'
+import { it, describe, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
-import { access } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import { chunkDirName, readSpaceArchive } from '@interop/space-archive'
 
-import { REPLICA_CHUNK_PULL_RETRY_LIMIT } from '../src/config.default.js'
+import {
+  REPLICA_CHUNK_PULL_CONCURRENCY,
+  REPLICA_CHUNK_PULL_RETRY_LIMIT,
+  REPLICA_STATE_PERSIST_DOCUMENTS
+} from '../src/config.default.js'
 import type { PeerFetch, PeerResponse } from '../src/sync/peerFetch.js'
-import type { IDID } from '../src/types.js'
 import {
   bootPeerServer,
   importArchive,
   injectPeerFetch,
   parseEtagSegments,
+  createPeerSpace,
+  pathExists,
   type PeerServer,
+  pullOnce,
   registerReplica,
   replicaStatus,
   signedInject,
@@ -193,14 +198,7 @@ describe('Chunk replication between servers', () => {
     server: PeerServer
     spaceId: string
   }): Promise<void> {
-    await server.backend.writeSpace({
-      spaceId,
-      spaceMetadata: {
-        id: spaceId,
-        type: ['Space'],
-        controller: alice.did as IDID
-      }
-    })
+    await createPeerSpace({ server, spaceId, controller: alice.did })
   }
 
   /**
@@ -266,20 +264,7 @@ describe('Chunk replication between servers', () => {
     await register({ from, fromSpaceId, to, toSpaceId })
   }
 
-  /**
-   * Runs one pull cycle of a registration.
-   */
-  async function pull({
-    server,
-    spaceId,
-    replicaId = 'peer'
-  }: {
-    server: PeerServer
-    spaceId: string
-    replicaId?: string
-  }): Promise<void> {
-    await server.fastify.replication.pullNow({ spaceId, replicaId })
-  }
+  const pull = pullOnce
 
   /**
    * Reads a registration's status, as Alice.
@@ -518,20 +503,7 @@ describe('Chunk replication between servers', () => {
     return path.join(server.backend.dataDir, 'spaces', spaceId, 'files')
   }
 
-  /**
-   * Whether a path exists.
-   */
-  async function exists(target: string): Promise<boolean> {
-    try {
-      await access(target)
-      return true
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
-        return false
-      }
-      throw err
-    }
-  }
+  const exists = pathExists
 
   /**
    * Moves every server's clock to one instant past the latest, so no write
@@ -1530,12 +1502,15 @@ describe('Chunk replication between servers', () => {
         resourceId: 'r',
         chunks
       })
-      const firstChunk = transport.hold(
-        sourceUrl('/space/c9-src/files/r/chunks/0')
+      // The chunks of a set are read a few at once, so the delete lands
+      // while the read of the deleted chunk is held: the source answers that
+      // read with a 404.
+      const heldChunk = transport.hold(
+        sourceUrl('/space/c9-src/files/r/chunks/1')
       )
       const pulling = pull({ server: replica, spaceId: 'c9-dst' })
       try {
-        await firstChunk.reached
+        await heldChunk.reached
         await deleteChunk({
           server: source,
           spaceId: 'c9-src',
@@ -1543,7 +1518,7 @@ describe('Chunk replication between servers', () => {
           index: 1
         })
       } finally {
-        firstChunk.release()
+        heldChunk.release()
         await pulling
       }
       assert.equal(
@@ -2340,6 +2315,102 @@ describe('Chunk replication between servers', () => {
         resourceId: 'r',
         expected: chunks
       })
+    })
+  })
+
+  describe('the transfer of a chunk set', () => {
+    it('reads a few chunks at once', async () => {
+      alignClocks()
+      assert.ok(REPLICA_CHUNK_PULL_CONCURRENCY >= 2)
+      await pair({ fromSpaceId: 'cc1-src', toSpaceId: 'cc1-dst' })
+      const chunks = blobs(300, 310, 320)
+      await putParent({
+        server: source,
+        spaceId: 'cc1-src',
+        resourceId: 'r',
+        json: { concurrent: true }
+      })
+      await putChunks({
+        server: source,
+        spaceId: 'cc1-src',
+        resourceId: 'r',
+        chunks
+      })
+      const first = transport.hold(sourceUrl('/space/cc1-src/files/r/chunks/0'))
+      const second = transport.hold(
+        sourceUrl('/space/cc1-src/files/r/chunks/1')
+      )
+      const pulling = pull({ server: replica, spaceId: 'cc1-dst' })
+      try {
+        await first.reached
+        // The second read is in flight while the first is still held.
+        const secondReached = await Promise.race([
+          second.reached.then(() => true),
+          new Promise<boolean>(resolve =>
+            setTimeout(() => resolve(false), 2_000)
+          )
+        ])
+        assert.equal(secondReached, true, 'the chunks are read at once')
+      } finally {
+        first.release()
+        second.release()
+        await pulling
+      }
+      await assertChunks({
+        server: replica,
+        spaceId: 'cc1-dst',
+        resourceId: 'r',
+        expected: chunks
+      })
+      assert.equal(
+        (await filesStatus({ server: replica, spaceId: 'cc1-dst' })).state,
+        'synced'
+      )
+    })
+  })
+
+  describe('the loop state', () => {
+    it('is persisted at the document threshold and at the end of the Collection, not after every chunked Resource', async () => {
+      alignClocks()
+      await pair({ fromSpaceId: 'cp1-src', toSpaceId: 'cp1-dst' })
+      const count = REPLICA_STATE_PERSIST_DOCUMENTS + 1
+      const sets: Buffer[][] = []
+      for (let n = 0; n < count; n++) {
+        sets.push(blobs(16))
+        await putParent({
+          server: source,
+          spaceId: 'cp1-src',
+          resourceId: `r${n}`,
+          json: { n }
+        })
+        await putChunks({
+          server: source,
+          spaceId: 'cp1-src',
+          resourceId: `r${n}`,
+          chunks: sets[n]!
+        })
+      }
+      const persisted = vi.spyOn(replica.backend, 'writeReplicaState')
+      try {
+        await pull({ server: replica, spaceId: 'cp1-dst' })
+        // Once at the threshold, once at the end of the Collection, and once
+        // at the end of the cycle.
+        assert.equal(persisted.mock.calls.length, 3)
+      } finally {
+        persisted.mockRestore()
+      }
+      for (let n = 0; n < count; n++) {
+        await assertChunks({
+          server: replica,
+          spaceId: 'cp1-dst',
+          resourceId: `r${n}`,
+          expected: sets[n]!
+        })
+      }
+      assert.equal(
+        (await filesStatus({ server: replica, spaceId: 'cp1-dst' })).state,
+        'synced'
+      )
     })
   })
 })

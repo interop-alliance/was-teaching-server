@@ -1,142 +1,191 @@
-# 0002: The client-annex clause admits target-exact single-verb ladder delegations
+# 0002: The client-annex clause admits enumerated ladder delegation shapes
 
 - Status: accepted
 - Date: 2026-09-01
 - Driving work: the browser wallet's transient account-deletion design
-  gate. A transient session deletes the account's Spaces through
-  ladder-signed DELETE-only delegations, and reads otherwise
-  unreachable sibling Spaces through GET-only ones; the clause needed a
-  predicate that admits exactly those shapes.
-- Affects: was-teaching-server (`src/lib/clientAnnexClause.ts`, a third
-  admission predicate; the locked-property comment; ARCHITECTURE.md's
+  gate, which needed ladder-signed DELETE-only and GET-only delegations;
+  then its transient backup export, which needed a POST-only one; then
+  its replica registration design for every session kind, which needed
+  a ladder-signed pull capability on the source server and a
+  ladder-signed grant on a replica server's replicas route.
+- Affects: was-teaching-server (`src/lib/clientAnnexClause.ts`, the
+  admission predicates and the locked-property comment;
+  `src/lib/containerRule.ts` and `src/requests/ReplicaRequest.ts` for
+  the replicas route; the `CLIENT_ANNEX_VERSION` comment in
+  `src/config.default.ts`; docs/client-annex-clause.md; ARCHITECTURE.md's
   restatement). The clause's normative home is app-connect-spec
-  `decisions/0003` and the companion-profile text it governs, amended
-  in step; wallet-core and the wallets mint the shapes it admits.
+  `decisions/0003` (clause A) and the companion-profile text it governs,
+  amended in step. The replica pointer's service entry type is
+  app-connect-spec `decisions/0001`'s, and the replication side is
+  wallet-attached-storage-spec decision 0013's. wallet-core and the
+  wallets mint the shapes the clause admits.
 
 ## Context
 
-The clause bounds what a ladder VM's delegations may do. Its predicate
-1 (pointer equality on the annex DID) is target-blind today and is
-being narrowed; it also only ever admitted an annex-DID delegatee. The
-deletion ceremony's delegatee and invoker is the ladder VM's own bare
-did:key -- the one identity that keeps resolving while the walk deletes
-the Spaces every hosted document lives in -- so predicate 1 never
-admitted the ceremony's chains and this predicate is their only
-admission path. The chains come in two lengths: a child of a sibling
-unlock Space's `manageCapability`, and a child of a Space's own
-synthesized root for the account and annex Spaces.
+A ladder VM is the verification method a standing unlock credential
+publishes in the account document. The server recognizes it by relation
+asymmetry: a `capabilityDelegation` member absent from
+`capabilityInvocation`. Unbounded, it could delegate Space-scoped
+authority to any key with no log entry anywhere, which the loudness
+model forbids. So the clause admits a ladder-signed delegation only in
+enumerated shapes.
+
+Each shape after the first was added for one need of a transient
+session, on an account whose only long-lived delegation signer is the
+ladder. Account deletion delegates and invokes as the ladder VM's own
+bare did:key, the one identity that keeps resolving while the walk
+deletes the Spaces every hosted document lives in. The backup export
+invokes Export Space on a sibling unlock Space under the management
+capability that Space's controller granted the account. A replica server
+pulls the account under a capability delegated to its `serverDid`, and
+after promotion its replicas route needs a grant a session of any
+standing credential can sign.
 
 ## Decision
 
-A ladder-signed delegation is admitted when its `invocationTarget` is a
-bare Space URL and its `allowedAction` is exactly `['DELETE']` or
-exactly `['GET']`. When the parent is a delegated capability, the
-target must equal the parent's unchanged; when the parent is the
-synthesized Space root, the target must equal that root's own Space
-URL. Both chain lengths are covered, for all Space kinds. The ladder VM
-is identified the way the clause already identifies it, by relation
-asymmetry, not by any new derivation.
+The normative text of each predicate is app-connect-spec
+`decisions/0003`, clause A. This server implements it as follows. On the
+source server, a ladder-signed delegation is admitted iff one of six
+predicates holds:
 
-The clause's locked property is restated to cover the new shape: every
-admitted ladder delegation either resolves through a loud annex entry,
-can only write a log, or is a target-exact single-verb GET or DELETE on
-one Space of the delegator's own account -- a read, or a destruction
-whose account-Space case removes the log any record would live in.
-Two bounds keep the widening narrow: on the `manageCapability` arm the
-parent already carries DELETE on exactly that Space URL, so the
-predicate widens who signs the last link rather than what the account
-may do; and the child's target is its parent's unchanged, so the ladder
-VM cannot aim it anywhere new.
+1. Annex-DID controller inside the account Space's items subtree: the
+   sole `controller` is the annex DID the account document's
+   `DelegatedClients` entry names, the target lies under the account
+   Space's URL outside `/meta`, and the actions lie within the closed WAS
+   verb set.
+2. Bridge-shaped target: the delegator's own history log with actions
+   within {PUT}, or a whole Space typed `AuxiliarySpace` and
+   `DelegatedClientsSpace` with actions within {GET, PUT, POST}.
+3. Target-exact single-verb Space DELETE (the target equals the parent's
+   unchanged, actions exactly `['DELETE']`) or Space Metadata GET
+   (actions exactly `['GET']`, narrowing from the Space or the same
+   Metadata URL).
+4. Target-exact GET of one Resource, under a parent that targets that
+   Resource or its Space.
+5. Target-exact POST on a Space URL, under a delegated management
+   capability whose sole `controller` is the delegator account and whose
+   delegator is that Space's stored controller.
+6. Replica pull: the sole `controller` equals the `serviceEndpoint` of a
+   `https://w3id.org/pws#ReplicaServer` service entry in the annex
+   document the account document's `DelegatedClients` entry names,
+   resolved and verified from this server's storage, and parses as a
+   did:webvh whose path is `space:server:id`. The target is the
+   canonical trailing-slash URL of the account Space or of that
+   auxiliary Space. The actions lie within {GET, HEAD}, and the parent
+   is the Space's root.
+
+On a replica server, the replicas route admits a delegated invocation
+rooted in the Space's root, and a ladder-signed delegation on it is
+admitted when its target is the Space's replicas URL exactly, its actions
+lie within {GET, POST, PUT, DELETE}, and its parent is the Space's root.
+It carries no pointer gate and no grantee bound. A delegated POST there
+may only name a `fromSpace` a registration on that Space already names.
+
+The sixth predicate's targets and the replicas URL also match their `*`
+subtree form once the explicit subtree scope of the WAS spec ships.
+
+Two invocation-time bounds sit on top of the predicates. A chain with a
+ladder-signed link is refused as a PUT on a Space Metadata URL, and as a
+DELETE on a Space URL unless every ladder-signed link is itself the
+predicate 3 DELETE shape. A DELETE on a Space URL is refused whenever any
+link is signed by a transient annex VM.
+
+The locked property: every admitted ladder delegation either resolves
+through a loud annex entry, can only write a log, is a target-exact
+single-verb read, a destruction of one Space, or a POST over a
+management grant the account already holds, or is a pull by a server the
+pointed annex document names. The replicas-route shape is the one
+exception, and it holds only on a replica server, whose copy is never
+the account's log of record.
 
 ## Rejected Alternatives
 
-- **Relying on predicate 1's target-blind admission.** That admission
-  is exactly what is being narrowed, and it never admitted a did:key
-  delegatee anyway.
-- **A general ladder-may-delegate-anything predicate.** Rejected
-  outright; it dissolves the clause.
-- **Identifying the ladder VM by subject instead of relation
-  asymmetry.** Carries the identification pitfalls the existing rule
-  avoids: action-set normalization, a verification method the predicate
-  never receives, and an embedded-node method that yields no multibase.
+- A sixth predicate with no pointer: any ladder-signed GET of the account
+  Space to a `space:server:id` DID, with no record. It lets a phished
+  credential copy the whole account to a server of the thief's choosing
+  and decrypt the copy with the user key the same credential unwraps.
+  That is the silent authority the clause exists to rule out. The other
+  silent read shapes reach one Resource or the annex, with no listing of
+  the account's collections; this one would reach everything. Do not
+  reopen while loudness is the model.
+- The replica pointer in the account document, which a replica server
+  could read at registration. The account document is world-readable, so
+  every replica server would be listed for anyone. Rejected where the
+  pointer's home is decided (app-connect-spec `decisions/0001`); the
+  sixth predicate reads the capability-gated annex document instead.
+- A pointer gate on the replicas-route shape. The replica server could
+  read the pointer only from its own copy of the annex, which lags the
+  source by a pull and does not exist before the auxiliary Space is
+  copied.
+- An unbounded delegated POST on the replicas route. A credential holder
+  could register a second source serving the account DID as
+  `controller`, since the registration only compares that string, and
+  have its tombstones applied to the copy.
+- A PUT child of a Space URL beside predicate 5's POST, for a restore
+  creating a sibling unlock Space by id. Withdrawn before it landed. The
+  target attenuation is a `/`-boundary prefix rule, so such a child
+  reaches every Resource beneath the Space, including another
+  credential's keyring record, and the overwrite leaves no trace in
+  either log. A bounded create-only shape may be added later instead.
+- Relying on predicate 1's admission for the deletion chains. Predicate 1
+  admits only an annex-DID grantee inside the items subtree, and the
+  deletion ceremony's grantee is the ladder VM's own did:key.
+- A general ladder-may-delegate-anything predicate. It dissolves the
+  clause.
+- Identifying the ladder VM by subject instead of relation asymmetry. It
+  carries the pitfalls the existing rule avoids: action-set
+  normalization, a verification method the predicate never receives, and
+  an embedded-node method that yields no multibase.
 
 ## Consequences
 
-- The predicate lands together with predicate 1's narrowing; without
-  it, every Space DELETE the deletion ceremony sends fails.
-- The container rule's enforcement pass must carry the WAS profile's
-  two exceptions (the exact-target single-verb Space DELETE, and the
-  delegated collection PUT under a Space-subtree parent) or it refuses
-  the ceremony's DELETEs and today's remembered-session unlock-Space
-  delete alike.
-- A DELETE admitted under this predicate writes no log; that carve-out
-  is the amendment app-connect-spec `decisions/0003` records against
-  its previously absolute locked property.
+- The reference server implements predicates 1 to 5. The sixth predicate
+  and the replicas-route shape are decided and land with the server's
+  replica registration work.
+- The client-annex profile version stays `0.1` although what the clause
+  admits changed. Replication had not shipped, so the change is made
+  inside the version. A later change to what the clause admits is a new
+  version.
+- A DELETE admitted under predicate 3, and every replicas-route grant,
+  writes no log. The account-Space DELETE removes the log any record
+  would live in. A replica is reached by a credential-anchored account
+  only through the ladder, and its copy is never the log of record.
+- The sixth predicate costs one local resolution of the annex document
+  per chain. The cache revalidates on the log's `ETag` and re-verifies
+  the whole log when it moved, and on a credential-anchored account the
+  pointed generation grows by one entry per transient visit.
+- Predicate 2's second branch still admits a GET of a whole auxiliary
+  Space to any grantee, with no pointer. So removing a replica pointer
+  ends that server's ladder-signed pull of the account Space, but not of
+  the auxiliary Space, until that branch is narrowed.
+- The predicate list grows by one carve-out per standing grant a
+  credential-anchored account needs. The sixth predicate is the first
+  gated on a record rather than on shape alone.
 
 ## Revisit Criteria
 
 Reopen this decision when one or more of the following holds:
 
-1. app-connect-spec `decisions/0003` changes the clause's normative
+1. app-connect-spec `decisions/0003` changes clause A's normative
    predicates; this record follows the normative home.
-2. A new ceremony needs a third action set or a changed target rule;
-   extend as a new enumerated shape rather than loosening the
+2. A new ceremony needs a new action set or a changed target rule.
+   Extend it as a new enumerated shape rather than loosening the
    target-exactness or the two-verb bound.
+3. A further standing grant would need another carve-out, and a loud
+   record could gate it the way the replica pointer gates the sixth
+   predicate. Generalize the record-gated form so later grants reuse it,
+   rather than adding predicates one by one.
+4. Predicate 2's second branch is narrowed. Drop the auxiliary-Space
+   consequence above.
 
-## Amendment (2026-09-20): a POST shape over a management capability
+## Changelog
 
-Revisit criterion 2 fired. A transient session's backup export invokes
-`POST /space/<S>/export` on a sibling unlock Space, under the same
-`manageCapability` the Space's `did:key` controller delegated to the
-account, whose `allowedAction` is now
-`['GET', 'PUT', 'DELETE', 'POST']`. The ladder VM may delegate from it
-but not invoke it, so the session mints a single-verb child to its own
-bare did:key, and no shape admitted such a child.
-
-The clause gains a fifth enumerated shape rather than loosening the
-fourth. A ladder-signed delegation is admitted when its
-`invocationTarget` is the canonical trailing-slash Space URL, equal to
-the parent's unchanged, and its `allowedAction` is exactly `['POST']`.
-Unlike the DELETE branch, the parent must be a delegated capability
-rather than the Space's synthesized root: its sole `controller` is the
-delegator account, and the controller DID of its own delegation proof
-is the Space's stored controller, so the parent is the management
-capability that Space's controller granted the account.
-Target-exactness and the two-verb bound are untouched.
-
-The locked property holds on the same two bounds the DELETE branch
-rests on. The parent already carries POST on exactly that Space URL, so
-the shape widens who signs the last link rather than what the account
-may do, and the child's target is its parent's unchanged. The Space
-controller's grant of that management capability is the record, and the
-wallet's own unlock record is what carries it.
-
-The invocation is not touched by the invocation-time bounds:
-`spaceOperationOf` classifies only a `PUT` on a Space Metadata URL and
-a `DELETE` on a canonical Space URL, and a `POST` at
-`/space/<S>/export` is neither, so `ladderInvocationRefusal` needed no
-relaxing.
-
-## Amendment (2026-09-20): the PUT half is withdrawn
-
-A `PUT` branch was drafted beside the `POST` one, for a restore
-creating a sibling unlock Space by id, and was withdrawn before it
-landed. The shape ships as `POST` alone.
-
-A `PUT` child of the canonical Space URL is not narrow. The zcap
-library's target attenuation is a `/`-boundary prefix rule, so such a
-child reaches every resource beneath the Space, including the keyring
-record of a sibling unlock Space. A transient session holding one
-credential could overwrite another credential's record with it, and
-nothing in the account log or the annex log would carry a trace: the
-write is an ordinary Resource `PUT`, so it fails loudness rather than
-widening who signs a link.
-
-`POST` carries no such reach. It admits `POST /space/<S>/export` and
-the Resource-creation endpoints beneath the Space, none of which
-rewrites a record standing there.
-
-The restore's sibling stage (freewallet FW-531) re-adds a bounded
-create-only shape instead, once WAS-131 threads the `webvh` resolver
-context through `verifyBodyControllerConsent` and Create Space by Id is
-reachable on a `did:webvh` chain at all.
+- 2026-09-20: a fifth shape added, a target-exact POST over a delegated
+  management capability; its PUT half was withdrawn before landing.
+- 2026-10-26: rewritten to state the whole current clause. The fourth
+  shape (a GET of one Resource) is now listed. A sixth predicate (a
+  replica pull gated on the annex document's replica pointer) and a
+  replica-server shape on the replicas route are added, with the
+  pointer-less replica pull rejected and the locked property restated.
+  The title is widened from the target-exact shapes to the enumerated
+  ones.

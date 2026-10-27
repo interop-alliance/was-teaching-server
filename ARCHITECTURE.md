@@ -181,11 +181,13 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   server's DID. One pull loop per registration reads the peer's Space and each
   selected Collection's `changes` feed, and stores what it reads through the
   backend's `apply*` methods only, under the peer's stamp and generation. No
-  request route can supply a write stamp. The chunk pull adds `stageChunk`,
-  `listStagedChunks`, `applyResourceWithChunks` and `reclaimStaging` to that
-  family. A chunked Resource's set is staged, then swapped in with its parent in
-  one critical section, so its parent takes a feed position only once the set is
-  whole. The container objects, logs and policies are applied on the control
+  request route can supply a write stamp. The chunk pull adds
+  `beginChunkStaging`, `stageChunk`, `listStagedChunks` and `reclaimStaging` to
+  that family, and a `chunks` option to `applyResource`. A chunked Resource's
+  set is staged, a few chunks at a time, then swapped in with its parent in one
+  critical section, so its parent takes a feed position only once the set is
+  whole. The quota pre-check of a set is the backend's, made when the run is
+  opened. The container objects, logs and policies are applied on the control
   plane; a Collection's Resources go to the server backend its `backend.id`
   selects, the id meaning here what it means on the peer, after the loop checks
   the registration on the control plane. A `backend.id` this deployment does not

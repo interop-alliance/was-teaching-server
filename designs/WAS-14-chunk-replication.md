@@ -640,6 +640,27 @@ key rather than copied" sentence above is not met; meeting it would need the
 staged rows to live in `chunks` under a staging key column. Left as is, and
 worth its own item if the lock time shows up in practice.
 
+Cleanups 2026-10-26, after a simplify review of the shipped code, none a wire
+change. The manifest lost `kept` and `swapped`: the loop stages every listed
+chunk (a live chunk's validator is this server's own, so the source server
+cannot answer 304 for it), and the manifest is written only once the swap is
+decided, so its presence is the flag. `applyResourceWithChunks` became the
+`chunks` option of `applyResource`. A fourth verb, `beginChunkStaging`, opens a
+run once per chunk pull: under the parent's lock it settles a torn swap, drops
+the registration's other runs for the Resource, makes the quota pre-check of
+step 3 inside the backend (the filesystem backend adds its own headroom, so no
+backend trait is read by the loop), keeps the live sizes the run's credits are
+summed from, and reports what the run holds; `stageChunk` only stages, and
+`reclaimStaging` lost its `exceptRun` form. The loop checks the registration
+once per chunk set, reads the chunks of a set `REPLICA_CHUNK_PULL_CONCURRENCY`
+at a time (the first failure stops new reads and waits for those in flight, so
+what they staged serves the re-run; a chunk deleted on the source server while
+its set is read is caught only when its own read answers 404), and persists its
+state past `REPLICA_STATE_PERSIST_BYTES` or `REPLICA_STATE_PERSIST_DOCUMENTS`
+inside a Collection rather than after every chunked Resource. `pullsChunks`
+stays on the registration (open point 5). No Collection on this server refuses
+chunks, so there is no Collection whose chunk listing read could be skipped.
+
 Quota under staging: the pre-check of step 3 is net, and the in-write check
 during staging is told the bytes the swap will free (the held live sizes of the
 indexes being replaced), so a replica server with its source server's quota can

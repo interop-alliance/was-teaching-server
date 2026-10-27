@@ -80,6 +80,7 @@ import { parseJsonOrUndefined } from '../lib/jsonBytes.js'
 import {
   type ApplyResult,
   assertReceivableStamps,
+  chunkSetQuotaRefusal,
   chunkSetRefusal,
   decideCollectionApply,
   decideCollectionTombstoneApply,
@@ -237,6 +238,7 @@ import type {
   ReplicaLoopState,
   StoredReplica,
   ChunkStagingRun,
+  StagedChunk,
   SpaceExportEntries
 } from '../types.js'
 
@@ -5613,7 +5615,8 @@ export class PostgresBackend implements StorageBackend {
     createdAt,
     createdBy,
     writerId,
-    resource
+    resource,
+    chunks
   }: {
     spaceId: string
     replicaId?: string
@@ -5627,7 +5630,28 @@ export class PostgresBackend implements StorageBackend {
     resource:
       | { deleted: false; input: ResourceInput; epoch?: string }
       | { deleted: true; contentType: string }
+    chunks?: { run: ChunkStagingRun; staged: number[] }
   }): Promise<ApplyResult> {
+    if (chunks !== undefined) {
+      if (resource.deleted) {
+        throw new StorageError({
+          cause: new Error('A Resource tombstone applies with no chunk set.')
+        })
+      }
+      return this.#applyResourceWithChunks({
+        spaceId,
+        replicaId,
+        collectionId,
+        resourceId,
+        generation,
+        stamp,
+        createdAt,
+        createdBy,
+        writerId,
+        resource,
+        chunks
+      })
+    }
     // Buffered before the transaction, so a slow body holds no row lock.
     const content = resource.deleted
       ? null
@@ -5718,9 +5742,8 @@ export class PostgresBackend implements StorageBackend {
    * Locks the `resources` row a content apply writes, re-reading it under
    * the same-key create lock when it is absent (`#lockRowForWrite`), and
    * decides the apply against the held content record
-   * (`decideResourceApply`). Shared by `applyResource` and
-   * `applyResourceWithChunks`, inside their transaction, after
-   * `#beginApply`.
+   * (`decideResourceApply`). Shared by both forms of `applyResource`,
+   * inside their transaction, after `#beginApply`.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -5789,8 +5812,8 @@ export class PostgresBackend implements StorageBackend {
    * row `#lockResourceForApply` locked, under the received generation and
    * stamp, and takes the Collection's next feed position for it. A live
    * Resource keeps the `/meta` record and `custom` of a live row it
-   * replaces; a tombstone on either side has none. Shared by `applyResource`
-   * and `applyResourceWithChunks`; the caller applies the usage delta.
+   * replaces; a tombstone on either side has none. Shared by both forms of
+   * `applyResource`; the caller applies the usage delta.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -5923,20 +5946,115 @@ export class PostgresBackend implements StorageBackend {
   // The chunk pull (replication)
 
   /**
+   * Opens the staging of `run` for one chunk pull, in one transaction under
+   * the apply path's locks: the registration check (`replicaId`, as on
+   * `applyResource`) and a live Collection (`#beginApply`). The
+   * registration's staging of the same Resource under any other parent
+   * revision is removed here, since the loop that owns it has moved past
+   * that revision, and its bytes return to the usage counter. Then the
+   * quota pre-check of the set (`chunkSetQuotaRefusal`, with no headroom:
+   * the in-write check here is a counter under the Space row lock), from
+   * the rows staged under `run`, the live chunk bytes the swap frees and
+   * the counter. A swap here is one transaction, so there is no torn run
+   * to finish. Nothing is staged here.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.replicaId] {string}   absent for a backend other than the
+   *   control plane, which holds no registrations
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.run {ChunkStagingRun}
+   * @param options.listed {Array<{ index: number, size: number }>}   the
+   *   source server's listing, checked
+   * @returns {Promise<{ staged: Array<{ index: number, size: number,
+   *   peerEtag: string }> } | ApplyResult>}   what the run holds, or the
+   *   outcome that ends the chunk pull
+   */
+  async beginChunkStaging({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    run,
+    listed
+  }: {
+    spaceId: string
+    replicaId?: string
+    collectionId: string
+    resourceId: string
+    run: ChunkStagingRun
+    listed: Array<{ index: number; size: number }>
+  }): Promise<
+    { staged: StagedChunk[] } | Exclude<ApplyResult, { outcome: 'applied' }>
+  > {
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: []
+      })
+      if (ended !== undefined) {
+        // `#beginApply` answers only the outcomes that stop an apply.
+        return ended as Exclude<ApplyResult, { outcome: 'applied' }>
+      }
+      const superseded = await this.#deleteStaging({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        replicaId: run.replicaId,
+        exceptParentEtag: run.parentEtag
+      })
+      await this.#applyUsageDelta({
+        client,
+        spaceId,
+        delta: -superseded.freedBytes
+      })
+      const resourceKey = [spaceId, collectionId, resourceId]
+      const staged = await this.#stagedChunks({
+        db: client,
+        spaceId,
+        collectionId,
+        resourceId,
+        run
+      })
+      const { rows: liveRows } = await client.query<{ bytes: string }>(
+        `SELECT COALESCE(SUM(size), 0) AS bytes FROM chunks
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+        resourceKey
+      )
+      const { rows: usageRows } = await client.query<{ usage_bytes: string }>(
+        `SELECT usage_bytes FROM spaces WHERE space_id = $1`,
+        [spaceId]
+      )
+      const refused = chunkSetQuotaRefusal({
+        listed,
+        staged,
+        liveBytes: Number(liveRows[0]!.bytes),
+        headroomBytes: 0,
+        usageBytes: Number(usageRows[0]?.usage_bytes ?? 0),
+        capacityBytes: this.capacityBytes,
+        maxUploadBytes: this.maxUploadBytes
+      })
+      return refused ?? { staged }
+    })
+  }
+
+  /**
    * Stages one chunk a chunk pull read from the source server, in one
    * transaction under the apply path's locks: the registration check
    * (`replicaId`, as on `applyResource`) and a live Collection
    * (`#beginApply`), then the staging row at the key of `run` and
    * `chunkIndex`, replacing a row staged there before. The parent is not
    * required to be held: a Resource replicated for the first time has no
-   * row until the swap. The registration's staging of the same Resource
-   * under any other parent revision is removed here, since the loop that
-   * owns it has moved past that revision. The bytes count toward usage. The
-   * capacity check credits the live chunks at every index staged under
-   * `run`, which the swap replaces, so a same-size rewrite of a stream fits
-   * under a quota its live set already fills. That credit is read from the
-   * rows under the lock. A staged chunk takes no feed position, and its
-   * stamp and generation are minted at the swap.
+   * row until the swap. The bytes count toward usage. The capacity check
+   * credits the live chunks at every index staged under `run`, which the
+   * swap replaces, so a same-size rewrite of a stream fits under a quota
+   * its live set already fills. That credit is read from the rows under the
+   * lock. A staged chunk takes no feed position, and its stamp and
+   * generation are minted at the swap.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.replicaId] {string}   absent for a backend other than the
@@ -5985,14 +6103,6 @@ export class PostgresBackend implements StorageBackend {
       if (ended !== undefined) {
         return ended
       }
-      const superseded = await this.#deleteStaging({
-        client,
-        spaceId,
-        collectionId,
-        resourceId,
-        replicaId: run.replicaId,
-        exceptRun: run
-      })
       const runKey = [
         spaceId,
         collectionId,
@@ -6042,8 +6152,7 @@ export class PostgresBackend implements StorageBackend {
       await this.#applyUsageDelta({
         client,
         spaceId,
-        delta:
-          bytes.length - Number(rows[0]!.prior_size) - superseded.freedBytes,
+        delta: bytes.length - Number(rows[0]!.prior_size),
         credit: Number(creditRows[0]!.credit)
       })
       return { outcome: 'applied' }
@@ -6058,8 +6167,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.run {ChunkStagingRun}
-   * @returns {Promise<Array<{ index: number, size: number,
-   *   peerEtag: string }>>}
+   * @returns {Promise<StagedChunk[]>}
    */
   async listStagedChunks({
     spaceId,
@@ -6071,8 +6179,41 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     resourceId: string
     run: ChunkStagingRun
-  }): Promise<Array<{ index: number; size: number; peerEtag: string }>> {
-    const { rows } = await this.#reader().query<{
+  }): Promise<StagedChunk[]> {
+    return this.#stagedChunks({
+      db: this.#reader(),
+      spaceId,
+      collectionId,
+      resourceId,
+      run
+    })
+  }
+
+  /**
+   * The chunk staging rows of one run, by ascending index.
+   * @param options {object}
+   * @param options.db {pg.Pool | pg.PoolClient}   the caller's transaction,
+   *   or the reader
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.run {ChunkStagingRun}
+   * @returns {Promise<StagedChunk[]>}
+   */
+  async #stagedChunks({
+    db,
+    spaceId,
+    collectionId,
+    resourceId,
+    run
+  }: {
+    db: pg.Pool | pg.PoolClient
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    run: ChunkStagingRun
+  }): Promise<StagedChunk[]> {
+    const { rows } = await db.query<{
       chunk_index: number
       size: string
       peer_etag: string
@@ -6091,11 +6232,11 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Applies a live Resource content record with its chunk set, in one
-   * transaction: the registration check and the clock (`#beginApply`), the
-   * parent's row lock and the last-writer-wins decision as `applyResource`
-   * takes them. On a win, the live chunks in neither `kept` nor `staged` are
-   * deleted, the parent row is written as `applyResource` writes it and
+   * The `chunks` form of `applyResource`: a live Resource content record
+   * with its chunk set, in one transaction: the registration check and the
+   * clock (`#beginApply`), the parent's row lock and the last-writer-wins
+   * decision as `applyResource` takes them. On a win, the live chunks not
+   * in `staged` are deleted, the parent row is written as `applyResource` writes it and
    * takes its feed position (first, since a chunk row needs its parent
    * row), each staged row is moved into `chunks` under a fresh generation
    * and a stamp minted here, and the registration's staging of the Resource
@@ -6117,14 +6258,14 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.createdBy] {IDID}
    * @param [options.writerId] {string}
    * @param options.resource {object}   the received representation
-   * @param options.chunks {object}   the staging run, the live indexes the
-   *   source server's set keeps, and the indexes staged under the run
+   * @param options.chunks {object}   the staging run and the indexes staged
+   *   under it
    * @returns {Promise<ApplyResult>}   `refused` with `container-refused` for
-   *   a staged index with no staging row or a kept index with no live chunk
+   *   a staged index with no staging row, with the staging released
    * @throws {PayloadTooLargeError}   the body exceeds the upload cap
    * @throws {QuotaExceededError}   the parent's growth exceeds the quota
    */
-  async applyResourceWithChunks({
+  async #applyResourceWithChunks({
     spaceId,
     replicaId,
     collectionId,
@@ -6147,7 +6288,7 @@ export class PostgresBackend implements StorageBackend {
     createdBy?: IDID
     writerId?: string
     resource: { input: ResourceInput; epoch?: string }
-    chunks: { run: ChunkStagingRun; kept: number[]; staged: number[] }
+    chunks: { run: ChunkStagingRun; staged: number[] }
   }): Promise<ApplyResult> {
     // Buffered before the transaction, so a slow body holds no row lock.
     const content = await this.#bufferInputCapped(resource.input)
@@ -6174,6 +6315,12 @@ export class PostgresBackend implements StorageBackend {
         })
         return freedBytes
       }
+      // The staging is released as on a loss, and its bytes leave the
+      // usage count, when the apply stores nothing.
+      const releaseWithoutApply = async (): Promise<void> => {
+        const releasedBytes = await releaseStaging()
+        await this.#applyUsageDelta({ client, spaceId, delta: -releasedBytes })
+      }
       const { prior, stopped } = await this.#lockResourceForApply({
         client,
         spaceId,
@@ -6183,8 +6330,7 @@ export class PostgresBackend implements StorageBackend {
         content
       })
       if (stopped !== undefined) {
-        const releasedBytes = await releaseStaging()
-        await this.#applyUsageDelta({ client, spaceId, delta: -releasedBytes })
+        await releaseWithoutApply()
         return stopped
       }
 
@@ -6209,16 +6355,15 @@ export class PostgresBackend implements StorageBackend {
       )
       const refusal = chunkSetRefusal({
         resourceId,
-        kept: chunks.kept,
         staged: chunks.staged,
-        live: new Set(live.keys()),
         stagedHeld: new Set(stagedRows.map(row => row.chunk_index))
       })
       if (refusal !== undefined) {
+        await releaseWithoutApply()
         return refusal
       }
 
-      const keep = new Set([...chunks.kept, ...chunks.staged])
+      const keep = new Set(chunks.staged)
       const removed = [...live.keys()].filter(index => !keep.has(index))
       const replacedBytes = chunks.staged.reduce(
         (total, index) => total + (live.get(index) ?? 0),
@@ -6326,29 +6471,26 @@ export class PostgresBackend implements StorageBackend {
    * held returned to the Space's usage counter: a registration's on Delete
    * Replica, a Resource's, a Collection's or a Space's. A Postgres swap is
    * one transaction, so no run is ever left half swapped and every run in
-   * scope is removed, less `exceptRun`. A scope that holds no staging row
-   * is answered from one read, with no transaction and no Space row lock,
-   * since the pull loop reclaims before every chunked Resource it applies.
+   * scope is removed. A scope that holds no staging row is answered from
+   * one read, with no transaction and no Space row lock, since the pull
+   * loop reclaims before a chunked Resource it applies as a plain record.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param [options.replicaId] {string}
-   * @param [options.exceptRun] {ChunkStagingRun}   the run to leave
    * @returns {Promise<number>}   how many runs were removed
    */
   async reclaimStaging({
     spaceId,
     collectionId,
     resourceId,
-    replicaId,
-    exceptRun
+    replicaId
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     replicaId?: string
-    exceptRun?: ChunkStagingRun
   }): Promise<number> {
     const { values, conditions } = stagingScope({
       spaceId,
@@ -6372,8 +6514,7 @@ export class PostgresBackend implements StorageBackend {
         spaceId,
         collectionId,
         resourceId,
-        replicaId,
-        exceptRun
+        replicaId
       })
       await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       return runs
@@ -6390,7 +6531,8 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param [options.replicaId] {string}
-   * @param [options.exceptRun] {ChunkStagingRun}   keeps this run
+   * @param [options.exceptParentEtag] {string}   keeps the run of this
+   *   parent revision, in a scope `replicaId` already fixes
    * @returns {Promise<{ freedBytes: number, runs: number }>}   the bytes the
    *   removed rows held and how many runs they made up
    */
@@ -6400,14 +6542,14 @@ export class PostgresBackend implements StorageBackend {
     collectionId,
     resourceId,
     replicaId,
-    exceptRun
+    exceptParentEtag
   }: {
     client: pg.PoolClient
     spaceId: string
     collectionId?: string
     resourceId?: string
     replicaId?: string
-    exceptRun?: ChunkStagingRun
+    exceptParentEtag?: string
   }): Promise<{ freedBytes: number; runs: number }> {
     const { values, conditions } = stagingScope({
       spaceId,
@@ -6415,12 +6557,9 @@ export class PostgresBackend implements StorageBackend {
       resourceId,
       replicaId
     })
-    if (exceptRun !== undefined) {
-      values.push(exceptRun.replicaId, exceptRun.parentEtag)
-      conditions.push(
-        `NOT (replica_id = $${values.length - 1} AND ` +
-          `parent_etag = $${values.length})`
-      )
+    if (exceptParentEtag !== undefined) {
+      values.push(exceptParentEtag)
+      conditions.push(`parent_etag <> $${values.length}`)
     }
     const { rows } = await client.query<{
       collection_id: string

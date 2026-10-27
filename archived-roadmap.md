@@ -6313,3 +6313,50 @@ peer's chunk `ETag` being opaque to it, so no stamp is learned from an `ETag`
 and the validator layout is not a requirement on peers (design open point 3).
 The three questions that design left open (discovery, chunk tombstones,
 whole-stream consistency) are answered in the design doc's section 1.
+
+### WAS-222: [L] (*) Chunk replication cleanups: fixed manifest members, one apply verb, cheaper staging
+
+- status: done
+- done: 2026-10-26
+- priority: low
+- backend: *
+- labels: replication, chunks, backend, performance
+- discovered-from: simplify review of the chunk replication work (2026-10-26)
+- acceptance:
+  - [x] The staging manifest's `kept` list and `swapped` flag are dropped, with
+        docs/filesystem-layout.md and the chunk replication design doc amended
+        (the loop stages every listed chunk, since a live chunk's validator is
+        this server's own, and the manifest is written only once the swap is
+        decided, so its presence is the flag), or the layout doc names the case
+        that sets either to another value
+  - [x] `applyResourceWithChunks` becomes a `chunks` option of `applyResource`,
+        or `StorageBackend`'s doc says why the two verbs stay apart, and
+        `reclaimStaging`'s `exceptRun` form goes once staging itself drops the
+        registration's other runs for the Resource
+  - [x] The quota pre-check of a chunk set runs behind the backend, so
+        `usageCheckIsGross` leaves `StorageBackend`, and `pullsChunks` is read
+        from the source server's service description per cycle rather than
+        stored on the registration, or docs/replication.md states why the stored
+        form stays
+  - [x] `stageChunk` settles the Resource's staging and drops the registration's
+        other runs on the first chunk of a run only, and credits the one index
+        it stages; the data-backend registration re-check runs once per chunk
+        set; a Collection that cannot hold chunks skips the chunk listing read
+  - [x] The transfer phase of a chunk set reads a few chunks from the source
+        server at once (a small fixed concurrency, the staging lock and quota
+        headroom kept as they are), or the loop's doc says why it stays serial
+  - [x] The replica state is persisted after a chunk pull only past a byte or
+        document threshold and at the end of the Collection, rather than after
+        every Resource whose chunks were pulled
+  - [x] A test in `test/` covers each change kept
+
+The chunk pull shipped with four backend methods, a stored capability flag, a
+backend trait the loop pads its quota arithmetic by, and a manifest whose `kept`
+is always empty and whose `swapped` is always `true`. Each is a special case
+layered on the general apply path. Per chunk, staging re-scans the whole
+Resource (settle, drop other runs, list the live set) and re-reads the
+registration on the control plane, so staging an n-chunk set does O(n^2) work in
+directory entries and 2n control-plane reads; every live Resource of a
+chunk-pulling registration pays a chunk listing round trip, chunked or not; the
+chunks of one set are transferred one at a time; and the replica state is
+rewritten after every Resource whose chunks were pulled.
