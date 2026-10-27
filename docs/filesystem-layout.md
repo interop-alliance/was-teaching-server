@@ -72,6 +72,17 @@ step. A sidecar that does not parse is not a tombstone. An empty data dir, or
 one with no such sidecar, is stamped at version 5. Postgres is unchanged: its
 liveness is the `deleted` column.
 
+### Version 6: chunk staging
+
+A Collection dir may hold a chunk staging directory beside a Resource's chunk
+directory (see [Chunk staging](#chunk-staging)). A store at an earlier layout
+holds none, so the step converts nothing. It exists so that a server built
+before this layout, which neither reclaims staging nor finishes a torn swap,
+refuses the store. The Postgres twin is schema migration 14, which adds the
+`chunk_staging` table and the `pulls_chunks` column of `replicas`, with existing
+rows reading `false`. It has no manifest: the swap there is one transaction, so
+no torn state remains to detect at boot.
+
 ## The origin id and the clock mark
 
 `store.json` also carries the store's origin id as its `originId` member (see
@@ -192,6 +203,49 @@ sidecar before the file it names. A read racing it finds the sidecar gone and
 answers 404. A retried delete that was cut short between the two removals
 answers 404 too.
 
+## Chunk staging
+
+The pull loop of a replica server stages the chunks it reads before it moves
+them in with their parent (see [replication.md](replication.md)). Staging lives
+in `.staging.chunks.<encodedResourceId>/` in the Collection dir, beside
+`.chunks.<encodedResourceId>/` and under the same id encoding. The listings, the
+changes feed and export read files and `.chunks.` directories only, so they skip
+it. The byte quota's `du` counts it.
+
+Under it is one run directory per registration and parent revision:
+`<replicaId>/<base64url(parentEtag)>/`. A run directory holds:
+
+- One representation file per staged chunk, with a `.meta.<index>.json` sidecar.
+  The sidecar records `contentType`, `size`, `peerEtag` and `fileName`.
+  `peerEtag` is the source server's opaque `ETag`. A staged chunk carries no
+  stamp and no generation.
+- `.manifest.json`, with `parentEtag`, `kept`, `staged`, `swapped` and `parent`.
+  `kept` lists the live indexes the swap keeps and `staged` the indexes it moves
+  in. `parent` is the parent's sidecar as the swap will write it.
+- `next/`, the chunk directory being built.
+- `prior/`, the live chunk directory once it is renamed aside.
+- `parent/`, the parent's representation file until it is moved into the
+  Collection dir.
+
+The swap runs under the parent's lock, in this order:
+
+1. The parent's file is written into `parent/`.
+2. `next/` is created and the manifest is written with `swapped: true`.
+3. Each kept chunk is copied into `next/`, file and sidecar (a reflink where the
+   filesystem offers one; never a hard link, which the data dir's filesystem may
+   not support). Each staged chunk is moved in, with a sidecar that carries a
+   stamp minted from this store's clock and a fresh generation.
+4. The live chunk directory is renamed to `prior/`, and `next/` takes its place.
+   Two renames are needed, since a non-empty directory cannot be replaced by
+   one. An empty set leaves no chunk directory.
+5. The parent's file is moved into the Collection dir.
+6. The parent's sidecar is written. It takes the feed position and is the commit
+   point. The parent and its set become visible to readers and to the feed here.
+7. The run directory is removed, `prior/` with it.
+
+Every step can be run again over what a cut-short run left, so the same code
+serves the apply and the finish of a torn swap.
+
 ## Crash cases
 
 A crash can leave a file no live sidecar names. The cases are bytes written
@@ -212,6 +266,25 @@ stays until the id is deleted, and a file with no sidecar and no tombstone stays
 until a write of the id lands on the same name or its Collection is deleted.
 Delete Chunk removes every representation file of the index the same way. Delete
 Chunk of an index with no sidecar answers 404 and leaves its file in place.
+
+A crash during a chunk pull has three cases:
+
+- A crash after staging and before the swap changed nothing live. The run has no
+  manifest, or a manifest that says `swapped: false`. It is discarded at boot,
+  or at the next call for the Resource.
+- A crash between the directory swap and the parent's sidecar leaves the new set
+  beside the old parent. The manifest says `swapped: true`. The swap is finished
+  from the manifest at boot, or at the next call for the Resource. It is
+  finished only if the manifest's parent stamp still wins over the held parent.
+  When a later write of the parent stands, the run is removed and the set that
+  write was made over is kept: `prior/` goes back in place when no chunk
+  directory stands, and the chunk directory is left as it is when one does. A
+  local chunk write that created a chunk directory after `prior/` was renamed
+  aside, and before `next/` took its place, stands over the swap the same way.
+- A chunk directory stranded beside a Resource tombstone, left by a tombstone
+  apply or a delete cut short between the tombstone and the directory removal,
+  is no live set. It is removed at boot, on a replayed tombstone, and by a
+  create over the tombstone.
 
 The changes feed, export, the equality and unique-claim scans, and the chunk
 listing keep a file only when its id's sidecar is live and names it

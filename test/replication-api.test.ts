@@ -14,39 +14,21 @@
  */
 import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
-import { randomBytes } from 'node:crypto'
-import type { FastifyInstance } from 'fastify'
 import { ProblemTypes } from '@interop/storage-core'
 
-import { createApp } from '../src/server.js'
-import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
 import {
+  bootPeerServer,
   delegate,
-  frozenClock,
   injectPeerFetch,
-  openTempBackend,
-  provisionServerIdentity,
+  type PeerServer,
   registerReplica,
   replicaStatus,
   signedInject,
   zcapClients
 } from './helpers.js'
 
-/**
- * One of the two servers: its app, its backend, the clock its write stamps
- * read, and its own DID.
- */
-interface Server {
-  serverUrl: string
-  fastify: FastifyInstance
-  backend: TempFileSystemBackend
-  clock: ReturnType<typeof frozenClock>
-  did: string
-  didLog: string
-}
-
-const servers = new Map<string, Server>()
+const servers = new Map<string, PeerServer>()
 
 /**
  * The transport both pull loops use: the request is handed to the app the
@@ -57,49 +39,20 @@ const peerFetch = injectPeerFetch(servers)
 /**
  * Boots one server with an identity whose key may invoke, so it can pull.
  */
-async function boot({
-  serverUrl,
-  start
-}: {
+async function boot(options: {
   serverUrl: string
   start: number
-}): Promise<Server> {
-  const clock = frozenClock(start)
-  const backend = await openTempBackend({
+}): Promise<PeerServer> {
+  return bootPeerServer({
+    ...options,
     prefix: 'was-replication-',
-    physicalClock: clock.read
-  })
-  const seed = randomBytes(32)
-  const { did, didLog } = await provisionServerIdentity({
-    backend,
-    serverUrl,
-    seed,
-    purpose: ['assertionMethod', 'capabilityInvocation']
-  })
-  const fastify = createApp({
-    serverUrl,
-    backend,
-    logger: false,
-    serverKeySeed: seed,
     peerFetch,
-    // A peer's log is read from the peer's own storage.
-    peerLogFetcher: async ({ url }) => {
-      const peer = servers.get(new URL(url).origin)
-      if (peer === undefined) {
-        throw new Error(`No test server at ${url}.`)
-      }
-      return Buffer.from(peer.didLog)
-    }
+    servers
   })
-  await fastify.ready()
-  fastify.replication.pause()
-  const server = { serverUrl, fastify, backend, clock, did, didLog }
-  servers.set(serverUrl, server)
-  return server
 }
 
 describe('Replication between two servers', () => {
-  let source: Server, replica: Server
+  let source: PeerServer, replica: PeerServer
   let alice: { did: string; signer: any }, bob: { did: string; signer: any }
 
   /**
@@ -121,7 +74,7 @@ describe('Replication between two servers', () => {
     spaceId,
     controller = alice.did
   }: {
-    server: Server
+    server: PeerServer
     spaceId: string
     controller?: string
   }): Promise<void> {
@@ -157,7 +110,7 @@ describe('Replication between two servers', () => {
     spaceId,
     replicaId = 'peer'
   }: {
-    server: Server
+    server: PeerServer
     spaceId: string
     replicaId?: string
   }): Promise<void> {

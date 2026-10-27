@@ -11,7 +11,10 @@
  * records follow other rules. A history log fast-forwards. A Collection
  * tombstone removes every life of the Collection created before it, whatever
  * the stamps of its members. Two lives of one Collection id are ordered by
- * their creating stamps.
+ * their creating stamps. A chunk carries no received stamp at all: its set
+ * is applied with its parent revision in one call
+ * (`applyResourceWithChunks`), under a stamp and generation this server
+ * mints, so a chunk's stamp orders nothing across servers.
  */
 import { StorageError } from '../errors.js'
 import type {
@@ -484,4 +487,51 @@ export function decideResourceApply({
   return stampWins({ incoming: stamp, held })
     ? undefined
     : { outcome: 'skipped' }
+}
+
+/**
+ * The refusal of a chunk swap whose chunk set does not match what is held:
+ * an index listed twice, or both kept and staged, a staged index the run
+ * holds no staged chunk for, or a kept index with no live chunk. Each is a
+ * fault of the caller, which derives both lists from the source server's
+ * listing, its own staging and the live set.
+ * @param options {object}
+ * @param options.resourceId {string}   names the Resource in the detail
+ * @param options.kept {number[]}
+ * @param options.staged {number[]}
+ * @param options.live {Set<number>}   the live chunk indexes
+ * @param options.stagedHeld {Set<number>}   the indexes staged under the run
+ * @returns {ApplyResult | undefined}   the refusal, or `undefined` when the
+ *   set matches
+ */
+export function chunkSetRefusal({
+  resourceId,
+  kept,
+  staged,
+  live,
+  stagedHeld
+}: {
+  resourceId: string
+  kept: number[]
+  staged: number[]
+  live: Set<number>
+  stagedHeld: Set<number>
+}): ApplyResult | undefined {
+  const refused = (detail: string): ApplyResult => ({
+    outcome: 'refused',
+    reason: 'container-refused',
+    detail: `The chunk set of Resource '${resourceId}' ${detail}`
+  })
+  if (new Set([...kept, ...staged]).size !== kept.length + staged.length) {
+    return refused('names an index twice.')
+  }
+  const unstaged = staged.find(index => !stagedHeld.has(index))
+  if (unstaged !== undefined) {
+    return refused(`stages index ${unstaged}, which is not staged.`)
+  }
+  const missing = kept.find(index => !live.has(index))
+  if (missing !== undefined) {
+    return refused(`keeps index ${missing}, which is not held.`)
+  }
+  return undefined
 }

@@ -83,7 +83,7 @@ export class ReplicaRequest {
       spaceId,
       requestName
     })
-    await assertReplicaAcceptable({
+    const { pullsChunks } = await assertReplicaAcceptable({
       record,
       spaceId,
       spaceMetadata,
@@ -95,7 +95,11 @@ export class ReplicaRequest {
       logger: request.log
     })
 
-    const stored = await storage.createReplica({ spaceId, record })
+    const stored = await storage.createReplica({
+      spaceId,
+      record,
+      pullsChunks
+    })
     // The Space Metadata object lists the registration under `replicas` and
     // its validator advanced with it, so the cached object is stale. The
     // registration may map a peer-hosted did:webvh onto this Space's copy.
@@ -189,7 +193,8 @@ export class ReplicaRequest {
 
   /**
    * DELETE /space/:spaceId/replicas/:replicaId
-   * Removes a registration and its loop state, and stops its pull loop.
+   * Removes a registration and its loop state, stops its pull loop, and
+   * reclaims the chunk staging its loop left on every server backend.
    * Nothing already pulled is removed. Idempotent: 204 whether or not a
    * registration was stored. Refused with `replica-refused` (409) while the
    * registration is the only one that maps a Space's `did:webvh` controller
@@ -245,11 +250,29 @@ export class ReplicaRequest {
           'add the new one before removing this one.'
       })
     }
-    if (await storage.deleteReplica({ spaceId, replicaId })) {
+    const deleted = await storage.deleteReplica({ spaceId, replicaId })
+    if (deleted) {
       invalidateSpaceMetadata({ storage, spaceId })
       invalidateReplicaIndex({ storage })
     }
     replication.unregister({ spaceId, replicaId })
+    // The chunk staging the registration's loop left, on every server
+    // backend a Collection's data plane may live on, whether or not this
+    // call removed the record: a repeat delete reclaims what an earlier one
+    // missed. The loop is stopped first; a chunk its cycle in flight stages
+    // after this is reclaimed at the next boot. The registration is gone
+    // by now, so a reclaim that fails is logged and does not fail the
+    // delete: the staging is reclaimed at the next boot or repeat delete.
+    for (const backend of request.server.serverBackends.all()) {
+      try {
+        await backend.reclaimStaging({ spaceId, replicaId })
+      } catch (err) {
+        request.log.warn(
+          { err, spaceId, replicaId, backend: backend.describe().id },
+          'Reclaiming the chunk staging of a removed replica registration failed'
+        )
+      }
+    }
     return reply.status(204).send()
   }
 

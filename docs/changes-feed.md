@@ -26,7 +26,10 @@ segment.
 
 A Collection's own policy and each Resource policy take one with every write and
 every delete, which leaves a tombstone. A Space policy takes none, since it is
-in no Collection. A chunk write takes none, so it never moves its parent.
+in no Collection. A chunk write takes none, so it never moves its parent. A
+replicating server discovers a chunk set by reading the parent's chunk listing
+when the parent's own feed document is applied, not from the feed (see
+[replication.md](replication.md)).
 
 The position is assigned inside the per-Collection critical section that makes
 the write visible, so no write lands at or before a position a reader was

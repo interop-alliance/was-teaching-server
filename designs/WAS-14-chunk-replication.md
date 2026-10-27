@@ -611,6 +611,35 @@ re-derives `kept` and `staged` from the source server's listing on every run.
 One forward migration step adds the table. Usage on both backends includes
 staging.
 
+Implementation 2026-10-26, six points settled while coding, none a wire
+change. First, `stageChunk` does not require the parent to be held: on a
+first-time replication the replica server holds no parent record until the
+swap writes it, so staging checks the registration and the live Collection
+only, and last-writer-wins at the swap decides; a run's staging also drops the
+same registration's staging of the Resource under any other parent `ETag`.
+Second, the Postgres `chunk_staging` table carries a cascading foreign key to
+`collections` and none to `resources` or `replicas`: no parent row exists on
+a first-time replication, and a Postgres backend that is not the control plane
+holds no `replicas` rows; Delete Replica and Delete Resource reclaim by
+calling `reclaimStaging` instead. Third, a fourth method, `listStagedChunks`, joins the
+three: the loop needs the staged indexes and their source server `ETag`s to
+make the conditional `GET` of a re-run, and nothing else exposes them. Fourth,
+a filesystem run directory stages the parent's representation and sidecar
+content beside the chunks before `swapped` is set, so a swap torn before the
+parent sidecar can be finished at boot without the source server. Fifth,
+both backends reclaim every staging run at `open()`, finishing a torn swap
+first: no loop owns staging at boot, and the next chunk pull stages again
+what the restart threw away, so the "re-run moves only what is missing" rule
+holds within one process life. Sixth, a malformed chunk listing stalls the
+Collection as `source-unavailable`, with the listing URL in the detail,
+rather than under a reason of its own. Seventh, found in review: the Postgres
+swap copies each staged row's bytes into `chunks` with an `INSERT ... SELECT`
+inside the one transaction, so the Space and Collection row locks are held for
+a copy inside the database (no bytes pass through the process). The "moved by
+key rather than copied" sentence above is not met; meeting it would need the
+staged rows to live in `chunks` under a staging key column. Left as is, and
+worth its own item if the lock time shows up in practice.
+
 Quota under staging: the pre-check of step 3 is net, and the in-write check
 during staging is told the bytes the swap will free (the held live sizes of the
 indexes being replaced), so a replica server with its source server's quota can

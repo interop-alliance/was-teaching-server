@@ -482,7 +482,8 @@ describe.skipIf(!connectionString)(
           toSpace: url(`/space/${spaceId}/`),
           capability: { id: 'urn:uuid:pull' },
           role: 'source'
-        } as unknown as ReplicaRegistration
+        } as unknown as ReplicaRegistration,
+        pullsChunks: false
       })
       const stamp = {
         updatedAt: '2026-10-22T12:00:00.000Z',

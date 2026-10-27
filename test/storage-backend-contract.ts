@@ -40,6 +40,8 @@ import {
   mintServerDid,
   parseEtagSegments,
   provisionServerIdentity,
+  REPLICA_CAPABILITY_ID,
+  replicaRegistration,
   resourceDocuments,
   verifyProvenanceOffline,
   watchWitnessFetches
@@ -78,7 +80,6 @@ import type {
   WriteStamp,
   FeedDocument,
   ResourceWriteResult,
-  ReplicaRegistration,
   ReplicaLoopState
 } from '../src/types.js'
 
@@ -419,43 +420,6 @@ async function archivedRevocations({
  * The id of the stand-in pull capability a contract registration carries, so
  * a test can look for it where it must not appear.
  */
-const REPLICA_CAPABILITY_ID = 'urn:uuid:contract-suite-pull-capability'
-
-/**
- * A replica registration for a contract test. The capability is a stand-in:
- * a backend stores it and never reads it.
- * @param options {object}
- * @param options.id {string}
- * @param options.spaceId {string}   the local Space
- * @returns {ReplicaRegistration}
- */
-function replicaRegistration({
-  id,
-  spaceId
-}: {
-  id: string
-  spaceId: string
-}): ReplicaRegistration {
-  const fromSpace = `https://peer.example/space/${spaceId}/`
-  return {
-    id,
-    fromSpace,
-    toSpace: `https://was.example/space/${spaceId}/`,
-    capability: {
-      '@context': ['https://w3id.org/zcap/v1'],
-      id: REPLICA_CAPABILITY_ID,
-      parentCapability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
-      controller: 'did:webvh:scid:was.example:space:server:id',
-      invocationTarget: fromSpace,
-      allowedAction: ['GET', 'HEAD'],
-      expires: '2099-01-01T00:00:00Z',
-      proof: {}
-    } as unknown as ReplicaRegistration['capability'],
-    collections: [{ id: 'col' }],
-    role: 'source'
-  }
-}
-
 /**
  * A write stamp as a peer would serve it, minted by another origin.
  * @param options {object}
@@ -811,6 +775,35 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(metadata.originId)
         assert.equal(metadata.meta, undefined)
         assert.equal(metadata.custom, undefined)
+      })
+
+      it('getResourceContentStamp reads a tombstone that getResourceMetadata reads as absent', async () => {
+        const { backend } = harness
+        const target = {
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'stamp-check'
+        }
+        assert.equal(await backend.getResourceContentStamp(target), undefined)
+        await backend.writeResource({ ...target, input: jsonInput({ a: 1 }) })
+        const live = await backend.getResourceMetadata(target)
+        assert.deepEqual(await backend.getResourceContentStamp(target), {
+          stamp: {
+            updatedAt: live?.updatedAt,
+            updatedAtCounter: live?.updatedAtCounter,
+            originId: live?.originId
+          },
+          deleted: false
+        })
+        await backend.deleteResource(target)
+        assert.equal(await backend.getResourceMetadata(target), undefined)
+        const tombstone = await backend.getResourceContentStamp(target)
+        assert.equal(tombstone?.deleted, true)
+        assert.equal(tombstone?.stamp.originId, live?.originId)
+        assert.ok(
+          String(tombstone?.stamp.updatedAt) >= String(live?.updatedAt),
+          'the tombstone stamp sorts at or after the live one'
+        )
       })
     })
 
@@ -7350,8 +7343,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const record = replicaRegistration({ id: 'peer-a', spaceId })
         const space = (await backend.getSpaceMetadata({ spaceId }))!
-        const stored = await backend.createReplica({ spaceId, record })
+        const stored = await backend.createReplica({
+          spaceId,
+          record,
+          pullsChunks: true
+        })
         assert.deepEqual(stored.record, record)
+        assert.equal(stored.pullsChunks, true)
         assert.ok(isMintedGeneration(stored.generation))
         assert.equal(stored.spaceGeneration, space.metaGeneration)
         assert.deepEqual(
@@ -7359,7 +7357,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           stored
         )
         await assert.rejects(
-          backend.createReplica({ spaceId, record }),
+          backend.createReplica({ spaceId, record, pullsChunks: false }),
           (err: unknown) =>
             err instanceof ProblemError && err.statusCode === 409
         )
@@ -7378,7 +7376,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             record: replicaRegistration({
               id: 'peer-a',
               spaceId: 'space-replicas-absent'
-            })
+            }),
+            pullsChunks: false
           }),
           isNotFound
         )
@@ -7394,11 +7393,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await provisionSpace(backend, otherSpace)
         await backend.createReplica({
           spaceId,
-          record: replicaRegistration({ id: 'peer-0', spaceId })
+          record: replicaRegistration({ id: 'peer-0', spaceId }),
+          pullsChunks: false
         })
         await backend.createReplica({
           spaceId: otherSpace,
-          record: replicaRegistration({ id: 'peer-z', spaceId: otherSpace })
+          record: replicaRegistration({ id: 'peer-z', spaceId: otherSpace }),
+          pullsChunks: false
         })
         assert.deepEqual(
           (await backend.listReplicas({ spaceId })).map(
@@ -7430,7 +7431,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const before = (await backend.getSpaceMetadata({ spaceId }))!
         await backend.createReplica({
           spaceId,
-          record: replicaRegistration({ id: 'peer-local', spaceId })
+          record: replicaRegistration({ id: 'peer-local', spaceId }),
+          pullsChunks: false
         })
         const afterCreate = (await backend.getSpaceMetadata({ spaceId }))!
         assert.equal(afterCreate.metaLocal, before.metaLocal! + 1)
@@ -7462,7 +7464,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const replicaId = 'peer-state'
         const record = replicaRegistration({ id: replicaId, spaceId })
-        const created = await backend.createReplica({ spaceId, record })
+        const created = await backend.createReplica({
+          spaceId,
+          record,
+          pullsChunks: false
+        })
         assert.equal(
           await backend.getReplicaState({ spaceId, replicaId }),
           undefined
@@ -7507,7 +7513,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           undefined
         )
         // A registration made again under the id starts with no state.
-        await backend.createReplica({ spaceId, record })
+        await backend.createReplica({ spaceId, record, pullsChunks: false })
         assert.equal(
           await backend.getReplicaState({ spaceId, replicaId }),
           undefined
@@ -7525,7 +7531,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const replicaId = 'peer-export'
         await backend.createReplica({
           spaceId,
-          record: replicaRegistration({ id: replicaId, spaceId })
+          record: replicaRegistration({ id: replicaId, spaceId }),
+          pullsChunks: false
         })
         await backend.writeReplicaState({
           spaceId,
@@ -7552,7 +7559,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const doomed = 'space-replicas-doomed'
         await provisionSpace(backend, doomed)
         const record = replicaRegistration({ id: 'peer-a', spaceId: doomed })
-        const first = await backend.createReplica({ spaceId: doomed, record })
+        const first = await backend.createReplica({
+          spaceId: doomed,
+          record,
+          pullsChunks: false
+        })
         await backend.writeReplicaState({
           spaceId: doomed,
           replicaId: 'peer-a',
@@ -7573,7 +7584,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // A Space made again under the id takes a registration afresh, under
         // the new Space generation.
         await provisionSpace(backend, doomed)
-        const second = await backend.createReplica({ spaceId: doomed, record })
+        const second = await backend.createReplica({
+          spaceId: doomed,
+          record,
+          pullsChunks: false
+        })
         assert.notEqual(second.spaceGeneration, first.spaceGeneration)
         assert.equal(
           await backend.getReplicaState({
@@ -7701,7 +7716,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await provisionSpace(harness.backend, spaceId)
         await harness.backend.createReplica({
           spaceId,
-          record: replicaRegistration({ id: replicaId, spaceId })
+          record: replicaRegistration({ id: replicaId, spaceId }),
+          pullsChunks: false
         })
       })
       afterAll(async () => {
@@ -7747,6 +7763,28 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             body: '{"state":{}}\n',
             generation: 'log1',
             stamp
+          }),
+          await backend.stageChunk({
+            ...unknown,
+            collectionId,
+            resourceId: 'r1',
+            run: { replicaId: 'no-such-peer', parentEtag: '"r1"' },
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('chunk')),
+            peerEtag: '"c0"'
+          }),
+          await backend.applyResourceWithChunks({
+            ...unknown,
+            collectionId,
+            resourceId: 'r1',
+            generation: 'gen1',
+            stamp,
+            resource: { input: jsonInput({ a: 1 }) },
+            chunks: {
+              run: { replicaId: 'no-such-peer', parentEtag: '"r1"' },
+              kept: [],
+              staged: [0]
+            }
           })
         ]
         for (const result of results) {
@@ -9090,7 +9128,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await provisionSpace(backend, spaceId)
           await backend.createReplica({
             spaceId,
-            record: replicaRegistration({ id: replicaId, spaceId })
+            record: replicaRegistration({ id: replicaId, spaceId }),
+            pullsChunks: false
           })
           await assert.rejects(
             backend.applyCollection({

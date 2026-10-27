@@ -420,6 +420,47 @@ export const MIGRATIONS: Migration[] = [
     state            jsonb,
     PRIMARY KEY (space_id, replica_id)
   );
+  `,
+  // v14: chunk staging for the chunk pull of the replication facet. One row
+  // per chunk a pull loop read from the source server and has not yet moved
+  // into place, keyed by the registration ('replica_id'), the source
+  // server's 'ETag' of the parent revision the feed document named
+  // ('parent_etag', the quoted string as served) and the index. 'bytes',
+  // 'size' and 'content_type' are the 'chunks' columns of the same name;
+  // 'peer_etag' is the source server's 'ETag' of the chunk, an opaque string
+  // kept for the conditional read of a re-run only. A staged chunk has no
+  // generation and no stamp: both are minted when the swap moves the row
+  // into 'chunks'. Staged bytes count in 'spaces.usage_bytes'. The foreign
+  // key is to 'collections', not 'resources': the parent of a Resource
+  // replicated for the first time has no row until the swap writes it. It
+  // carries none to 'replicas' either, since a backend other than the
+  // control plane holds no registrations. Delete Space removes the rows
+  // through the cascade; every other path that ends a run (the swap, Delete
+  // Resource, a tombstone apply, Delete Collection, Delete Replica, boot)
+  // deletes them by code and returns their bytes to the counter.
+  // 'replicas.pulls_chunks' records whether the source server lists the
+  // Encrypted Collections profile, which gates the chunk pull; a
+  // registration made before v14 reads false.
+  `
+  CREATE TABLE chunk_staging (
+    space_id      text COLLATE "C" NOT NULL,
+    collection_id text COLLATE "C" NOT NULL,
+    resource_id   text COLLATE "C" NOT NULL,
+    replica_id    text COLLATE "C" NOT NULL,
+    parent_etag   text COLLATE "C" NOT NULL,
+    chunk_index   integer NOT NULL,
+    content_type  text NOT NULL,
+    bytes         bytea NOT NULL,
+    size          bigint NOT NULL DEFAULT 0,
+    peer_etag     text NOT NULL,
+    PRIMARY KEY (space_id, collection_id, resource_id, replica_id,
+                 parent_etag, chunk_index),
+    FOREIGN KEY (space_id, collection_id)
+      REFERENCES collections ON DELETE CASCADE
+  );
+
+  ALTER TABLE replicas
+    ADD COLUMN pulls_chunks boolean NOT NULL DEFAULT false;
   `
 ]
 

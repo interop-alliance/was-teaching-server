@@ -60,6 +60,12 @@ write's critical section, or a peer's stamp, through the apply path.
   and shape-checks every received stamp before storing it (`ms` and
   `updatedAtCounter` safe non-negative integers, `originId` within
   `[A-Za-z0-9_-]{1,64}`).
+- Amended 2026-10-26 (chunk replication, decision 0006): a chunk is not a
+  replicated-identity record. A replicated chunk carries no source server stamp
+  or generation; the replica server mints both from its own clock when the
+  parent's chunk set is swapped in, as for a chunk a client writes. The stamp
+  rule and the `originId` refusal above never see a chunk, and a chunk's stamp
+  orders nothing across servers.
 - On the filesystem backend the sidecar, which holds the stamp and the feed
   position in one write, is the commit point: the representation lands first,
   under a name the sidecar then points at, so a torn write reads as the prior

@@ -255,6 +255,17 @@ export const REPLICATION_REQUEST_TIMEOUT_MS = 30_000
  * which may inline a JSON body of that size.
  */
 export const REPLICATION_DOCUMENT_MAX_BYTES = 4 * 1024 * 1024
+/**
+ * How many consecutive cycles a pull loop may end in `retry` on one feed
+ * document of a chunked Resource before the Collection stalls, as
+ * `chunk-listing-obsolete` when the closing check keeps failing (the source
+ * server rewrites the Resource faster than its chunk set is pulled), or as
+ * `source-unavailable` when a request inside the chunk pull keeps failing. A
+ * cycle count, kept in memory with the loop, so a restart starts it over. A
+ * stalled Collection is still retried each cycle, so the stall clears on the
+ * first chunk pull that completes.
+ */
+export const REPLICA_CHUNK_PULL_RETRY_LIMIT = 5
 
 /**
  * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it

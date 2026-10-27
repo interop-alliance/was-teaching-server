@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 222
+nextAvailableId: 223
 
 <!-- roadmap-order:index:start -->
 
@@ -79,7 +79,6 @@ Ready:
 - WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
 - WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
-- WAS-14 [M] (*) Chunk replication for sync
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -89,6 +88,8 @@ Ready:
 - WAS-184 [L] (*) Write-time creation and revision statements
 - WAS-221 [L] (*) Registration check under the data backend's lock for a
   Resource apply
+- WAS-222 [L] (*) Chunk replication cleanups: fixed manifest members, one apply
+  verb, cheaper staging
 
 **Performance**
 
@@ -1229,75 +1230,6 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
-### WAS-14: [M] (*) Chunk replication for sync
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: replication, sync
-- design: designs/WAS-14-chunk-replication.md
-- design-approved: 2026-10-25
-- touches:
-  - portable-web-spaces-spec: the Encrypted Collections profile (`ec/spec.md`,
-    now hosted in this repo) "Chunk lifecycle" says a replicating server carries
-    the chunk set with the parent write it surfaces, and a chunk-only mutation
-    stays where it was made, behavior text only; the replication specification
-    gains the chunk apply rule; its decision 0013, whose chunk sentences were a
-    deferral to this item, is amended in place with the chunk apply rule, and
-    WASS-50's acceptance line naming chunks among what does not replicate is
-    revised. Part of replication `0.1`, no version bump. Filed 2026-10-25: 0013
-    amended, WASS-50's acceptance box revised, the profile sentence written
-    (checkout `portable-web-spaces-spec`)
-  - storage-core: `ReplicaStallReason` gains `chunk-listing-obsolete` and
-    `source-unavailable`
-  - was-teaching-server: `src/sync/replication.ts`, `src/lib/replicaApply.ts`,
-    `src/sync/peerClient.ts`, both backends (`stageChunk`,
-    `applyResourceWithChunks`, `reclaimStaging`, the staging layouts, the stored
-    registration's `pullsChunks`), `docs/replication.md`,
-    `docs/changes-feed.md`, `docs/filesystem-layout.md`, ARCHITECTURE.md's
-    replication facet entry; `decisions/0006` minted at approval
-  - was-client: unaffected (no wire change)
-  - conformance-suite: unaffected (no wire change)
-- acceptance:
-  - [x] The design doc is adversarially reviewed (2026-10-24, six lenses plus a
-        critic; findings folded in, review log in its section 9)
-  - [x] The design doc is approved (2026-10-25), every open point in its section
-        8 decided, and the wire and layout names signed off (the staging layout,
-        `pullsChunks`, the two stall reasons)
-  - [ ] Each invariant in design section 2 is upheld by a test named in section
-        7, or its exemption is recorded in the doc
-  - [ ] Each changed consumer in design section 3 is handled, and each "changed"
-        or "refused" cell of section 4 has a test or a doc sentence
-  - [ ] A two-server test replicates a chunked Resource byte for byte under the
-        replica server's own chunk `ETag`s, converges a removal on the next
-        parent write, and converges a concurrent whole-stream rewrite on the
-        winning parent's set
-  - [ ] `docs/replication.md` no longer lists chunks among what does not
-        replicate, and states the chunk-only-mutation caveat
-  - [ ] The spec and profile items in `touches` are filed
-
-Pulled out of Someday / Maybe on 2026-10-23, with the design doc drafted the
-same day. The design keeps chunk writes invisible to the `changes` feed, as the
-core profile and the Encrypted Collections profile require, and discovers a
-Resource's chunk set by reading its chunk listing when the parent's own feed
-document applies, then each chunk with a conditional `GET`, so a resumed chunk
-pull moves no held bytes. A chunk delete leaves no tombstone and converges on
-the next parent write. The chunk set applies after the parent revision that won
-last-writer-wins, pinned to that revision at apply time, so two origins
-rewriting one stream converge on one origin's set.
-
-Context from the WAS-96 design (2026-10-01), which this item inherited: a chunk
-is a versioned record, so it takes the same origin stamp and four-field
-validator (WAS-172), and a puller fetching chunk bytes with a plain `GET` learns
-the stamp from the `ETag` alone. Chunks inherit the Collection's `revisions`
-descriptor. The design revised two of those sentences on 2026-10-24: chunks
-resolve with their parent revision, not per chunk under LWW (design section
-5.3), and a replicated chunk carries the replica's own stamp and generation, the
-peer's chunk `ETag` being opaque to it, so no stamp is learned from an `ETag`
-and the validator layout is not a requirement on peers (design open point 3).
-The three questions that design left open (discovery, chunk tombstones,
-whole-stream consistency) are answered in the design doc's section 1.
-
 ### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 
 - status: todo
@@ -1489,6 +1421,52 @@ plane, by the rule the apply uses, and applies under no `replicaId`, the way a
 policy copy is written. The apply's own in-lock check therefore covers the
 control plane only, and the `replicaId`-optional mode is on the general apply
 contract rather than confined to the loop.
+
+### WAS-222: [L] (*) Chunk replication cleanups: fixed manifest members, one apply verb, cheaper staging
+
+- status: todo
+- priority: low
+- backend: *
+- labels: replication, chunks, backend, performance
+- discovered-from: simplify review of the chunk replication work (2026-10-26)
+- acceptance:
+  - [ ] The staging manifest's `kept` list and `swapped` flag are dropped, with
+        docs/filesystem-layout.md and the chunk replication design doc amended
+        (the loop stages every listed chunk, since a live chunk's validator is
+        this server's own, and the manifest is written only once the swap is
+        decided, so its presence is the flag), or the layout doc names the case
+        that sets either to another value
+  - [ ] `applyResourceWithChunks` becomes a `chunks` option of `applyResource`,
+        or `StorageBackend`'s doc says why the two verbs stay apart, and
+        `reclaimStaging`'s `exceptRun` form goes once staging itself drops the
+        registration's other runs for the Resource
+  - [ ] The quota pre-check of a chunk set runs behind the backend, so
+        `usageCheckIsGross` leaves `StorageBackend`, and `pullsChunks` is read
+        from the source server's service description per cycle rather than
+        stored on the registration, or docs/replication.md states why the stored
+        form stays
+  - [ ] `stageChunk` settles the Resource's staging and drops the registration's
+        other runs on the first chunk of a run only, and credits the one index
+        it stages; the data-backend registration re-check runs once per chunk
+        set; a Collection that cannot hold chunks skips the chunk listing read
+  - [ ] The transfer phase of a chunk set reads a few chunks from the source
+        server at once (a small fixed concurrency, the staging lock and quota
+        headroom kept as they are), or the loop's doc says why it stays serial
+  - [ ] The replica state is persisted after a chunk pull only past a byte or
+        document threshold and at the end of the Collection, rather than after
+        every Resource whose chunks were pulled
+  - [ ] A test in `test/` covers each change kept
+
+The chunk pull shipped with four backend methods, a stored capability flag, a
+backend trait the loop pads its quota arithmetic by, and a manifest whose `kept`
+is always empty and whose `swapped` is always `true`. Each is a special case
+layered on the general apply path. Per chunk, staging re-scans the whole
+Resource (settle, drop other runs, list the live set) and re-reads the
+registration on the control plane, so staging an n-chunk set does O(n^2) work in
+directory entries and 2n control-plane reads; every live Resource of a
+chunk-pulling registration pays a chunk listing round trip, chunked or not; the
+chunks of one set are transferred one at a time; and the replica state is
+rewritten after every Resource whose chunks were pulled.
 
 ## Performance
 

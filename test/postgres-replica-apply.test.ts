@@ -13,7 +13,11 @@ import { Readable } from 'node:stream'
 import { text as streamText } from 'node:stream/consumers'
 import type { PostgresBackend } from '../src/backends/postgres.js'
 import { MIGRATIONS } from '../src/backends/postgresSchema.js'
-import { IdConflictError, SpaceNotFoundError } from '../src/errors.js'
+import {
+  IdConflictError,
+  QuotaExceededError,
+  SpaceNotFoundError
+} from '../src/errors.js'
 import { formatEtag } from '../src/lib/etag.js'
 import { openTempPostgres, postgresAdminQuery } from './helpers.js'
 import type {
@@ -127,7 +131,8 @@ if (!connectionString) {
         const before = (await backend.getSpaceMetadata({ spaceId }))!
         const stored = await backend.createReplica({
           spaceId,
-          record: registration
+          record: registration,
+          pullsChunks: false
         })
         assert.deepStrictEqual(stored.record, registration)
         assert.equal(stored.spaceGeneration, before.metaGeneration)
@@ -160,13 +165,25 @@ if (!connectionString) {
       })
 
       it('refuses a duplicate id and an absent Space', async () => {
-        await backend.createReplica({ spaceId, record: registration })
+        await backend.createReplica({
+          spaceId,
+          record: registration,
+          pullsChunks: false
+        })
         await assert.rejects(
-          backend.createReplica({ spaceId, record: registration }),
+          backend.createReplica({
+            spaceId,
+            record: registration,
+            pullsChunks: false
+          }),
           IdConflictError
         )
         await assert.rejects(
-          backend.createReplica({ spaceId: 'nowhere', record: registration }),
+          backend.createReplica({
+            spaceId: 'nowhere',
+            record: registration,
+            pullsChunks: false
+          }),
           SpaceNotFoundError
         )
         assert.deepStrictEqual(
@@ -184,7 +201,11 @@ if (!connectionString) {
           }),
           false
         )
-        await backend.createReplica({ spaceId, record: registration })
+        await backend.createReplica({
+          spaceId,
+          record: registration,
+          pullsChunks: false
+        })
         assert.equal(
           await backend.getReplicaState({ spaceId, replicaId }),
           undefined
@@ -214,7 +235,11 @@ if (!connectionString) {
 
     describe('apply', () => {
       beforeEach(async () => {
-        await backend.createReplica({ spaceId, record: registration })
+        await backend.createReplica({
+          spaceId,
+          record: registration,
+          pullsChunks: false
+        })
       })
 
       it('applies nothing without the registration, or under another Space generation', async () => {
@@ -920,6 +945,486 @@ if (!connectionString) {
           )
           const feed = await backend.changesSince({ ...at, limit: 10 })
           assert.equal(feed.documents.at(-1)!.kind, 'log')
+        })
+      })
+
+      describe('chunks', () => {
+        const at = { spaceId, collectionId: 'notes', resourceId: 'doc' }
+        const runA = { replicaId, parentEtag: '"genDoc.a"' }
+        const runB = { replicaId, parentEtag: '"genDoc.b"' }
+
+        beforeEach(async () => {
+          await applyNotes({ stamp: peerStamp(-9000) })
+        })
+
+        function binary(text: string) {
+          return {
+            kind: 'binary' as const,
+            contentType: 'application/octet-stream',
+            stream: Readable.from([Buffer.from(text)])
+          }
+        }
+
+        function stage({
+          index,
+          text,
+          run = runA,
+          resourceId = 'doc',
+          replaces
+        }: {
+          index: number
+          text: string
+          run?: { replicaId: string; parentEtag: string }
+          resourceId?: string
+          replaces?: number
+        }) {
+          return backend.stageChunk({
+            ...at,
+            replicaId,
+            resourceId,
+            run,
+            chunkIndex: index,
+            input: binary(text),
+            peerEtag: `"peer-${index}-${text}"`,
+            ...(replaces !== undefined && { replaces })
+          })
+        }
+
+        function swap({
+          stamp,
+          envelope,
+          run = runA,
+          kept = [],
+          staged = []
+        }: {
+          stamp: WriteStamp
+          envelope: string
+          run?: { replicaId: string; parentEtag: string }
+          kept?: number[]
+          staged?: number[]
+        }) {
+          return backend.applyResourceWithChunks({
+            ...at,
+            replicaId,
+            generation: 'genDoc',
+            stamp,
+            createdAt: '2026-10-01T00:00:00.000Z',
+            resource: { input: binary(envelope) },
+            chunks: { run, kept, staged }
+          })
+        }
+
+        async function chunkTexts(): Promise<Record<number, string>> {
+          const listing = await backend.listChunks(at)
+          const texts: Record<number, string> = {}
+          for (const { index } of listing.chunks) {
+            const chunk = await backend.getChunk({ ...at, chunkIndex: index })
+            texts[index] = await streamText(chunk.resourceStream)
+          }
+          return texts
+        }
+
+        async function usage(): Promise<number> {
+          return (await backend.reportUsage({ spaceId })).usageBytes
+        }
+
+        it('migrates the staging table and the pullsChunks column', async () => {
+          await postgresAdminQuery(
+            `SELECT replica_id, parent_etag, peer_etag
+               FROM "${schema}".chunk_staging`
+          )
+          const { rows } = await postgresAdminQuery(
+            `SELECT pulls_chunks FROM "${schema}".replicas`
+          )
+          assert.deepStrictEqual(rows, [{ pulls_chunks: false }])
+          const stored = await backend.createReplica({
+            spaceId,
+            record: { ...registration, id: 'with-chunks' },
+            pullsChunks: true
+          })
+          assert.equal(stored.pullsChunks, true)
+          assert.deepStrictEqual(
+            await backend.getReplica({ spaceId, replicaId: 'with-chunks' }),
+            stored
+          )
+        })
+
+        it('swaps a staged set in with its parent, keeping and removing live chunks', async () => {
+          for (const [index, text] of ['aa', 'bbb', 'cccc'].entries()) {
+            assert.deepStrictEqual(await stage({ index, text }), {
+              outcome: 'applied'
+            })
+          }
+          // Staged chunks are served by nothing, and the parent is not held.
+          assert.deepStrictEqual(await backend.listChunks(at), {
+            count: 0,
+            chunks: []
+          })
+          assert.equal(await backend.getResourceMetadata(at), undefined)
+          assert.equal(await usage(), 9)
+
+          const first = peerStamp(-1000)
+          assert.deepStrictEqual(
+            await swap({ stamp: first, envelope: 'env1', staged: [0, 1, 2] }),
+            { outcome: 'applied' }
+          )
+          assert.deepStrictEqual(await chunkTexts(), {
+            0: 'aa',
+            1: 'bbb',
+            2: 'cccc'
+          })
+          assert.partialDeepStrictEqual(
+            await backend.getResourceMetadata(at),
+            first
+          )
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            []
+          )
+          assert.equal(await usage(), 4 + 9)
+          const kept = (await backend.getChunkMetadata({
+            ...at,
+            chunkIndex: 0
+          }))!
+          const replaced = (await backend.getChunkMetadata({
+            ...at,
+            chunkIndex: 1
+          }))!
+          // Each chunk is a local record under this store's clock.
+          for (const chunk of [kept, replaced]) {
+            assert.equal(chunk.originId, backend.originId)
+            assert.notEqual(chunk.generation, 'genDoc')
+          }
+
+          // The next revision keeps 0, replaces 1, adds 3 and drops 2.
+          await stage({ index: 1, text: 'BBBBB', run: runB, replaces: 3 })
+          await stage({ index: 3, text: 'd', run: runB })
+          // Nothing live moved before the swap.
+          assert.deepStrictEqual(await chunkTexts(), {
+            0: 'aa',
+            1: 'bbb',
+            2: 'cccc'
+          })
+          assert.equal(await usage(), 4 + 9 + 6)
+          assert.deepStrictEqual(
+            await swap({
+              stamp: peerStamp(-500),
+              envelope: 'env-2',
+              run: runB,
+              kept: [0],
+              staged: [1, 3]
+            }),
+            { outcome: 'applied' }
+          )
+          assert.deepStrictEqual(await chunkTexts(), {
+            0: 'aa',
+            1: 'BBBBB',
+            3: 'd'
+          })
+          assert.equal(
+            await streamText((await backend.getResource(at)).resourceStream),
+            'env-2'
+          )
+          assert.equal(await usage(), 5 + 2 + 5 + 1)
+          assert.deepStrictEqual(
+            await backend.getChunkMetadata({ ...at, chunkIndex: 0 }),
+            kept
+          )
+          const rewritten = (await backend.getChunkMetadata({
+            ...at,
+            chunkIndex: 1
+          }))!
+          assert.equal(rewritten.originId, backend.originId)
+          assert.notEqual(rewritten.generation, replaced.generation)
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runB }),
+            []
+          )
+        })
+
+        it('releases the staging on a loss', async () => {
+          await stage({ index: 0, text: 'new' })
+          await swap({ stamp: peerStamp(-500), envelope: 'env', staged: [0] })
+          await stage({ index: 0, text: 'old', run: runB })
+          assert.equal(await usage(), 3 + 3 + 3)
+          assert.deepStrictEqual(
+            await swap({
+              stamp: peerStamp(-1000),
+              envelope: 'old',
+              run: runB,
+              staged: [0]
+            }),
+            { outcome: 'skipped' }
+          )
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runB }),
+            []
+          )
+          assert.deepStrictEqual(await chunkTexts(), { 0: 'new' })
+          assert.equal(await usage(), 3 + 3)
+        })
+
+        it('refuses a set that does not match the staging or the live chunks', async () => {
+          await stage({ index: 0, text: 'aa' })
+          assert.partialDeepStrictEqual(
+            await swap({ stamp: peerStamp(-1000), envelope: 'e', staged: [1] }),
+            { outcome: 'refused', reason: 'container-refused' }
+          )
+          assert.partialDeepStrictEqual(
+            await swap({
+              stamp: peerStamp(-1000),
+              envelope: 'e',
+              kept: [1],
+              staged: [0]
+            }),
+            { outcome: 'refused', reason: 'container-refused' }
+          )
+          assert.equal(await backend.getResourceMetadata(at), undefined)
+          assert.equal(
+            (await backend.listStagedChunks({ ...at, run: runA })).length,
+            1
+          )
+        })
+
+        it('lists staged chunks with their peer ETags, a restage replacing one', async () => {
+          await stage({ index: 2, text: 'cc' })
+          await stage({ index: 0, text: 'a' })
+          await stage({ index: 0, text: 'AAAA' })
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            [
+              { index: 0, size: 4, peerEtag: '"peer-0-AAAA"' },
+              { index: 2, size: 2, peerEtag: '"peer-2-cc"' }
+            ]
+          )
+          assert.equal(await usage(), 6)
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runB }),
+            []
+          )
+          // A run of a later revision replaces the registration's earlier one.
+          await stage({ index: 0, text: 'z', run: runB })
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            []
+          )
+          assert.equal(await usage(), 1)
+        })
+
+        it('answers unregistered and skipped without staging', async () => {
+          assert.deepStrictEqual(
+            await backend.stageChunk({
+              ...at,
+              replicaId: 'unknown',
+              run: runA,
+              chunkIndex: 0,
+              input: binary('x'),
+              peerEtag: '"x"'
+            }),
+            { outcome: 'unregistered' }
+          )
+          assert.deepStrictEqual(
+            await backend.stageChunk({
+              ...at,
+              collectionId: 'absent',
+              replicaId,
+              run: runA,
+              chunkIndex: 0,
+              input: binary('x'),
+              peerEtag: '"x"'
+            }),
+            { outcome: 'skipped' }
+          )
+          assert.equal(await usage(), 0)
+        })
+
+        it('reclaims staging by registration and by Resource', async () => {
+          await stage({ index: 0, text: 'aa' })
+          await stage({ index: 1, text: 'bb' })
+          await stage({ index: 0, text: 'ccc', resourceId: 'other' })
+          assert.equal(await usage(), 7)
+          assert.equal(await backend.reclaimStaging({ spaceId, replicaId }), 2)
+          assert.equal(await usage(), 0)
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            []
+          )
+
+          await stage({ index: 0, text: 'aa' })
+          await stage({ index: 0, text: 'ccc', resourceId: 'other' })
+          assert.equal(
+            await backend.reclaimStaging({
+              spaceId,
+              collectionId: 'notes',
+              resourceId: 'doc'
+            }),
+            1
+          )
+          assert.equal(await usage(), 3)
+          assert.equal(
+            (
+              await backend.listStagedChunks({
+                ...at,
+                resourceId: 'other',
+                run: runA
+              })
+            ).length,
+            1
+          )
+          assert.equal(await backend.reclaimStaging({ spaceId }), 1)
+          assert.equal(await backend.reclaimStaging({ spaceId }), 0)
+          assert.equal(await usage(), 0)
+        })
+
+        it('reclaims the other runs of a registration for a Resource, less one', async () => {
+          await stage({ index: 0, text: 'aa' })
+          const scope = { ...at, replicaId }
+          assert.equal(
+            await backend.reclaimStaging({ ...scope, exceptRun: runA }),
+            0
+          )
+          assert.equal(await usage(), 2)
+          assert.equal(
+            await backend.reclaimStaging({ ...scope, exceptRun: runB }),
+            1
+          )
+          assert.equal(await usage(), 0)
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            []
+          )
+        })
+
+        it('counts staged bytes toward usage and fits a same-size rewrite under a full quota', async () => {
+          // 20 bytes elsewhere, and a 50-byte stream of two chunks under a
+          // 0-byte envelope: 70 bytes held, a quota of 70.
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId: 'notes',
+            resourceId: 'filler',
+            generation: 'genFiller',
+            stamp: peerStamp(-2000),
+            resource: { deleted: false, input: binary('f'.repeat(20)) }
+          })
+          await stage({ index: 0, text: 'a'.repeat(25) })
+          await stage({ index: 1, text: 'b'.repeat(25) })
+          await swap({ stamp: peerStamp(-1000), envelope: '', staged: [0, 1] })
+          assert.equal(await usage(), 70)
+          backend.capacityBytes = 70
+
+          // A new index has no live chunk to credit.
+          await assert.rejects(
+            stage({ index: 2, text: 'c', run: runB }),
+            QuotaExceededError
+          )
+          assert.equal(await usage(), 70)
+          await stage({
+            index: 0,
+            text: 'A'.repeat(25),
+            run: runB,
+            replaces: 25
+          })
+          await stage({
+            index: 1,
+            text: 'B'.repeat(25),
+            run: runB,
+            replaces: 25
+          })
+          assert.equal(await usage(), 120)
+          assert.deepStrictEqual(
+            await swap({
+              stamp: peerStamp(-500),
+              envelope: '',
+              run: runB,
+              staged: [0, 1]
+            }),
+            { outcome: 'applied' }
+          )
+          assert.equal(await usage(), 70)
+          assert.deepStrictEqual(await chunkTexts(), {
+            0: 'A'.repeat(25),
+            1: 'B'.repeat(25)
+          })
+        })
+
+        it('removes the chunks and the staging on a tombstone', async () => {
+          await stage({ index: 0, text: 'aa' })
+          await swap({ stamp: peerStamp(-1000), envelope: 'env', staged: [0] })
+          await stage({ index: 0, text: 'bbb', run: runB })
+          assert.deepStrictEqual(
+            await backend.applyResource({
+              ...at,
+              replicaId,
+              generation: 'genDoc',
+              stamp: peerStamp(-500),
+              resource: {
+                deleted: true,
+                contentType: 'application/octet-stream'
+              }
+            }),
+            { outcome: 'applied' }
+          )
+          assert.deepStrictEqual(await backend.listChunks(at), {
+            count: 0,
+            chunks: []
+          })
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runB }),
+            []
+          )
+          assert.equal(await usage(), 0)
+        })
+
+        it('removes the staging on Delete Resource and Delete Collection', async () => {
+          await stage({ index: 0, text: 'aa' })
+          await swap({ stamp: peerStamp(-1000), envelope: 'env', staged: [0] })
+          await stage({ index: 0, text: 'bbb', run: runB })
+          await backend.deleteResource(at)
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runB }),
+            []
+          )
+          assert.equal(await usage(), 0)
+
+          await stage({ index: 0, text: 'cccc', resourceId: 'fresh' })
+          assert.equal(await usage(), 4)
+          await backend.deleteCollection({ spaceId, collectionId: 'notes' })
+          assert.equal(await usage(), 0)
+          const { rows } = await postgresAdminQuery(
+            `SELECT COUNT(*)::int AS count FROM "${schema}".chunk_staging`
+          )
+          assert.equal(rows[0].count, 0)
+        })
+
+        it('takes no feed position for a staged chunk', async () => {
+          const before = await backend.changesSince({ ...at, limit: 10 })
+          await stage({ index: 0, text: 'aa' })
+          const staged = await backend.changesSince({ ...at, limit: 10 })
+          assert.deepStrictEqual(staged, before)
+          await swap({ stamp: peerStamp(-1000), envelope: 'env', staged: [0] })
+          const after = await backend.changesSince({ ...at, limit: 10 })
+          assert.equal(after.documents.length, before.documents.length + 1)
+          assert.partialDeepStrictEqual(after.documents.at(-1), {
+            kind: 'resource',
+            resourceId: 'doc'
+          })
+        })
+
+        it('reclaims every staging row at open', async () => {
+          await stage({ index: 0, text: 'aa' })
+          await stage({ index: 0, text: 'bbb', resourceId: 'other' })
+          assert.equal(await usage(), 5)
+          await backend.close()
+          ;({ backend } = await openTempPostgres({
+            schema,
+            physicalClock: () => NOW
+          }))
+          assert.equal(await usage(), 0)
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            []
+          )
         })
       })
     })

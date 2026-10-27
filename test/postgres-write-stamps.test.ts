@@ -494,6 +494,7 @@ if (!connectionString) {
            ALTER COLUMN policy SET NOT NULL`
       )
       await postgresAdminQuery(`DROP TABLE "${schema}".replicas`)
+      await postgresAdminQuery(`DROP TABLE "${schema}".chunk_staging`)
       await postgresAdminQuery(
         `DELETE FROM "${schema}".schema_migrations WHERE version >= $1`,
         [POLICY_STAMP_VERSION]
