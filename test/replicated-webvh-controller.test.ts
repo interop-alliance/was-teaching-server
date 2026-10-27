@@ -877,6 +877,44 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       assert.equal((await readAs('data', account.key)).statusCode, 200)
     })
 
+    it('keeps the controller resolving, and the guard holding, while paused', async () => {
+      const path = '/space/acct-copy/replicas/origin'
+      const stored = await call({ server: mirror, path })
+      assert.equal(stored.statusCode, 200, stored.payload)
+      const paused = await call({
+        server: mirror,
+        path,
+        method: 'PUT',
+        json: { ...stored.json(), pausedAt: 'now' }
+      })
+      assert.equal(paused.statusCode, 204, paused.payload)
+      assert.equal(
+        (
+          await mirror.fastify.replication.status({
+            spaceId: 'acct-copy',
+            replicaId: 'origin'
+          })
+        )?.state,
+        'paused'
+      )
+      // The paused registration still maps the DID onto the local copy.
+      assert.equal((await readAs('data', account.key)).statusCode, 200)
+      const refused = await call({ server: mirror, path, method: 'DELETE' })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.match(refused.json().errors[0].detail, /PUT the registration/)
+
+      const { pausedAt: _pausedAt, ...record } = (
+        await call({ server: mirror, path })
+      ).json()
+      const resumed = await call({
+        server: mirror,
+        path,
+        method: 'PUT',
+        json: record
+      })
+      assert.equal(resumed.statusCode, 204, resumed.payload)
+    })
+
     it('removes a registration while another on its Space maps the controller', async () => {
       await register({
         toSpaceId: 'acct-copy',

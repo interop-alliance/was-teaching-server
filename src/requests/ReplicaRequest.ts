@@ -1,9 +1,16 @@
 /**
  * Request handlers for a Space's replica registrations (the replication
  * specification): add one (`POST /space/:spaceId/replicas`), list them
- * (`GET` there), read or remove one (`GET` / `DELETE
- * /space/:spaceId/replicas/:replicaId`), and read its pull loop's runtime
+ * (`GET` there), read, replace or remove one (`GET` / `PUT` / `DELETE`
+ * `/space/:spaceId/replicas/:replicaId`), and read its pull loop's runtime
  * state (`GET .../status`).
+ *
+ * A registration is a versioned record: each write stamps it, and its `ETag`
+ * is the standard four-segment shape (`lib/replicaRecord.ts`). `PUT` is the
+ * one way to change a stored registration. It carries the full record, and
+ * may differ from the stored one in `capability` and `pausedAt` alone: it
+ * pauses and resumes the pull loop, and replaces the pull capability in
+ * place, the registration keeping its id, its loop and its checkpoint.
  *
  * Every method is controller-only, the reads included: the record holds the
  * pull capability, and the container rule's `controller-only` refuses any
@@ -11,9 +18,19 @@
  * from `fromSpace` to `toSpace`, this Space, and nothing flows back without a
  * registration on the peer's side.
  */
+import { isDeepStrictEqual } from 'node:util'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 
-import { ReplicaNotFoundError, ReplicaRefusedError } from '../errors.js'
+import {
+  InvalidRequestBodyError,
+  ReplicaNotFoundError,
+  ReplicaRefusedError
+} from '../errors.js'
+import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  assertReplacementKeepsFixedMembers,
+  replicaValidator
+} from '../lib/replicaRecord.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import {
   controllerUnmappedByRemoval,
@@ -30,17 +47,17 @@ import {
   assertReplicaAcceptable,
   parseReplicaRegistration
 } from '../sync/registration.js'
-import type { ReplicaListing } from '../types.js'
+import type { ReplicaListing, StoredReplica } from '../types.js'
 import { fetchSpaceAndVerify } from './spaceContext.js'
 
 /**
- * The `ETag` of a stored registration: its generation, quoted. The record
- * never changes after it is stored, so the generation alone identifies it.
- * @param generation {string}
+ * The `ETag` of a stored registration: its generation and its stamp, the
+ * four-segment shape every versioned record has.
+ * @param stored {StoredReplica}
  * @returns {string}
  */
-function replicaEtag(generation: string): string {
-  return `"${generation}"`
+function replicaEtag(stored: StoredReplica): string {
+  return formatEtag(replicaValidator(stored))
 }
 
 export class ReplicaRequest {
@@ -95,17 +112,15 @@ export class ReplicaRequest {
       logger: request.log
     })
 
-    const stored = await storage.createReplica({
-      spaceId,
-      record,
-      pullsChunks
-    })
+    const stored = await storage.createReplica({ spaceId, record, pullsChunks })
     // The Space Metadata object lists the registration under `replicas` and
     // its validator advanced with it, so the cached object is stale. The
     // registration may map a peer-hosted did:webvh onto this Space's copy.
     invalidateSpaceMetadata({ storage, spaceId })
     invalidateReplicaIndex({ storage })
-    replication.register({ spaceId, replicaId: record.id })
+    if (stored.record.pausedAt === undefined) {
+      replication.register({ spaceId, replicaId: record.id })
+    }
 
     reply.header(
       'Location',
@@ -114,7 +129,138 @@ export class ReplicaRequest {
         serverUrl
       })
     )
-    reply.header('ETag', replicaEtag(stored.generation))
+    reply.header('ETag', replicaEtag(stored))
+    return reply.status(201).send(stored.record)
+  }
+
+  /**
+   * PUT /space/:spaceId/replicas/:replicaId
+   * Creates or replaces a registration. The body is the full record, as
+   * POST carries it, with `id` equal to the URL's. On a stored registration
+   * only `capability` and `pausedAt` may differ, and a difference elsewhere
+   * is `invalid-request-body` (400) on that member's pointer. A body that
+   * carries `pausedAt` pauses the pull loop, one that omits it resumes; the
+   * stored value is the server's own time. A capability that differs from
+   * the stored one passes the peer checks a POST's does; one that does not
+   * is not re-read. The loop reacts at once to a pause, a resume, a new
+   * capability or a create, and a repeat of the stored body leaves its
+   * schedule alone. The body is judged against the stored registration
+   * inside the write's critical section. `If-Match`
+   * and `If-None-Match: *` are evaluated by the backend atomically with the
+   * write (412). Responds 201 with the record and a `Location` when the
+   * registration did not exist, else 204, both under the new `ETag`. The
+   * registration keeps its id, its loop and its checkpoint.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async put(
+    request: FastifyRequest<{
+      Params: { spaceId: string; replicaId: string }
+      Body: unknown
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, replicaId },
+      body
+    } = request
+    const { serverUrl, storage, serverSigningKey, replication } = request.server
+    const requestName = 'Update Replica'
+
+    assertValidIds({ spaceId }, { requestName })
+    // Verify (controller-only) before the body is judged, so its 400s tell
+    // an unauthorized caller nothing.
+    const { spaceMetadata } = await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: replicaPath({ spaceId, replicaId }),
+      requestName,
+      containerRule: 'controller-only'
+    })
+    const record = parseReplicaRegistration({
+      body,
+      serverUrl,
+      spaceId,
+      requestName
+    })
+    if (record.id !== replicaId) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: `The registration "id" must equal the URL's, "${replicaId}".`,
+        pointer: '#/id'
+      })
+    }
+    // The peer checks need the network, so they run outside the write's
+    // lock, and only for a capability the stored record does not already
+    // carry, so a pause or a resume costs no read of the source server. The
+    // read here decides that alone; the write judges the body against the
+    // stored registration again inside its critical section, where it
+    // cannot go stale. The fixed-member check here spares a doomed body the
+    // peer checks.
+    const prior = await storage.getReplica({ spaceId, replicaId })
+    const sameCapability = (stored: StoredReplica | undefined): boolean =>
+      stored !== undefined &&
+      isDeepStrictEqual(record.capability, stored.record.capability)
+    if (prior !== undefined) {
+      assertReplacementKeepsFixedMembers({
+        record,
+        stored: prior.record,
+        requestName
+      })
+    }
+    // Under an unchanged capability the stored value stands, checked when
+    // that capability was stored; the write keeps it when the capability it
+    // finds under the lock is unchanged too.
+    const pullsChunks =
+      prior !== undefined && sameCapability(prior)
+        ? prior.pullsChunks
+        : (
+            await assertReplicaAcceptable({
+              record,
+              spaceId,
+              spaceMetadata,
+              storage,
+              serverBackends: request.server.serverBackends,
+              serverUrl,
+              signingKey: serverSigningKey,
+              peerFetch: replication.peerFetch,
+              logger: request.log
+            })
+          ).pullsChunks
+
+    const { stored, prior: replaced } = await storage.writeReplica({
+      spaceId,
+      record,
+      pullsChunks,
+      ...parseWritePreconditions(request.headers)
+    })
+    const created = replaced === undefined
+    // A create changes the served `replicas` member of the Space Metadata
+    // object, and adds a registration to the index that maps a peer-hosted
+    // did:webvh onto this Space's copy. A replacement changes neither: the
+    // index reads `fromSpace` and `collections`, which a replacement keeps.
+    if (created) {
+      invalidateSpaceMetadata({ storage, spaceId })
+      invalidateReplicaIndex({ storage })
+    }
+    // The loop reacts at once to a create, a pause, a resume, or a new
+    // capability. A write that changed none of those, a repeat of the
+    // stored body, leaves the scheduled cycle alone.
+    const paused = record.pausedAt !== undefined
+    const wasPaused = replaced?.record.pausedAt !== undefined
+    if (created || paused !== wasPaused || !sameCapability(replaced)) {
+      replication.wake({ spaceId, replicaId })
+    }
+
+    reply.header('ETag', replicaEtag(stored))
+    if (!created) {
+      return reply.status(204).send()
+    }
+    reply.header(
+      'Location',
+      absoluteUrl({ path: replicaPath({ spaceId, replicaId }), serverUrl })
+    )
     return reply.status(201).send(stored.record)
   }
 
@@ -187,7 +333,7 @@ export class ReplicaRequest {
     if (stored === undefined) {
       throw new ReplicaNotFoundError({ requestName })
     }
-    reply.header('ETag', replicaEtag(stored.generation))
+    reply.header('ETag', replicaEtag(stored))
     return reply.status(200).send(stored.record)
   }
 
@@ -246,8 +392,8 @@ export class ReplicaRequest {
         detail:
           `Space "${unmapped.spaceId}" is controlled by "${unmapped.did}", ` +
           'which resolves only from the log this registration replicates. ' +
-          'Change that controller first, or to replace the registration, ' +
-          'add the new one before removing this one.'
+          'Change that controller first. To pause the pull loop or replace ' +
+          'the pull capability, PUT the registration instead.'
       })
     }
     const deleted = await storage.deleteReplica({ spaceId, replicaId })

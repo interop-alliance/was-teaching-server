@@ -82,6 +82,21 @@ swap refuses the store. The Postgres twin is schema migration 14, which adds the
 rows reading `false`. It has no manifest: the swap there is one transaction, so
 no torn state remains to detect at boot.
 
+### Version 7: stamped replica registrations
+
+A replica registration is a versioned record: its `.replica.<id>.json` carries
+the write stamp members (`updatedAt`, `updatedAtCounter`, `originId`) beside
+`_generation`, `_spaceGeneration` and `_pullsChunks` (see
+[validators-and-stamps.md](validators-and-stamps.md)). The step converts nothing.
+It refuses a data dir holding any registration file with no write stamp, with
+`StoreVersionError`, on every boot and with no conversion step. The remedy is to
+wipe the data dir, or remove the file and make the registration again. The
+`.state.json` beside it is not checked. An empty data dir, or one with no
+unstamped registration, is stamped at version 7. The Postgres twin is schema
+migration 15, which adds the `updated_at`, `updated_at_counter` and `origin_id`
+columns to `replicas` and refuses a schema whose `replicas` table holds any row.
+The remedy there is to delete the rows and make each registration again.
+
 ## The origin id and the clock mark
 
 `store.json` also carries the store's origin id as its `originId` member (see

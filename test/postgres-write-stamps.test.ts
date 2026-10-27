@@ -46,6 +46,11 @@ const FEED_KINDS_VERSION = 11
  */
 const POLICY_STAMP_VERSION = 12
 
+/**
+ * The schema version that added the replica registration stamp columns.
+ */
+const REPLICA_STAMP_VERSION = 15
+
 if (!connectionString) {
   describe('PostgresBackend write stamps', () => {
     it.skip('skipped: set WAS_TEST_DATABASE_URL to run the Postgres backend tests', () => {})
@@ -520,6 +525,57 @@ if (!connectionString) {
         )
         assert.equal(await storedSchemaVersion(), POLICY_STAMP_VERSION - 1)
       }
+    })
+
+    /**
+     * Rolls the test schema back to the version before replica registrations
+     * carried write stamps.
+     * @returns {Promise<void>}
+     */
+    async function rollBackReplicaStamps(): Promise<void> {
+      await postgresAdminQuery(
+        `ALTER TABLE "${schema}".replicas
+           DROP COLUMN updated_at,
+           DROP COLUMN updated_at_counter,
+           DROP COLUMN origin_id`
+      )
+      await postgresAdminQuery(
+        `DELETE FROM "${schema}".schema_migrations WHERE version >= $1`,
+        [REPLICA_STAMP_VERSION]
+      )
+    }
+
+    it('refuses a pre-replica-stamp schema that holds a registration, on every boot', async () => {
+      const backend = await boot()
+      await provision(backend)
+      await backend.close()
+      backends.splice(backends.indexOf(backend), 1)
+      await rollBackReplicaStamps()
+      await postgresAdminQuery(
+        `INSERT INTO "${schema}".replicas
+           (space_id, replica_id, record, generation, space_generation)
+         VALUES ('space1', 'peer', '{"id":"peer"}'::jsonb, 'g1', 'g2')`
+      )
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(
+          PostgresBackend.open({ connectionString: connectionString!, schema }),
+          (err: unknown) =>
+            err instanceof StoreVersionError &&
+            err.message.includes('1 replica registration(s)')
+        )
+        assert.equal(await storedSchemaVersion(), REPLICA_STAMP_VERSION - 1)
+      }
+    })
+
+    it('reshapes a pre-replica-stamp schema with no registration, and boots', async () => {
+      const backend = await boot()
+      await provision(backend)
+      await backend.close()
+      backends.splice(backends.indexOf(backend), 1)
+      await rollBackReplicaStamps()
+      const rebooted = await boot()
+      assert.equal(await storedSchemaVersion(), MIGRATIONS.length)
+      assert.deepEqual(await rebooted.listAllReplicas(), [])
     })
 
     it('reshapes a pre-policy-stamp schema with no policy, and boots', async () => {

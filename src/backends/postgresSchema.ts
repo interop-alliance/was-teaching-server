@@ -461,8 +461,42 @@ export const MIGRATIONS: Migration[] = [
 
   ALTER TABLE replicas
     ADD COLUMN pulls_chunks boolean NOT NULL DEFAULT false;
-  `
+  `,
+  // v15: a replica registration is a versioned record. Its write stamp lives
+  // in three columns beside 'generation', as a policy's does, out of the
+  // 'record' jsonb, and 'PUT' at the registration URL replaces the row in
+  // place. A row written before this version carries no stamp, and there is
+  // no stamping step: the step refuses a schema that holds one.
+  stampReplicas
 ]
+
+/**
+ * The v15 step. Refuses a schema whose `replicas` table holds a row: each
+ * was written before registrations carried write stamps, and the columns
+ * below are added `NOT NULL` with no default.
+ * @param client {pg.PoolClient}   the migrating transaction's client
+ * @returns {Promise<void>}
+ */
+async function stampReplicas(client: pg.PoolClient): Promise<void> {
+  const { rows } = await client.query<{ count: number }>(
+    'SELECT COUNT(*)::int AS count FROM replicas'
+  )
+  const count = rows[0]!.count
+  if (count > 0) {
+    throw new StoreVersionError({
+      detail:
+        `The Postgres schema holds ${count} replica registration(s) written ` +
+        'before registrations carried write stamps, and there is no stamping ' +
+        'migration. Delete the rows and make each registration again.'
+    })
+  }
+  await client.query(`
+    ALTER TABLE replicas
+      ADD COLUMN updated_at         text COLLATE "C" NOT NULL,
+      ADD COLUMN updated_at_counter integer NOT NULL,
+      ADD COLUMN origin_id          text NOT NULL;
+  `)
+}
 
 /**
  * The v9 step. Refuses a schema whose `spaces` table holds a row: every

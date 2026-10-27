@@ -19,6 +19,7 @@ import {
   SpaceNotFoundError
 } from '../src/errors.js'
 import { formatEtag } from '../src/lib/etag.js'
+import { withoutStampMembers } from '../src/lib/hlc.js'
 import { binaryInput, openTempPostgres, postgresAdminQuery } from './helpers.js'
 import type {
   CollectionMetadata,
@@ -134,7 +135,9 @@ if (!connectionString) {
           record: registration,
           pullsChunks: false
         })
-        assert.deepStrictEqual(stored.record, registration)
+        // The record is served under the write's stamp.
+        assert.deepStrictEqual(withoutStampMembers(stored.record), registration)
+        assert.equal(stored.record.originId, backend.originId)
         assert.equal(stored.spaceGeneration, before.metaGeneration)
         assert.ok(stored.generation.length > 0)
 

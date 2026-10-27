@@ -192,6 +192,8 @@ interface Loop {
   timer?: NodeJS.Timeout
   // The cycle in flight, if any.
   running?: Promise<void>
+  // Set by `wake` while a cycle is in flight: the next cycle is due at once.
+  wakeRequested: boolean
   stopped: boolean
   // The bounded retry of the chunk pull, by Collection id: how many
   // consecutive cycles ended in a counted `retry` on a document of the same
@@ -316,13 +318,16 @@ export class ReplicationManager {
   }
 
   /**
-   * Starts one loop per stored registration. Run once the server is ready. A
-   * registration stored just before a crash gets its loop here.
+   * Starts one loop per stored registration that is not paused. Run once the
+   * server is ready. A registration stored just before a crash gets its loop
+   * here; a paused one gets it when a `PUT` clears its `pausedAt`.
    * @returns {Promise<void>}
    */
   async start(): Promise<void> {
     for (const { spaceId, record } of await this.#storage.listAllReplicas()) {
-      this.register({ spaceId, replicaId: record.id })
+      if (record.pausedAt === undefined) {
+        this.register({ spaceId, replicaId: record.id })
+      }
     }
   }
 
@@ -348,6 +353,7 @@ export class ReplicationManager {
     const loop: Loop = {
       spaceId,
       replicaId,
+      wakeRequested: false,
       stopped: false,
       chunkPullRetries: new Map()
     }
@@ -373,6 +379,29 @@ export class ReplicationManager {
     const loop = this.#loops.get(loopKey({ spaceId, replicaId }))
     if (loop !== undefined) {
       this.#endLoop(loop)
+    }
+  }
+
+  /**
+   * Has a registration's next cycle run at once, after a `PUT` changed what
+   * its loop reads: a pause, a resume, a new pull capability, or a create.
+   * Starts the loop of a registration that has none, and otherwise
+   * reschedules the one it has. A cycle in flight is left to finish, and its
+   * successor is then due at once instead of at the interval or the backoff
+   * it would have taken. A paused registration's cycle ends the loop.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {void}
+   */
+  wake({ spaceId, replicaId }: { spaceId: string; replicaId: string }): void {
+    const loop = this.#loops.get(loopKey({ spaceId, replicaId }))
+    if (loop === undefined) {
+      this.register({ spaceId, replicaId })
+    } else if (loop.running === undefined) {
+      this.#schedule({ loop, delayMs: 0 })
+    } else {
+      loop.wakeRequested = true
     }
   }
 
@@ -467,9 +496,8 @@ export class ReplicationManager {
     spaceId: string
     replicaId: string
   }): Promise<ReplicaStatus | undefined> {
-    if (
-      (await this.#storage.getReplica({ spaceId, replicaId })) === undefined
-    ) {
+    const replica = await this.#storage.getReplica({ spaceId, replicaId })
+    if (replica === undefined) {
       return undefined
     }
     const stored = await this.#storage.getReplicaState({ spaceId, replicaId })
@@ -485,6 +513,8 @@ export class ReplicationManager {
     let state: ReplicaStatus['state'] = 'idle'
     if (loop?.running !== undefined) {
       state = 'pulling'
+    } else if (replica.record.pausedAt !== undefined) {
+      state = 'paused'
     } else if ((stored?.failures ?? 0) > 0) {
       state = 'backing-off'
     } else if (collections.some(collection => collection.state === 'stalled')) {
@@ -528,6 +558,10 @@ export class ReplicationManager {
     if (loop.stopped || this.#stopped) {
       return
     }
+    if (loop.wakeRequested) {
+      loop.wakeRequested = false
+      delayMs = 0
+    }
     loop.timer = setTimeout(() => {
       if (this.#paused || loop.running !== undefined) {
         return
@@ -564,6 +598,11 @@ export class ReplicationManager {
 
   /**
    * One cycle: read the peer, apply, persist the state, schedule the next.
+   * The registration is read first, so a cycle uses the pull capability a
+   * `PUT` stored since the last one. A registration that is gone ends the
+   * loop. A paused one ends it too, after dropping the `nextPullAt` and the
+   * failure count of the loop state, since no cycle is due and a resume
+   * starts a new loop (`wake`) with no backoff carried over.
    * @param loop {Loop}
    * @returns {Promise<void>}
    */
@@ -578,6 +617,15 @@ export class ReplicationManager {
       spaceId,
       replicaId
     })) ?? { collections: {} }
+    if (replica.record.pausedAt !== undefined) {
+      this.#endLoop(loop)
+      if (state.nextPullAt !== undefined || state.failures !== undefined) {
+        delete state.nextPullAt
+        delete state.failures
+        await this.#storage.writeReplicaState({ spaceId, replicaId, state })
+      }
+      return
+    }
     state.lastPullAt = new Date().toISOString()
 
     let registered = true
@@ -617,6 +665,11 @@ export class ReplicationManager {
       } else {
         this.#logger.debug(log, 'A replication pull failed again.')
       }
+    }
+    // A `wake` during this cycle makes the next one due at once, the
+    // backoff included; `#schedule` consumes the request.
+    if (loop.wakeRequested) {
+      delayMs = 0
     }
     state.nextPullAt = new Date(Date.now() + delayMs).toISOString()
     const stored = await this.#storage.writeReplicaState({

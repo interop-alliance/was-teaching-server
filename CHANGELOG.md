@@ -31,10 +31,44 @@
   the chunk's own `GET` and `HEAD` serve and its `GET` answers 304 against, so a
   client can pin a `DELETE` of a listed chunk with `If-Match`, or read it
   conditionally, without a `HEAD` per chunk.
+- `PUT /space/:spaceId/replicas/:replicaId` creates or replaces a replica
+  registration (controller-only). Against a stored registration the body may
+  differ in `capability` and `pausedAt` alone; any other difference is
+  `invalid-request-body` (400) on that member. It answers 201 with `Location`
+  when it creates and 204 when it replaces, takes `If-Match` /
+  `If-None-Match: *` (412 on a miss), and carries the new `ETag`. `pausedAt`
+  pauses the pull loop: a body that carries it pauses, one that omits it
+  resumes, and the server stores its own time. A paused registration has no
+  loop, its status `state` reads `paused` with no `nextPullAt`, a resume starts
+  a cycle at once with no backoff carried over, and it still maps a peer-hosted
+  `did:webvh` controller onto the local log copy. A different `capability` is
+  validated as a POST's is and replaces the pull capability in place; the
+  registration keeps its id, its loop and its checkpoint, and a cycle in flight
+  is followed at once by one under the new capability. A `PUT` that repeats the
+  stored body leaves the loop's schedule alone, and no replacement touches the
+  Space Metadata object's local segment.
 
 ### Changed
 
-- Consumes `@interop/storage-core` 0.39.0 (the two stall reasons).
+- A replica registration is a versioned record. It carries `updatedAt`,
+  `updatedAtCounter` and `originId`, and its `ETag` is the four-segment
+  `"<generation>.<ms>.<counter>.<originId>"` instead of the generation alone.
+- Backend contract:
+  `StorageBackend.writeReplica({ spaceId, record, pullsChunks, createOnly?, ifMatch?, ifNoneMatch? })`
+  creates or replaces a registration and resolves `{ stored, prior }`, `prior`
+  being the registration it replaced. The pause request is `pausedAt` on
+  `record`; the stamp, the pause time, the fixed-member check and the
+  preconditions are decided by the shared `decideReplicaWrite` inside the
+  write's critical section, and a replacement that keeps the stored capability
+  keeps its `pullsChunks`. `createReplica` is the create-only form.
+- Filesystem layout version 7 and Postgres schema migration 15 refuse a store
+  that holds an unstamped replica registration, on every boot, with no
+  conversion. Wipe the data dir or delete the rows, then make each registration
+  again.
+- The Delete Replica refusal for a controller-mapping registration points to
+  `PUT` for pausing or replacing the capability, in place of add-then-remove.
+- Consumes `@interop/storage-core` 0.40.0 (the two stall reasons, `pausedAt` and
+  the `paused` status state).
 
 ## 0.42.3 - 2026-10-26
 

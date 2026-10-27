@@ -41,18 +41,91 @@ controller writes at `POST /space/:spaceId/replicas`
   `allowedAction` within `GET` and `HEAD`
 - an optional `collections` list
 - `role`, which is `source`
+- `pausedAt`, present only while the pull loop is paused (see
+  [Pause and capability replacement](#pause-and-capability-replacement))
 
-`GET` there lists the records as `{ url, totalItems, items }`. `GET` and
-`DELETE` of `/space/:spaceId/replicas/:replicaId` read and remove one, and there
-is no `PUT`. Every method is controller-only, the reads included, through the
+The served record also carries the write stamp members `updatedAt`,
+`updatedAtCounter` and `originId`. A value for any of them in a write body is
+ignored.
+
+`GET` there lists the records as `{ url, totalItems, items }`. `GET`, `PUT` and
+`DELETE` of `/space/:spaceId/replicas/:replicaId` read, create or replace, and
+remove one. Every method is controller-only, the reads included, through the
 container rule's `controller-only`.
+
+A registration is a versioned record (see
+[validators-and-stamps.md](validators-and-stamps.md)). Every write mints a write
+stamp with the store's clock inside the write's critical section, and the
+generation is minted at the first write and kept for the record's life. The
+`ETag` is the standard four-segment `"<generation>.<ms>.<counter>.<originId>"`.
+POST and `PUT` both answer with it.
+
+Both backends store a registration through one write,
+`StorageBackend.writeReplica`, which takes the client's shape of the record, the
+`pullsChunks` the peer checks found for its capability, an optional `createOnly`
+(the POST), and the preconditions, and resolves the stored registration with the
+one it replaced. `createReplica` is the create-only form. The decision is shared
+(`decideReplicaWrite` in `src/lib/replicaRecord.ts`) and made inside the write's
+critical section, from the registration read there: a create-only write over one
+is `id-conflict`, the fixed members are compared, the preconditions are
+evaluated against its `ETag`, the stamp is minted above its stamp, and
+`pausedAt` is decided by the pause rule from its presence on the client's shape.
+A replacement that keeps the stored capability keeps the stored `pullsChunks`
+with it, whatever the request layer passed.
 
 A record is stored inside the Space (`.replica.<id>.json` beside
 `.replica.<id>.state.json` in the filesystem Space dir, a row of the Postgres
 `replicas` table), so Delete Space removes it. It is not replicated and not
 exported. Storing or removing one advances the Space Metadata object's local
 segment, since the served `replicas` member changed (see
-[validators-and-stamps.md](validators-and-stamps.md)).
+[validators-and-stamps.md](validators-and-stamps.md)). A replacement through
+`PUT` does not, because the served `replicas` member lists `fromSpace`,
+`toSpace` and `role` alone, and those cannot change.
+
+## Pause and capability replacement
+
+`PUT /space/:spaceId/replicas/:replicaId` takes the full record, as POST does.
+Its `id` must equal the URL's, or the answer is `invalid-request-body` (400) on
+`#/id`. Against a stored registration the body may differ in `capability` and
+`pausedAt` alone. A difference in `toSpace`, `collections` or `role` is
+`invalid-request-body` (400) on that member's pointer. A changed `fromSpace` is
+refused earlier, by the body parser, since the capability's `invocationTarget`
+no longer equals it. The comparison is made inside the write's critical section,
+against the registration stored there, so a registration created or removed
+under the id meanwhile is judged, not the one an earlier read saw.
+
+A `PUT` at an absent registration creates it through the same checks as POST and
+answers 201 with `Location` and the record. A replacement answers 204. Both
+carry the new `ETag`. `If-Match` and `If-None-Match: *` are optional and are
+evaluated by the backend atomically with the write. A miss is
+`precondition-failed` (412), `If-None-Match: *` on an existing registration
+included. POST keeps `id-conflict` (409) for an existing id.
+
+`pausedAt` is an RFC 3339 UTC time, and the server sets it. A body that carries
+`pausedAt` pauses the registration, and a body that omits it resumes. A
+non-string value is `invalid-request-body` (400) on `#/pausedAt`. The client's
+value is otherwise ignored. On the change from unpaused to paused the server
+stores the write's own stamp time. A later `PUT` while the registration is still
+paused keeps the stored time, so replacing the capability of a paused
+registration does not move it. A create, by POST or `PUT`, that carries
+`pausedAt` makes the registration paused.
+
+A `capability` that differs from the stored one is validated as a POST's is: the
+grantee is this server's DID, the chain and actions pass, and a read of the
+source Space through it succeeds. That read also refreshes `pullsChunks`. A
+capability equal to the stored one is not re-read, so a pause or a resume costs
+no request to the source server; the handler decides that from a read before the
+write, and the write keeps the stored `pullsChunks` when the capability it finds
+under the lock is unchanged too. The registration keeps its id, its loop and its
+`.replica.<id>.state.json` checkpoint (the `state` column in Postgres), so the
+next cycle does not read the source from the start. A pause, a resume, a new
+capability or a create has the loop react at once; a `PUT` that repeats the
+stored body leaves the scheduled cycle alone.
+
+A paused registration still maps a peer-hosted `did:webvh` controller onto the
+local copy of the log, because the index reads every stored registration. The
+DID keeps resolving, and Delete Replica still refuses to remove the one
+registration that maps a controller.
 
 ## Registration checks
 
@@ -111,9 +184,9 @@ registration is the only one that maps a local Space's `did:webvh` controller to
 a copy of its log. Removing it would leave that Space with no resolvable
 controller, and both repairs, a new registration and Update Space, are
 authorized by the controller. The handler scans every stored Space for such a
-controller. The caller changes that Space's controller first. To replace a
-registration, the caller adds the new one on the same Space before removing the
-old one. A removal that ends a two-Space mapping is allowed. A keystore
+controller. The caller changes that Space's controller first. To pause the loop
+or replace the pull capability, the caller `PUT`s the registration instead of
+removing it. A removal that ends a two-Space mapping is allowed. A keystore
 controller is not checked. Delete Space and Delete Collection are not guarded
 either: a replicated copy of a log goes away with its Collection or Space, as a
 self-hosted log does.
@@ -339,9 +412,19 @@ log is applied there.
 ## The pull loop
 
 `sync/replication.ts` is the `ReplicationManager`, one per app, decorated as
-`replication`. It runs one pull loop per stored registration, started at
-`onReady` and on registration. A cycle reads the peer Space's Metadata object
-and policy (conditional reads), then its Collection listing under
+`replication`. It runs one pull loop per stored registration that is not paused,
+started at `onReady` and on registration. A cycle begins by reading the
+registration, so it uses the pull capability a `PUT` stored since the last
+cycle. A registration that is gone ends its loop. A paused one ends it too, and
+drops `nextPullAt` and the failure count from the loop state, so the status
+reports no cycle that will not run and a resume carries no backoff over. `wake`
+schedules a cycle at once, and starts the loop of a registration that has none.
+A `PUT` calls it after a pause, a resume, a capability replacement, or a create.
+A cycle in flight is left to finish, and its successor is then due at once
+rather than at the interval or the backoff. The status `state` is `pulling`
+while a cycle is in flight, else `paused` for a paused registration, else
+`backing-off`, `stalled` or `idle`. A cycle reads the peer Space's Metadata
+object and policy (conditional reads), then its Collection listing under
 `?include=deleted`.
 
 The registration's `collections` list selects among the listed Collections, live
@@ -419,9 +502,9 @@ reason.
 
 A request to the peer that fails outside a chunk pull, a 404 for the Space
 included, ends the cycle. The loop then backs off, doubling its delay up to a
-limit, and logs one `warn` when the failures begin. Nothing stops a loop but the
-removal of its registration. The manager stops every loop in the same `onClose`
-hook that closes the backend, ahead of it.
+limit, and logs one `warn` when the failures begin. Only the removal of its
+registration or a pause stops a loop. The manager stops every loop in the same
+`onClose` hook that closes the backend, ahead of it.
 
 ## Transport
 

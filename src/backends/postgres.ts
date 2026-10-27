@@ -43,7 +43,6 @@ import {
   CountQuotaExceededError,
   PayloadTooLargeError,
   PreconditionFailedError,
-  IdConflictError,
   KeystoreStateConflictError,
   KeyIdConflictError,
   DuplicateRevocationError
@@ -177,6 +176,10 @@ import {
   assertMetaWritePrecondition,
   assertCollectionWritePrecondition
 } from '../lib/preconditions.js'
+import {
+  decideReplicaWrite,
+  replicaWriteRequestName
+} from '../lib/replicaRecord.js'
 import {
   type ImportedPolicy,
   livePolicyUnderPrecondition,
@@ -628,7 +631,7 @@ function logResultFromRow(
 /**
  * A `replicas` row as `REPLICA_COLUMNS` selects it.
  */
-interface ReplicaRow {
+type ReplicaRow = StampColumns & {
   record: ReplicaRegistration
   generation: string
   space_generation: string
@@ -639,16 +642,19 @@ interface ReplicaRow {
  * The column list `ReplicaRow` is selected by. The loop state is read on its
  * own.
  */
-const REPLICA_COLUMNS = 'record, generation, space_generation, pulls_chunks'
+const REPLICA_COLUMNS =
+  'record, generation, space_generation, pulls_chunks, updated_at, ' +
+  'updated_at_counter, origin_id'
 
 /**
- * The stored registration a `replicas` row holds.
+ * The stored registration a `replicas` row holds: the `record` jsonb, which
+ * carries `pausedAt` but no stamp, under the stamp of the row's own columns.
  * @param row {ReplicaRow}
  * @returns {StoredReplica}
  */
 function storedReplicaFromRow(row: ReplicaRow): StoredReplica {
   return {
-    record: row.record,
+    record: { ...row.record, ...stampOfRow(row) },
     generation: row.generation,
     spaceGeneration: row.space_generation,
     pullsChunks: row.pulls_chunks
@@ -5104,12 +5110,8 @@ export class PostgresBackend implements StorageBackend {
   // Replica registrations (the replication specification)
 
   /**
-   * Stores a replica registration, create-only, in one transaction under the
-   * Space Metadata advisory lock and the Space row lock, the two locks Delete
-   * Space and a Space Metadata write take. The Space must have a Metadata
-   * object. The record's generation is minted here, and the Space Metadata
-   * object's current generation is recorded beside it. The object's local
-   * validator segment advances, since its served `replicas` member changed.
+   * Stores a registration, create-only: `writeReplica` with no precondition,
+   * refusing a registration already stored under the id.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.record {ReplicaRegistration}
@@ -5129,6 +5131,49 @@ export class PostgresBackend implements StorageBackend {
     record: ReplicaRegistration
     pullsChunks: boolean
   }): Promise<StoredReplica> {
+    const { stored } = await this.writeReplica({
+      spaceId,
+      record,
+      pullsChunks,
+      createOnly: true
+    })
+    return stored
+  }
+
+  /**
+   * Creates or replaces a registration under its preconditions. The Space
+   * row is locked for the transaction, so Delete Space and the Space's other
+   * registration writes wait, and the stored row is read `FOR UPDATE` and
+   * the write decided against it (`decideReplicaWrite`). A create records
+   * the Space Metadata object's current generation and advances the
+   * object's local segment. A replacement keeps the generation, the
+   * `space_generation` and the loop `state`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.record {ReplicaRegistration}   the client's shape
+   * @param options.pullsChunks {boolean}
+   * @param [options.createOnly] {boolean}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<{ stored: StoredReplica, prior?: StoredReplica }>}
+   */
+  async writeReplica({
+    spaceId,
+    record,
+    pullsChunks,
+    createOnly = false,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    record: ReplicaRegistration
+    pullsChunks: boolean
+    createOnly?: boolean
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<{ stored: StoredReplica; prior?: StoredReplica }> {
+    const replicaId = record.id
+    const requestName = replicaWriteRequestName({ createOnly })
     return this.#withTransaction(async client => {
       await this.#lockSpaceMetadata({ client, spaceId })
       const { rows } = await client.query<{ meta_generation: string | null }>(
@@ -5136,32 +5181,54 @@ export class PostgresBackend implements StorageBackend {
           WHERE space_id = $1 AND metadata IS NOT NULL FOR UPDATE`,
         [spaceId]
       )
-      const spaceGeneration = rows[0]?.meta_generation
-      if (spaceGeneration === undefined || spaceGeneration === null) {
-        throw new SpaceNotFoundError({ requestName: 'Register Replica' })
+      const currentSpaceGeneration = rows[0]?.meta_generation
+      if (
+        currentSpaceGeneration === undefined ||
+        currentSpaceGeneration === null
+      ) {
+        throw new SpaceNotFoundError({ requestName })
       }
-      const generation = newGeneration()
-      // The primary key is the guard: a second registration under the id
-      // inserts nothing.
-      const { rowCount } = await client.query(
+      const held = await client.query<ReplicaRow>(
+        `SELECT ${REPLICA_COLUMNS} FROM replicas
+          WHERE space_id = $1 AND replica_id = $2 FOR UPDATE`,
+        [spaceId, replicaId]
+      )
+      const { stored, prior } = await decideReplicaWrite({
+        prior: held.rows[0] && storedReplicaFromRow(held.rows[0]),
+        record,
+        pullsChunks,
+        clock: this.#clock,
+        currentSpaceGeneration: async () => currentSpaceGeneration,
+        createOnly,
+        ifMatch,
+        ifNoneMatch
+      })
+      const stamp = stampOf(stored.record) as WriteStamp
+      await client.query(
         `INSERT INTO replicas (space_id, replica_id, record, generation,
-                               space_generation, pulls_chunks)
-         VALUES ($1, $2, $3::jsonb, $4, $5, $6)
-         ON CONFLICT (space_id, replica_id) DO NOTHING`,
+                               space_generation, pulls_chunks, updated_at,
+                               updated_at_counter, origin_id)
+         VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (space_id, replica_id)
+         DO UPDATE SET record             = EXCLUDED.record,
+                       pulls_chunks       = EXCLUDED.pulls_chunks,
+                       updated_at         = EXCLUDED.updated_at,
+                       updated_at_counter = EXCLUDED.updated_at_counter,
+                       origin_id          = EXCLUDED.origin_id`,
         [
           spaceId,
-          record.id,
-          JSON.stringify(record),
-          generation,
-          spaceGeneration,
-          pullsChunks
+          replicaId,
+          JSON.stringify(withoutStampMembers(stored.record)),
+          stored.generation,
+          stored.spaceGeneration,
+          stored.pullsChunks,
+          ...stampValues(stamp)
         ]
       )
-      if (!rowCount) {
-        throw new IdConflictError({ kind: 'Replica' })
+      if (prior === undefined) {
+        await this.#advanceSpaceMetaLocal({ client, spaceId })
       }
-      await this.#advanceSpaceMetaLocal({ client, spaceId })
-      return { record, generation, spaceGeneration, pullsChunks }
+      return { stored, prior }
     })
   }
 

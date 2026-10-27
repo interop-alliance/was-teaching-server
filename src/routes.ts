@@ -714,6 +714,7 @@ export async function initSpaceRoutes(
     { onRequest: requireAuthHeaders },
     ReplicaRequest.get
   )
+  app.put('/space/:spaceId/replicas/:replicaId', ReplicaRequest.put)
   app.delete('/space/:spaceId/replicas/:replicaId', ReplicaRequest.delete)
   app.get<{ Params: { spaceId: string; replicaId: string } }>(
     '/space/:spaceId/replicas/:replicaId/status',

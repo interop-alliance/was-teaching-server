@@ -451,7 +451,11 @@ export const REPLICATION_IDENTIFIER = 'https://w3id.org/pws/replication'
 /**
  * The version of the replication specification this server implements
  * (`major.minor`, no patch level). A change to what the pull loop accepts is
- * a new version. The entry carries no `url` until the text is published.
+ * a new version. The `PUT` at a registration URL, which pauses and resumes
+ * the loop and replaces the pull capability in place, is part of `0.1`: it
+ * changes what a controller may do to its own registration, not what the
+ * loop accepts from a peer. The entry carries no `url` until the text is
+ * published.
  */
 export const REPLICATION_VERSION = '0.1'
 

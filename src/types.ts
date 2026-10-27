@@ -784,11 +784,12 @@ export type FeedDocument = WriteStamp & {
   )
 
 /**
- * A replica registration as a backend stores it: the record the controller
- * wrote, the generation its `ETag` is made of, and the generation of the
- * Space Metadata object at the time it was made. An apply runs only while
- * the Space still carries that generation, so a registration that outlived a
- * Delete Space and a re-create under the same id applies nothing.
+ * A replica registration as a backend stores it: the record as the last
+ * write left it, the write's stamp members and `pausedAt` included, the
+ * generation its `ETag` is made of, and the generation of the Space Metadata
+ * object at the time it was made. An apply runs only while the Space still
+ * carries that generation, so a registration that outlived a Delete Space
+ * and a re-create under the same id applies nothing.
  */
 export interface StoredReplica {
   record: ReplicaRegistration
@@ -1751,14 +1752,40 @@ export interface StorageBackend {
    * them with it. They are this server's own. Export does not carry them and
    * import never creates one.
    *
-   * `createReplica` stores a registration, create-only: it rejects with
-   * `IdConflictError` (409) when the Space already holds one under
-   * `record.id`, atomically with the write, and with `SpaceNotFoundError`
-   * (404) when the Space has no Metadata object, under the lock Delete Space
-   * takes. It mints the record's generation, records the Space Metadata
-   * object's current generation as `spaceGeneration`, and advances that
-   * object's local validator segment, since its served `replicas` member
-   * changed.
+   * A registration is a versioned record: each write mints its stamp with
+   * the store's clock inside the write's critical section, and its generation
+   * at the first write, so its `ETag` is the standard four-segment shape.
+   * The `record` a write takes is the client's shape, without the stamp
+   * members; the write composes the stored record (`lib/replicaRecord.ts`).
+   * `pausedAt` on it is the request to pause: a registration that was not
+   * paused takes the write's own time, one that was keeps its stored time,
+   * and a record without the member resumes.
+   *
+   * `writeReplica` creates or replaces a registration, the `PUT` at its
+   * URL, and under `createOnly` the `POST`. `ifMatch` / `ifNoneMatch` are
+   * evaluated against the stored registration atomically with the write
+   * (`PreconditionFailedError`, 412). A replacement must keep every member
+   * but `capability` and `pausedAt` (`InvalidRequestBodyError`, 400), and
+   * keeps the generation and the loop state; one that keeps the stored
+   * capability keeps its `pullsChunks` too, else `pullsChunks` is stored. A
+   * create rejects with `SpaceNotFoundError` (404) when the Space has no
+   * Metadata object, under the lock Delete Space takes, records the Space
+   * Metadata object's current generation as `spaceGeneration`, and advances
+   * that object's local validator segment, since its served `replicas`
+   * member changed; a replacement advances nothing on it. The write returns
+   * the registration it replaced, if any. `createOnly` refuses a stored
+   * registration with `IdConflictError` (409), atomically with the write.
+   */
+  writeReplica(options: {
+    spaceId: string
+    record: ReplicaRegistration
+    pullsChunks: boolean
+    createOnly?: boolean
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<{ stored: StoredReplica; prior?: StoredReplica }>
+  /**
+   * `writeReplica` with `createOnly` and no precondition.
    */
   createReplica(options: {
     spaceId: string

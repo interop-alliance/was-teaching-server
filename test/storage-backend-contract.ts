@@ -13,7 +13,10 @@ import * as tar from 'tar-stream'
 import { pino } from 'pino'
 import { createHeaderValue } from '@interop/http-digest-header'
 import { collectBytes, readSpaceArchive } from '@interop/space-archive'
-import { isCollectionTombstoneSummary } from '@interop/storage-core'
+import {
+  isCollectionTombstoneSummary,
+  isWriteStamp
+} from '@interop/storage-core'
 import { logToJsonlString } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
@@ -24,7 +27,8 @@ import {
 } from '../src/lib/etag.js'
 import { metadataEtagOf } from '../src/lib/metadataValidator.js'
 import type { EtagValidator } from '../src/lib/etag.js'
-import { compareStamps, stampOf } from '../src/lib/hlc.js'
+import { compareStamps, stampOf, withoutStampMembers } from '../src/lib/hlc.js'
+import { replicaValidator } from '../src/lib/replicaRecord.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
 import { ServerBackends } from '../src/lib/serverBackends.js'
@@ -62,7 +66,8 @@ import {
   InvalidImportError,
   KeystoreStateConflictError,
   KeyIdConflictError,
-  DuplicateRevocationError
+  DuplicateRevocationError,
+  InvalidRequestBodyError
 } from '../src/errors.js'
 import type {
   StorageBackend,
@@ -7331,7 +7336,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           record,
           pullsChunks: true
         })
-        assert.deepEqual(stored.record, record)
+        // The stored record is the client's shape under the write's stamp,
+        // which the store's clock minted, and no `pausedAt`.
+        const stamp = stampOf(stored.record)
+        assert.ok(isWriteStamp(stamp))
+        assert.equal(stamp.originId, backend.originId)
+        assert.deepEqual(withoutStampMembers(stored.record), record)
+        assert.equal(stored.record.pausedAt, undefined)
         assert.equal(stored.pullsChunks, true)
         assert.ok(isMintedGeneration(stored.generation))
         assert.equal(stored.spaceGeneration, space.metaGeneration)
@@ -7579,6 +7590,233 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             replicaId: 'peer-a'
           }),
           undefined
+        )
+      })
+
+      it("creates a registration paused, under the write's own time", async () => {
+        const { backend } = harness
+        const record = replicaRegistration({ id: 'peer-paused', spaceId })
+        const stored = await backend.createReplica({
+          spaceId,
+          record: { ...record, pausedAt: '2001-01-01T00:00:00.000Z' },
+          pullsChunks: false
+        })
+        assert.equal(stored.record.pausedAt, stored.record.updatedAt)
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId: 'peer-paused' }),
+          stored
+        )
+      })
+
+      it('writeReplica creates when absent and replaces in place when stored', async () => {
+        const { backend } = harness
+        const record = replicaRegistration({ id: 'peer-put', spaceId })
+        const space = (await backend.getSpaceMetadata({ spaceId }))!
+
+        // A create: generation minted, local segment advanced.
+        const created = await backend.writeReplica({
+          spaceId,
+          record,
+          pullsChunks: false
+        })
+        assert.equal(created.prior, undefined)
+        assert.ok(isMintedGeneration(created.stored.generation))
+        assert.deepEqual(withoutStampMembers(created.stored.record), record)
+        const afterCreate = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(afterCreate.metaLocal, space.metaLocal! + 1)
+        const state = {
+          collections: { col: { state: 'synced' as const, checkpoint: 'c1' } }
+        }
+        assert.ok(
+          await backend.writeReplicaState({
+            spaceId,
+            replicaId: 'peer-put',
+            state
+          })
+        )
+
+        // A replacement that pauses: same generation, a stamp above, the
+        // loop state kept, the Space Metadata object untouched.
+        const replacement = {
+          ...record,
+          capability: { ...record.capability, id: 'urn:uuid:replacement' }
+        }
+        const paused = await backend.writeReplica({
+          spaceId,
+          record: { ...replacement, pausedAt: '2001-01-01T00:00:00.000Z' },
+          pullsChunks: true
+        })
+        assert.deepEqual(paused.prior, created.stored)
+        assert.equal(paused.stored.generation, created.stored.generation)
+        assert.equal(
+          paused.stored.spaceGeneration,
+          created.stored.spaceGeneration
+        )
+        assert.ok(
+          compareStamps(
+            stampOf(paused.stored.record) as WriteStamp,
+            stampOf(created.stored.record) as WriteStamp
+          ) > 0
+        )
+        assert.equal(paused.stored.record.capability.id, 'urn:uuid:replacement')
+        assert.equal(paused.stored.pullsChunks, true)
+        assert.equal(
+          paused.stored.record.pausedAt,
+          paused.stored.record.updatedAt
+        )
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId: 'peer-put' }),
+          paused.stored
+        )
+        assert.deepEqual(
+          await backend.getReplicaState({ spaceId, replicaId: 'peer-put' }),
+          state
+        )
+        const afterReplace = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(afterReplace.metaLocal, afterCreate.metaLocal)
+
+        // Paused again: the stored pause time is kept. A client value is
+        // ignored.
+        const stillPaused = await backend.writeReplica({
+          spaceId,
+          record: { ...replacement, pausedAt: '2002-01-01T00:00:00.000Z' },
+          pullsChunks: true
+        })
+        assert.equal(
+          stillPaused.stored.record.pausedAt,
+          paused.stored.record.pausedAt
+        )
+        assert.notEqual(
+          formatEtag(replicaValidator(stillPaused.stored)),
+          formatEtag(replicaValidator(paused.stored))
+        )
+
+        // Resumed: the member is dropped.
+        const resumed = await backend.writeReplica({
+          spaceId,
+          record: replacement,
+          pullsChunks: true
+        })
+        assert.equal(resumed.stored.record.pausedAt, undefined)
+      })
+
+      it('writeReplica keeps pullsChunks under an unchanged capability and the fixed members', async () => {
+        const { backend } = harness
+        const record = replicaRegistration({ id: 'peer-fixed', spaceId })
+        const created = await backend.writeReplica({
+          spaceId,
+          record,
+          pullsChunks: true
+        })
+        assert.equal(created.stored.pullsChunks, true)
+        // The stored capability stands, and the stored value with it.
+        const kept = await backend.writeReplica({
+          spaceId,
+          record,
+          pullsChunks: false
+        })
+        assert.equal(kept.stored.pullsChunks, true)
+        // A new capability takes the value given for it.
+        const swapped = await backend.writeReplica({
+          spaceId,
+          record: {
+            ...record,
+            capability: { ...record.capability, id: 'urn:uuid:swapped' }
+          },
+          pullsChunks: false
+        })
+        assert.equal(swapped.stored.pullsChunks, false)
+        // A change to a fixed member refuses the write and leaves the stored
+        // registration.
+        await assert.rejects(
+          backend.writeReplica({
+            spaceId,
+            record: { ...record, role: 'source', collections: [{ id: 'x' }] },
+            pullsChunks: false
+          }),
+          (err: unknown) =>
+            err instanceof InvalidRequestBodyError &&
+            err.problems?.[0]?.pointer === '#/collections'
+        )
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId: 'peer-fixed' }),
+          swapped.stored
+        )
+      })
+
+      it('writeReplica evaluates If-Match and If-None-Match: * atomically', async () => {
+        const { backend } = harness
+        const record = replicaRegistration({ id: 'peer-cas', spaceId })
+        const created = await backend.writeReplica({
+          spaceId,
+          record,
+          pullsChunks: false,
+          ifNoneMatch: '*'
+        })
+        assert.equal(created.prior, undefined)
+        const etag = formatEtag(replicaValidator(created.stored))
+
+        await assert.rejects(
+          backend.writeReplica({
+            spaceId,
+            record,
+            pullsChunks: false,
+            ifNoneMatch: '*'
+          }),
+          (err: unknown) => err instanceof PreconditionFailedError
+        )
+        await assert.rejects(
+          backend.writeReplica({
+            spaceId,
+            record,
+            pullsChunks: false,
+            ifMatch: '"stale.0.0.none"'
+          }),
+          (err: unknown) => err instanceof PreconditionFailedError
+        )
+        // The refused writes left the record as it was.
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId: 'peer-cas' }),
+          created.stored
+        )
+
+        const matched = await backend.writeReplica({
+          spaceId,
+          record: { ...record, pausedAt: '2001-01-01T00:00:00.000Z' },
+          pullsChunks: false,
+          ifMatch: etag
+        })
+        assert.deepEqual(matched.prior, created.stored)
+        assert.notEqual(formatEtag(replicaValidator(matched.stored)), etag)
+
+        // If-Match on an absent registration cannot be satisfied.
+        await assert.rejects(
+          backend.writeReplica({
+            spaceId,
+            record: replicaRegistration({ id: 'peer-absent', spaceId }),
+            pullsChunks: false,
+            ifMatch: '*'
+          }),
+          (err: unknown) => err instanceof PreconditionFailedError
+        )
+        assert.equal(
+          await backend.getReplica({ spaceId, replicaId: 'peer-absent' }),
+          undefined
+        )
+      })
+
+      it('writeReplica refuses a Space with no Metadata object', async () => {
+        const { backend } = harness
+        await assert.rejects(
+          backend.writeReplica({
+            spaceId: 'space-replicas-absent',
+            record: replicaRegistration({
+              id: 'peer-a',
+              spaceId: 'space-replicas-absent'
+            }),
+            pullsChunks: false
+          }),
+          isNotFound
         )
       })
     })

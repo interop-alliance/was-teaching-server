@@ -6404,3 +6404,103 @@ parses every chunk's sidecar (`LiveRepresentation.sidecar`) and the validator is
 `formatEtag(validatorPartsOf(sidecar))`; the Postgres listing already fetches
 the rows. The spec does not define the listing's shape, so this is a server
 convention until it does.
+
+### WAS-227: [M] (*) [blocks 1] Pause a replica registration, and replace its pull capability in place
+
+- status: done
+- done: 2026-10-27
+- priority: medium
+- backend: *
+- labels: replication, registration, wire-contract
+- discovered-from: freewallet FW-688 (2026-10-26)
+- blocks: WAS-226
+- touches:
+  - was-teaching-server: `src/routes.ts` (a PUT route on the registration),
+    `src/requests/ReplicaRequest.ts` (the PUT handler; `replicaEtag`, whose
+    comment says the record never changes; the Delete Replica refusal text),
+    `src/sync/replication.ts` (a per-registration pause; `status`),
+    `src/sync/registration.ts` (re-validation of a replacement),
+    `src/lib/webvhLogLocation.ts`, `src/types.ts` (a replace method on the
+    backend contract), both backends, `src/config.default.ts` (the
+    `REPLICATION_VERSION` comment), docs/replication.md ("Registrations", "The
+    pull loop", "Stalls and backoff", "Guards on Delete Replica and Update
+    Space"), ARCHITECTURE.md
+  - storage-core: `ReplicaRegistration` gains `pausedAt` and the three write
+    stamp members (`updatedAt`, `updatedAtCounter`, `originId`);
+    `ReplicaStatus.state` gains `paused` -- shipped as part of SC-11 in
+    storage-core 0.40.0 (2026-10-27), consumed here through a `link:` dependency
+    until it is published
+  - wallet-attached-storage-spec: decision 0013 amended (against its "no PUT in
+    v1" and "only the removal of its registration stops a loop") and WASS-50's
+    text -- WASS-50's touches already name the pause and the in-place
+    replacement (added 2026-10-26); the decision amendment rides that item
+  - was-client: pause, resume, and capability replacement on `Space` -- WCL-137,
+    filed
+  - was-conformance-suite: PWSCS-23 gains the PUT cases -- unresolved (the suite
+    repo has no roadmap file; the cases are to be added when PWSCS-23 is taken
+    up)
+- acceptance:
+  - [x] The registration record gains `pausedAt`, an ISO 8601 UTC time; absent
+        means not paused. A PUT on the registration URL writes and clears it.
+        The body is the full record as a POST carries it; `id` must equal the
+        URL's and only `capability` and `pausedAt` may differ from the stored
+        record, any other difference being a 400 on that member's pointer. A
+        body without `pausedAt` clears the pause. A PUT on an absent
+        registration creates it through the POST path and answers 201
+  - [x] `pausedAt` is server-set: a value in the body is ignored, the server
+        stores its own clock when the registration goes from unpaused to paused
+        (a create with the member present included), and keeps the stored time
+        on a later PUT while paused
+  - [x] The PUT takes optional `If-Match` and `If-None-Match: *`, parsed by
+        `parseWritePreconditions` and evaluated by the backend atomically with
+        the write; a miss is `precondition-failed` (412), `If-None-Match: *` on
+        an existing registration included. POST keeps `id-conflict`
+  - [x] A paused registration's loop does not run, at boot included, and
+        `status.state` reports `paused` while no cycle is in flight. Clearing
+        the member schedules a cycle at once
+  - [x] A paused registration keeps mapping its did:webvh controller in
+        `webvhLogLocation.ts`, so the DID still resolves and the Delete Replica
+        guard still holds
+  - [x] A PUT may also replace the pull capability, with the same `fromSpace`.
+        The new capability is validated as a POST's is (grantee this server's
+        DID, chain and actions, and a read of the source Space through it, which
+        also re-reads `pullsChunks`). The registration keeps its id, its loop,
+        and its `.replica.<id>.state.json` checkpoint, and the running loop uses
+        the new capability from its next cycle
+  - [x] The registration becomes a versioned record: a write stamp minted by the
+        store's clock under the registration's lock on create and on every PUT,
+        served in the body as `updatedAt`, `updatedAtCounter` and `originId`
+        (ignored in a write body), with the generation kept for the record's
+        life. The `ETag` is the standard four-segment `formatEtag` shape;
+        `replicaEtag` and its comment go. The served `replicas` member on the
+        Space Metadata object is unchanged by a PUT
+  - [x] Both backends store the replaced record atomically, beside today's
+        create-only `createReplica`
+  - [x] The Delete Replica refusal no longer advises add-then-remove
+  - [x] `REPLICATION_VERSION` stays `0.1`; its comment in
+        `src/config.default.ts` (`:452-456`) names the pause and the in-place
+        replacement
+  - [x] Two-server tests: a paused registration pulls nothing, reports `paused`,
+        and its DID resolves; a resume pulls; a replacement keeps the id and the
+        checkpoint, so the next cycle does not re-read the source from the start
+
+Context. A wallet's Stop keeps the copy as a snapshot. Deregistering would leave
+a promoted Space's controller unresolvable, and the guard refuses it
+(`ReplicaRequest.ts:232-251`, through `controllerUnmappedByRemoval`,
+`webvhLogLocation.ts:570`). Leaving the loop running would back off on 404
+against a source that refuses it, forever. Today the only pause is manager-wide
+(`#paused`, `pause()` and `resume()` in `src/sync/replication.ts`, `:265`,
+`:386-400`, checked in `#schedule` at `:520`), used by tests. A renewal or a
+re-start of a stopped replica also needs a new pull capability. Without an
+in-place replacement that is a new registration id with an empty checkpoint,
+since loop state is per id, and the copy is read again from the start.
+
+Wire details, settled 2026-10-27. The member name `pausedAt`, its format, the
+PUT verb and the `paused` state were decided at filing. Decided since: the PUT
+body is the full record with only `capability` and `pausedAt` free to differ,
+and a PUT creates an absent registration; `pausedAt` is set by this server's
+clock on the unpaused-to-paused transition, the client's value ignored; the PUT
+takes optional `If-Match` and `If-None-Match: *` like every other write; and the
+record gains a write stamp, so its `ETag` is the standard four-segment shape and
+the stamp members are served in the body. The CORS defaults already list PUT
+(`src/plugin.ts:554-562`).

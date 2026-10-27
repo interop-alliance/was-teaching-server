@@ -178,10 +178,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   **`src/lib/webvhLogLocation.ts`** -- the replication facet. A replica
   registration (`POST /space/:spaceId/replicas`, controller-only) is one source
   peer of a Space, with the pull capability the controller delegated to this
-  server's DID. One pull loop per registration reads the peer's Space and each
-  selected Collection's `changes` feed, and stores what it reads through the
-  backend's `apply*` methods only, under the peer's stamp and generation. No
-  request route can supply a write stamp. The chunk pull adds
+  server's DID. `PUT` at its URL pauses and resumes the loop and replaces the
+  pull capability in place, and nothing else of the registration changes. Both
+  backends store a registration through one write, `writeReplica`, whose
+  decision (`src/lib/replicaRecord.ts`) is made under the lock from the
+  registration read there. One pull loop per registration reads the peer's Space
+  and each selected Collection's `changes` feed, and stores what it reads
+  through the backend's `apply*` methods only, under the peer's stamp and
+  generation. No request route can supply a write stamp. The chunk pull adds
   `beginChunkStaging`, `stageChunk`, `listStagedChunks` and `reclaimStaging` to
   that family, and a `chunks` option to `applyResource`. A chunked Resource's
   set is staged, a few chunks at a time, then swapped in with its parent in one
@@ -375,7 +379,10 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
 - **Replica registration** -- one source peer of a Space, stored on the server
   that pulls: a directed edge from `fromSpace` (the peer's Space) to `toSpace`
   (this one), with the pull capability the controller delegated to this server's
-  DID. Replication is one-way per registration; a two-way pair is two
+  DID. It is a versioned record: each write stamps it, and its `ETag` is the
+  four-segment shape. `pausedAt`, server-set, marks a paused pull loop. `PUT`
+  replaces `capability` and `pausedAt` in place, keeping the id, the loop and
+  the checkpoint. Replication is one-way per registration; a two-way pair is two
   registrations, one on each server. Not replicated and not exported. Avoid:
   peer (the other server), subscription, sync config.
 - **Pull loop** -- the loop that reads one replica registration's source and

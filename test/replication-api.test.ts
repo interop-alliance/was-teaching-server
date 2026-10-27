@@ -16,6 +16,8 @@ import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
 import { ProblemTypes } from '@interop/storage-core'
 
+import type { IDID } from '../src/types.js'
+
 import {
   bootPeerServer,
   delegate,
@@ -151,13 +153,19 @@ describe('Replication between two servers', () => {
         'https://replica.example/space/reg-dst/replicas/peer'
       )
       const record = created.json()
+      // The record is served under its write stamp, as every versioned
+      // record is.
       assert.deepStrictEqual(Object.keys(record).sort(), [
         'capability',
         'fromSpace',
         'id',
+        'originId',
         'role',
-        'toSpace'
+        'toSpace',
+        'updatedAt',
+        'updatedAtCounter'
       ])
+      assert.equal(record.originId, replica.backend.originId)
 
       const read = await call({
         server: replica,
@@ -166,7 +174,12 @@ describe('Replication between two servers', () => {
       assert.equal(read.statusCode, 200)
       assert.deepStrictEqual(read.json(), record)
       assert.equal(read.headers.etag, created.headers.etag)
-      assert.match(String(read.headers.etag), /^"[^".]+"$/)
+      // The four-segment ETag: generation, stamp ms, counter, origin id.
+      assert.match(String(read.headers.etag), /^"[^".]+\.\d+\.\d+\.[^".]+"$/)
+      assert.equal(
+        String(read.headers.etag).slice(1, -1).split('.')[1],
+        String(Date.parse(record.updatedAt))
+      )
 
       const listed = await call({
         server: replica,
@@ -443,6 +456,396 @@ describe('Replication between two servers', () => {
         ),
         []
       )
+    })
+  })
+
+  describe('a registration under PUT', () => {
+    const path = '/space/put-dst/replicas/peer'
+    let stored: any
+
+    /**
+     * Reads the stored registration on the replica, as Alice.
+     */
+    async function read() {
+      const response = await call({ server: replica, path })
+      assert.equal(response.statusCode, 200, response.payload)
+      return response
+    }
+
+    /**
+     * PUTs `record` at the registration URL.
+     */
+    async function put(
+      record: Record<string, unknown>,
+      headers?: Record<string, string>
+    ) {
+      return call({
+        server: replica,
+        path,
+        method: 'PUT',
+        json: record,
+        ...(headers !== undefined && { headers })
+      })
+    }
+
+    /**
+     * Writes a Resource on the source and resolves its id.
+     */
+    async function writeOnSource(resourceId: string) {
+      const written = await call({
+        server: source,
+        path: `/space/put-src/notes/${resourceId}`,
+        method: 'PUT',
+        json: { resourceId }
+      })
+      assert.ok([201, 204].includes(written.statusCode), written.payload)
+    }
+
+    /**
+     * Whether the replica serves the Resource.
+     */
+    async function heldByReplica(resourceId: string) {
+      const read = await call({
+        server: replica,
+        path: `/space/put-dst/notes/${resourceId}`
+      })
+      return read.statusCode === 200
+    }
+
+    beforeAll(async () => {
+      await createSpace({ server: source, spaceId: 'put-src' })
+      await createSpace({ server: replica, spaceId: 'put-dst' })
+      await call({
+        server: source,
+        path: '/space/put-src/',
+        method: 'POST',
+        json: { id: 'notes', name: 'Notes' }
+      })
+      await writeOnSource('first')
+      const created = await register({
+        to: replica,
+        toSpaceId: 'put-dst',
+        from: source,
+        fromSpaceId: 'put-src'
+      })
+      assert.equal(created.statusCode, 201, created.payload)
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.ok(await heldByReplica('first'))
+      stored = (await read()).json()
+    })
+
+    it("pauses the loop, under the server's own time and a new ETag", async () => {
+      const before = await read()
+      const meta = await call({ server: replica, path: '/space/put-dst/meta' })
+      const paused = await put({
+        ...stored,
+        pausedAt: '2001-01-01T00:00:00.000Z'
+      })
+      assert.equal(paused.statusCode, 204, paused.payload)
+      assert.notEqual(paused.headers.etag, before.headers.etag)
+      const segments = (etag: unknown) => String(etag).slice(1, -1).split('.')
+      // Same generation, a stamp above the stored one. The test clocks are
+      // frozen, so the stamp moves in its counter.
+      const [generation, ms, counter] = segments(paused.headers.etag)
+      const [priorGeneration, priorMs, priorCounter] = segments(
+        before.headers.etag
+      )
+      assert.equal(generation, priorGeneration)
+      assert.equal(ms, priorMs)
+      assert.ok(Number(counter) > Number(priorCounter))
+
+      const after = await read()
+      assert.equal(after.headers.etag, paused.headers.etag)
+      const record = after.json()
+      // The client's value is ignored: the server's clock sets the member,
+      // to the write's own time.
+      assert.notEqual(record.pausedAt, '2001-01-01T00:00:00.000Z')
+      assert.equal(record.pausedAt, record.updatedAt)
+      assert.equal(record.id, 'peer')
+      assert.deepStrictEqual(record.capability, stored.capability)
+
+      // The status reports the pause, and nothing is pulled.
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).state,
+        'paused'
+      )
+      await writeOnSource('while-paused')
+      // The cycle the pause woke finds the registration paused, ends the
+      // loop, and drops the cycle the status would otherwise still report.
+      assert.ok(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).nextPullAt
+      )
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).nextPullAt,
+        undefined
+      )
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.equal(await heldByReplica('while-paused'), false)
+      // A boot starts no loop for it either.
+      await replica.fastify.replication.start()
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.equal(await heldByReplica('while-paused'), false)
+
+      // The served Space Metadata object is unchanged by the PUT.
+      const metaAfter = await call({
+        server: replica,
+        path: '/space/put-dst/meta'
+      })
+      assert.equal(metaAfter.headers.etag, meta.headers.etag)
+      assert.deepStrictEqual(metaAfter.json().replicas, meta.json().replicas)
+    })
+
+    it('keeps pausedAt across a PUT that stays paused', async () => {
+      const before = await read()
+      const again = await put({ ...before.json(), pausedAt: 'anything' })
+      assert.equal(again.statusCode, 204, again.payload)
+      const after = await read()
+      assert.equal(after.json().pausedAt, before.json().pausedAt)
+      assert.notEqual(after.headers.etag, before.headers.etag)
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).state,
+        'paused'
+      )
+    })
+
+    it('resumes with a body that omits pausedAt, and the next pull applies', async () => {
+      const { pausedAt: _pausedAt, ...record } = (await read()).json()
+      const resumed = await put(record)
+      assert.equal(resumed.statusCode, 204, resumed.payload)
+      const after = (await read()).json()
+      assert.equal(after.pausedAt, undefined)
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).state,
+        'idle'
+      )
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.ok(await heldByReplica('while-paused'))
+    })
+
+    it('replaces the pull capability in place, keeping the id and the checkpoint', async () => {
+      const before = (await read()).json()
+      const stateBefore = await replica.backend.getReplicaState({
+        spaceId: 'put-dst',
+        replicaId: 'peer'
+      })
+      assert.ok(stateBefore?.collections.notes?.checkpoint)
+      const fromSpace = 'https://source.example/space/put-src/'
+      const capability = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+        invocationTarget: fromSpace,
+        controller: replica.did,
+        allowedActions: ['GET', 'HEAD']
+      })
+      assert.notEqual(capability.id, before.capability.id)
+      const replaced = await put({ ...before, capability })
+      assert.equal(replaced.statusCode, 204, replaced.payload)
+      const after = (await read()).json()
+      assert.equal(after.id, 'peer')
+      assert.deepStrictEqual(after.capability, capability)
+      assert.equal(after.pausedAt, undefined)
+      // The checkpoint survives the replacement, so the next cycle reads
+      // the feed from where it left off.
+      assert.deepStrictEqual(
+        await replica.backend.getReplicaState({
+          spaceId: 'put-dst',
+          replicaId: 'peer'
+        }),
+        stateBefore
+      )
+      await writeOnSource('after-replacement')
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.ok(await heldByReplica('after-replacement'))
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).state,
+        'idle'
+      )
+    })
+
+    it('wakes the loop only for a change it reads', async () => {
+      const before = (await read()).json()
+      const wake = vi.spyOn(replica.fastify.replication, 'wake')
+      try {
+        // A repeat of the stored body leaves the scheduled cycle alone.
+        const repeated = await put(before)
+        assert.equal(repeated.statusCode, 204, repeated.payload)
+        assert.equal(wake.mock.calls.length, 0)
+        const paused = await put({ ...before, pausedAt: 'now' })
+        assert.equal(paused.statusCode, 204, paused.payload)
+        assert.equal(wake.mock.calls.length, 1)
+        const resumed = await put(before)
+        assert.equal(resumed.statusCode, 204, resumed.payload)
+        assert.equal(wake.mock.calls.length, 2)
+      } finally {
+        wake.mockRestore()
+      }
+      await pull({ server: replica, spaceId: 'put-dst' })
+    })
+
+    it('has a cycle in flight at a PUT schedule its successor at once', async () => {
+      const before = (await read()).json()
+      // Hold the cycle at its loop-state read until the PUT has landed.
+      let release!: () => void
+      const held = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const readState = replica.backend.getReplicaState.bind(replica.backend)
+      const spy = vi
+        .spyOn(replica.backend, 'getReplicaState')
+        .mockImplementationOnce(async options => {
+          await held
+          return readState(options)
+        })
+      try {
+        const cycle = pull({ server: replica, spaceId: 'put-dst' })
+        await vi.waitFor(() => assert.equal(spy.mock.calls.length, 1))
+        const fromSpace = 'https://source.example/space/put-src/'
+        const capability = await delegate({
+          signer: alice.signer,
+          capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+          invocationTarget: fromSpace,
+          controller: replica.did,
+          allowedActions: ['GET', 'HEAD']
+        })
+        const replaced = await put({ ...before, capability })
+        assert.equal(replaced.statusCode, 204, replaced.payload)
+        release()
+        await cycle
+      } finally {
+        spy.mockRestore()
+      }
+      // The held cycle ran under the old capability; its successor is due
+      // now rather than at the pull interval.
+      const status = await statusOf({ server: replica, spaceId: 'put-dst' })
+      assert.ok(status.nextPullAt)
+      assert.ok(Date.parse(status.nextPullAt) - Date.now() < 1_000)
+    })
+
+    it('re-validates a replacement capability as a POST does', async () => {
+      const before = (await read()).json()
+      const fromSpace = 'https://source.example/space/put-src/'
+      const toBob = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+        invocationTarget: fromSpace,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const refused = await put({ ...before, capability: toBob })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.deepStrictEqual((await read()).json(), before)
+    })
+
+    it("refuses a change to any other member on that member's pointer", async () => {
+      const before = (await read()).json()
+      // A `fromSpace` change is caught by the body parser first, since the
+      // capability's `invocationTarget` no longer equals it.
+      const cases: Array<[Record<string, unknown>, string]> = [
+        [{ collections: [{ id: 'notes' }] }, '#/collections'],
+        [
+          { fromSpace: 'https://source.example/space/other/' },
+          '#/capability/invocationTarget'
+        ]
+      ]
+      for (const [change, pointer] of cases) {
+        const refused = await put({ ...before, ...change })
+        assert.equal(refused.statusCode, 400, refused.payload)
+        assert.equal(refused.json().type, ProblemTypes.INVALID_REQUEST_BODY)
+        assert.equal(refused.json().errors[0].pointer, pointer, pointer)
+      }
+      const otherId = await put({ ...before, id: 'other' })
+      assert.equal(otherId.statusCode, 400)
+      assert.equal(otherId.json().errors[0].pointer, '#/id')
+      const badPause = await put({ ...before, pausedAt: 42 })
+      assert.equal(badPause.statusCode, 400)
+      assert.equal(badPause.json().errors[0].pointer, '#/pausedAt')
+      assert.deepStrictEqual((await read()).json(), before)
+    })
+
+    it('takes If-Match and If-None-Match: *', async () => {
+      const current = await read()
+      const record = current.json()
+      const stale = await put(
+        { ...record, pausedAt: 'x' },
+        { 'if-match': '"stale.0.0.none"' }
+      )
+      assert.equal(stale.statusCode, 412, stale.payload)
+      assert.equal(stale.json().type, ProblemTypes.PRECONDITION_FAILED)
+      const exists = await put(record, { 'if-none-match': '*' })
+      assert.equal(exists.statusCode, 412)
+      assert.deepStrictEqual((await read()).json(), record)
+
+      const fresh = await put(
+        { ...record, pausedAt: 'x' },
+        { 'if-match': String(current.headers.etag) }
+      )
+      assert.equal(fresh.statusCode, 204, fresh.payload)
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).state,
+        'paused'
+      )
+      // Back to running for the cases that follow.
+      const { pausedAt: _pausedAt, ...resumed } = (await read()).json()
+      assert.equal((await put(resumed)).statusCode, 204)
+    })
+
+    it('creates an absent registration, as a POST would', async () => {
+      const before = (await read()).json()
+      const created = await call({
+        server: replica,
+        path: '/space/put-dst/replicas/second',
+        method: 'PUT',
+        json: { ...before, id: 'second' }
+      })
+      assert.equal(created.statusCode, 201, created.payload)
+      assert.equal(
+        created.headers.location,
+        'https://replica.example/space/put-dst/replicas/second'
+      )
+      assert.match(String(created.headers.etag), /^"[^".]+\.\d+\.\d+\.[^".]+"$/)
+      assert.equal(created.json().id, 'second')
+      const status = await statusOf({
+        server: replica,
+        spaceId: 'put-dst',
+        replicaId: 'second'
+      })
+      assert.equal(status.state, 'idle')
+      const meta = await call({ server: replica, path: '/space/put-dst/meta' })
+      assert.equal(meta.json().replicas.length, 2)
+
+      // A create may be made paused.
+      const pausedCreate = await call({
+        server: replica,
+        path: '/space/put-dst/replicas/third',
+        method: 'PUT',
+        json: { ...before, id: 'third', pausedAt: 'now' }
+      })
+      assert.equal(pausedCreate.statusCode, 201, pausedCreate.payload)
+      assert.equal(pausedCreate.json().pausedAt, pausedCreate.json().updatedAt)
+      assert.equal(
+        (
+          await statusOf({
+            server: replica,
+            spaceId: 'put-dst',
+            replicaId: 'third'
+          })
+        ).state,
+        'paused'
+      )
+    })
+
+    it('is controller-only', async () => {
+      const before = (await read()).json()
+      const asBob = await call({
+        server: replica,
+        path,
+        method: 'PUT',
+        json: before,
+        signer: bob.signer
+      })
+      assert.equal(asBob.statusCode, 404)
     })
   })
 

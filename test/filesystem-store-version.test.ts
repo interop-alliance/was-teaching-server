@@ -311,11 +311,68 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, six, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 6)
+  it('stamps an empty store at the current version, seven, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 7)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 6)
+    assert.equal(await storedVersion(dataDir), 7)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
+  })
+
+  it('refuses a layout-6 store that holds an unstamped registration file, on every boot', async () => {
+    await stamp(dataDir, 6)
+    const spaceDir = path.join(dataDir, 'spaces', 'some-space')
+    await mkdir(spaceDir, { recursive: true })
+    await writeFile(
+      path.join(spaceDir, '.replica.peer.json'),
+      JSON.stringify({
+        id: 'peer',
+        fromSpace: 'https://peer.example/space/s/',
+        toSpace: 'https://was.example/space/some-space/',
+        capability: {},
+        role: 'source',
+        _generation: 'z1',
+        _spaceGeneration: 'z2'
+      })
+    )
+    // The loop state beside it carries no stamp and is not a registration.
+    await writeFile(
+      path.join(spaceDir, '.replica.peer.state.json'),
+      '{"collections":{}}'
+    )
+    for (let boot = 0; boot < 2; boot++) {
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        (err: Error) =>
+          err instanceof StoreVersionError &&
+          err.message.includes('1 replica registration file(s)')
+      )
+      assert.equal(await storedVersion(dataDir), 6)
+    }
+  })
+
+  it('stamps a layout-6 store holding a stamped registration file at layout 7', async () => {
+    await stamp(dataDir, 6)
+    const spaceDir = path.join(dataDir, 'spaces', 'some-space')
+    await mkdir(spaceDir, { recursive: true })
+    await writeFile(
+      path.join(spaceDir, '.replica.peer.json'),
+      JSON.stringify({
+        id: 'peer',
+        fromSpace: 'https://peer.example/space/s/',
+        toSpace: 'https://was.example/space/some-space/',
+        capability: {},
+        role: 'source',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        updatedAtCounter: 0,
+        originId: 'o',
+        _generation: 'z1',
+        _spaceGeneration: 'z2'
+      })
+    )
+    // A file that does not parse is not a registration.
+    await writeFile(path.join(spaceDir, '.replica.bad.json'), '{not json')
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 7)
   })
 
   it('refuses a layout-1 store that holds a Space, on every boot', async () => {
@@ -470,7 +527,7 @@ describe('Filesystem store version', () => {
       '{"deleted":true,"feedPosition":2}'
     )
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 6)
+    assert.equal(await storedVersion(dataDir), 7)
   })
 
   it('refuses a store.json with no integer version', async () => {

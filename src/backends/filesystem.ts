@@ -27,8 +27,7 @@ import {
   PayloadTooLargeError,
   KeystoreStateConflictError,
   KeyIdConflictError,
-  DuplicateRevocationError,
-  IdConflictError
+  DuplicateRevocationError
 } from '../errors.js'
 import {
   DEFAULT_MAX_UPLOAD_BYTES,
@@ -207,6 +206,10 @@ import {
   assertMetaWritePrecondition,
   assertCollectionWritePrecondition
 } from '../lib/preconditions.js'
+import {
+  decideReplicaWrite,
+  replicaWriteRequestName
+} from '../lib/replicaRecord.js'
 import {
   type ImportedPolicy,
   archivedPolicyFile,
@@ -8574,12 +8577,12 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Stores a registration, create-only, under the Space gate and only into a
-   * Space that still has its Metadata object. The create is a hard link, so
-   * two racing creates under one id cannot both succeed.
+   * Stores a registration, create-only: `writeReplica` with no precondition,
+   * refusing a registration already stored under the id.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.record {ReplicaRegistration}
+   * @param options.pullsChunks {boolean}
    * @returns {Promise<StoredReplica>}
    */
   async createReplica({
@@ -8591,37 +8594,80 @@ export class FileSystemBackend implements StorageBackend {
     record: ReplicaRegistration
     pullsChunks: boolean
   }): Promise<StoredReplica> {
+    const { stored } = await this.writeReplica({
+      spaceId,
+      record,
+      pullsChunks,
+      createOnly: true
+    })
+    return stored
+  }
+
+  /**
+   * Creates or replaces a registration under its preconditions: under the
+   * Space gate, into a Space that still has its Metadata object, and under
+   * the registration's own key, so a loop state write or a delete cannot
+   * interleave. The stored record is read first and the write decided
+   * against it (`decideReplicaWrite`). A create removes a state file an
+   * earlier registration under the id left, and advances the Space Metadata
+   * object's local segment; a replacement keeps both.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.record {ReplicaRegistration}   the client's shape
+   * @param options.pullsChunks {boolean}
+   * @param [options.createOnly] {boolean}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<{ stored: StoredReplica, prior?: StoredReplica }>}
+   */
+  async writeReplica({
+    spaceId,
+    record,
+    pullsChunks,
+    createOnly = false,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    record: ReplicaRegistration
+    pullsChunks: boolean
+    createOnly?: boolean
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<{ stored: StoredReplica; prior?: StoredReplica }> {
     const replicaId = record.id
     const filePath = this.#replicaFile({ spaceId, replicaId })
     return this.#underSpaceWrite({
       spaceId,
-      container: { requestName: 'Register Replica' },
+      container: { requestName: replicaWriteRequestName({ createOnly }) },
       write: () =>
         this.#writeMutex.run(
           this.#replicaLockKey({ spaceId, replicaId }),
           async () => {
-            const spaceMetadata = await this.getSpaceMetadata({ spaceId })
-            const stored: StoredReplica = {
+            const { stored, prior } = await decideReplicaWrite({
+              prior: await this.#readReplicaFile(filePath),
               record,
-              generation: newGeneration(),
-              spaceGeneration: resolveGeneration(spaceMetadata?.metaGeneration),
-              pullsChunks
-            }
-            try {
-              await atomicCreateFile({
-                filePath,
-                data: JSON.stringify({
-                  ...record,
-                  _generation: stored.generation,
-                  _spaceGeneration: stored.spaceGeneration,
-                  _pullsChunks: pullsChunks
-                })
+              pullsChunks,
+              clock: this.#clock,
+              currentSpaceGeneration: async () =>
+                resolveGeneration(
+                  (await this.getSpaceMetadata({ spaceId }))?.metaGeneration
+                ),
+              createOnly,
+              ifMatch,
+              ifNoneMatch
+            })
+            await atomicWriteFile({
+              filePath,
+              data: JSON.stringify({
+                ...stored.record,
+                _generation: stored.generation,
+                _spaceGeneration: stored.spaceGeneration,
+                _pullsChunks: stored.pullsChunks
               })
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-                throw new IdConflictError({ kind: 'Replica' })
-              }
-              throw err
+            })
+            if (prior !== undefined) {
+              return { stored, prior }
             }
             // A state file left by an earlier registration under this id
             // belongs to that registration.
@@ -8631,7 +8677,7 @@ export class FileSystemBackend implements StorageBackend {
             // The served Space Metadata object lists this record under
             // `replicas`, so its validator advances with the registration.
             await this.#advanceSpaceMetaLocal({ spaceId })
-            return stored
+            return { stored }
           }
         )
     })
@@ -8639,11 +8685,16 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Reads a registration file into its stored form, `undefined` when the
-   * file is absent or carries no generation. A file written before the
-   * registration recorded `pullsChunks` reads as `false`: such a
-   * registration pulls no chunk sets until it is made again.
+   * file is absent. A file that is present but carries no generation, no
+   * Space generation or no write stamp is a store fault (`StorageError`),
+   * not an absence: the layout migration refuses such a store at boot, so
+   * one found later was damaged, and a create over it would overwrite it
+   * and drop its loop state. A file written before the registration
+   * recorded `pullsChunks` reads as `false`: such a registration pulls no
+   * chunk sets until it is made again.
    * @param filePath {string}
    * @returns {Promise<StoredReplica | undefined>}
+   * @throws {StorageError}
    */
   async #readReplicaFile(filePath: string): Promise<StoredReplica | undefined> {
     const raw = await this.#readJsonFile<
@@ -8653,12 +8704,19 @@ export class FileSystemBackend implements StorageBackend {
         _pullsChunks?: boolean
       }
     >(filePath)
-    if (
-      raw === undefined ||
-      typeof raw._generation !== 'string' ||
-      typeof raw._spaceGeneration !== 'string'
-    ) {
+    if (raw === undefined) {
       return undefined
+    }
+    if (
+      typeof raw._generation !== 'string' ||
+      typeof raw._spaceGeneration !== 'string' ||
+      !isWriteStamp(raw)
+    ) {
+      throw new StorageError({
+        cause: new Error(
+          `The replica registration file ${filePath} carries no generation or write stamp.`
+        )
+      })
     }
     const {
       _generation: generation,

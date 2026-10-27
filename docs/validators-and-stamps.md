@@ -376,3 +376,28 @@ write a policy whatever the Resource's state.
 
 The Space listing's `public` flag reports the Collection's own policy only, not
 one inherited from the Space.
+
+## Replica registrations as versioned records
+
+A replica registration (see [replication.md](replication.md)) is a versioned
+record. Each write, POST or `PUT`, goes through the backend's `writeReplica`,
+whose decision is shared by both backends (`decideReplicaWrite` in
+`src/lib/replicaRecord.ts`) and made inside the write's critical section from
+the registration read there: the create-only conflict, the fixed-member
+comparison, the preconditions, the stamp, and `pausedAt` from its presence on
+the client's shape. The stamp is minted with the store's clock, and the
+generation is minted at the first write and kept for the record's life. The
+served record carries the stamp members beside its own, and a value for them in
+a write body is ignored. The `ETag` is the four-segment shape. `PUT` takes
+`If-Match` / `If-None-Match: *`, evaluated by the backend against the stored
+registration atomically with the write, and answers 412 on a miss. Delete
+Replica removes the record outright, with no tombstone.
+
+The filesystem backend stores the stamp members in `.replica.<id>.json` itself,
+beside `_generation`, `_spaceGeneration` and `_pullsChunks`. Postgres keeps them
+in the `updated_at`, `updated_at_counter` and `origin_id` columns of `replicas`,
+out of the `record` jsonb. A store that holds an unstamped registration is
+refused (see [filesystem-layout.md](filesystem-layout.md)).
+
+A replacement does not change the Space Metadata object's served `replicas`
+member, so it does not advance that object's local segment. A create does.

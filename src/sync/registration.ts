@@ -88,7 +88,10 @@ export function peerUrlOf({
 
 /**
  * Parses a registration body into the record to store. Members this server
- * does not know are dropped.
+ * does not know are dropped, and so are the stamp members, which the write
+ * sets. `pausedAt` is kept as a marker: its presence means the registration
+ * is paused, and the write replaces its value with the server's own time,
+ * so it need only be a string here.
  *
  * @param options {object}
  * @param options.body {unknown}   the request body
@@ -115,7 +118,8 @@ export function parseReplicaRegistration({
   if (!isPlainObject(body)) {
     return refuse('The registration must be a JSON object.', '#')
   }
-  const { id, fromSpace, toSpace, capability, collections, role } = body
+  const { id, fromSpace, toSpace, capability, collections, role, pausedAt } =
+    body
 
   if (typeof id !== 'string' || !isReplicaId(id)) {
     return refuse(
@@ -142,6 +146,13 @@ export function parseReplicaRegistration({
   }
   if (role !== 'source') {
     return refuse('The registration "role" must be "source".', '#/role')
+  }
+  if (pausedAt !== undefined && typeof pausedAt !== 'string') {
+    return refuse(
+      'The registration "pausedAt", when present, must be a string. Its ' +
+        'value is set by the server.',
+      '#/pausedAt'
+    )
   }
 
   let selected: Array<{ id: string }> | undefined
@@ -211,7 +222,8 @@ export function parseReplicaRegistration({
     toSpace: localSpaceUrl,
     capability: pull,
     ...(selected !== undefined && { collections: selected }),
-    role
+    role,
+    ...(pausedAt !== undefined && { pausedAt })
   }
 }
 

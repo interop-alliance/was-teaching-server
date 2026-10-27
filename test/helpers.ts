@@ -1325,7 +1325,8 @@ export async function signedInject({
   capability,
   json,
   body,
-  contentType
+  contentType,
+  headers: extraHeaders = {}
 }: {
   server: { fastify: FastifyInstance; serverUrl: string }
   path: string
@@ -1335,6 +1336,8 @@ export async function signedInject({
   json?: object
   body?: Uint8Array
   contentType?: string
+  /** headers sent outside the signature, such as `if-match` */
+  headers?: Record<string, string>
 }): Promise<LightMyRequestResponse> {
   const url = new URL(path, server.serverUrl).toString()
   const spaceUrl = new URL(
@@ -1365,6 +1368,7 @@ export async function signedInject({
     url: path,
     headers: {
       ...(headers as Record<string, string>),
+      ...extraHeaders,
       host: new URL(server.serverUrl).host
     },
     ...(payload !== undefined && { payload })

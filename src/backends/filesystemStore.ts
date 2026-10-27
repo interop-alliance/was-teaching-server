@@ -27,6 +27,7 @@ import {
 import fs from 'node:fs'
 import type { Dirent } from 'node:fs'
 import type { FastifyBaseLogger } from 'fastify'
+import { isWriteStamp } from '@interop/storage-core'
 import {
   COLLECTION_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
@@ -109,7 +110,14 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // earlier layout holds none, so there is nothing to convert. The step
   // exists so that a server built before this layout, which neither
   // reclaims staging nor finishes a torn swap, refuses the store.
-  async () => {}
+  async () => {},
+  // v7: a replica registration is a versioned record, with a write stamp on
+  // its record file, and `PUT` at its URL replaces it in place. A
+  // registration file written at an earlier layout carries no stamp, and
+  // there is no stamping step: a store holding one is refused, every boot,
+  // until it is wiped or the registration is made again. A store with none
+  // passes and is stamped at this version.
+  refuseUnstampedReplicas
 ]
 
 /**
@@ -188,6 +196,25 @@ export function isPolicyFileName(fileName: string): boolean {
 }
 
 /**
+ * Each Space dir under `spacesDir` with its entries, for the layout steps
+ * that look for a file kind across every Space. Staging temp files left by a
+ * killed process are not Spaces.
+ * @param spacesDir {string}
+ * @returns {AsyncGenerator<{ spaceDir: string, entries: Dirent[] }>}
+ */
+async function* spaceDirs(
+  spacesDir: string
+): AsyncGenerator<{ spaceDir: string; entries: Dirent[] }> {
+  for (const space of await readDirEntries(spacesDir)) {
+    if (!space.isDirectory() || space.name.startsWith(TEMP_FILE_PREFIX)) {
+      continue
+    }
+    const spaceDir = path.join(spacesDir, space.name)
+    yield { spaceDir, entries: await readDirEntries(spaceDir) }
+  }
+}
+
+/**
  * The layout step that refuses a store holding a policy file written before
  * policies carried write stamps: a Space's `.space.policy.json`, or a
  * Collection's `.collection.policy.json` or `.r.<resourceId>.policy.json`.
@@ -203,12 +230,8 @@ async function refuseUnstampedPolicies({
 }): Promise<void> {
   const spacesDir = path.join(dataDir, 'spaces')
   let count = 0
-  for (const space of await readDirEntries(spacesDir)) {
-    if (!space.isDirectory() || space.name.startsWith(TEMP_FILE_PREFIX)) {
-      continue
-    }
-    const spaceDir = path.join(spacesDir, space.name)
-    for (const entry of await readDirEntries(spaceDir)) {
+  for await (const { spaceDir, entries } of spaceDirs(spacesDir)) {
+    for (const entry of entries) {
       if (entry.isFile() && entry.name === SPACE_POLICY_FILE_NAME) {
         count++
       } else if (entry.isDirectory()) {
@@ -228,6 +251,54 @@ async function refuseUnstampedPolicies({
         'before policies carried write stamps, and there is no stamping ' +
         'migration. Wipe the data directory, or restore each Space from an ' +
         'export archive into an empty store.'
+    })
+  }
+}
+
+/**
+ * The layout step that refuses a store holding a replica registration file
+ * (`.replica.<replicaId>.json`, not the `.state.json` beside it) with no write
+ * stamp in any Space dir.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @returns {Promise<void>}
+ */
+async function refuseUnstampedReplicas({
+  dataDir
+}: {
+  dataDir: string
+}): Promise<void> {
+  const spacesDir = path.join(dataDir, 'spaces')
+  let count = 0
+  for await (const { spaceDir, entries } of spaceDirs(spacesDir)) {
+    for (const entry of entries) {
+      if (
+        !entry.isFile() ||
+        !/^\.replica\..+\.json$/.test(entry.name) ||
+        entry.name.endsWith('.state.json')
+      ) {
+        continue
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(
+          await readFile(path.join(spaceDir, entry.name), 'utf8')
+        )
+      } catch {
+        continue
+      }
+      if (!isWriteStamp(parsed)) {
+        count++
+      }
+    }
+  }
+  if (count > 0) {
+    throw new StoreVersionError({
+      detail:
+        `${spacesDir} holds ${count} replica registration file(s) written ` +
+        'before registrations carried write stamps, and there is no stamping ' +
+        'migration. Wipe the data directory, or remove the files and make ' +
+        'each registration again.'
     })
   }
 }

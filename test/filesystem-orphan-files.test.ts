@@ -26,7 +26,9 @@ import { Readable } from 'node:stream'
 import { chunkDirName, fileNameFor } from '@interop/space-archive'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { StorageError } from '../src/errors.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
+import { replicaRegistration } from './helpers.js'
 
 const controller = 'did:key:z6MkOrphanFilesTestController'
 const spaceId = 'orphan-space'
@@ -378,6 +380,40 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     })
     return path.join(collectionDir, chunkDirName('live'))
   }
+
+  it('a registration file with no stamp fails the read instead of reading as absent', async () => {
+    const record = replicaRegistration({ id: 'peer', spaceId })
+    await backend.createReplica({ spaceId, record, pullsChunks: false })
+    const stateFile = path.join(
+      dataDir,
+      'spaces',
+      spaceId,
+      '.replica.peer.state.json'
+    )
+    assert.ok(
+      await backend.writeReplicaState({
+        spaceId,
+        replicaId: 'peer',
+        state: { collections: {} }
+      })
+    )
+    // Damage the registration file: the record without its stamp members.
+    await writeFile(
+      path.join(dataDir, 'spaces', spaceId, '.replica.peer.json'),
+      JSON.stringify(record)
+    )
+    await assert.rejects(
+      backend.getReplica({ spaceId, replicaId: 'peer' }),
+      (err: unknown) => err instanceof StorageError
+    )
+    // A create over it is refused the same way, so neither the file nor
+    // the loop state beside it is replaced.
+    await assert.rejects(
+      backend.createReplica({ spaceId, record, pullsChunks: false }),
+      (err: unknown) => err instanceof StorageError
+    )
+    assert.ok(await readFile(stateFile))
+  })
 
   it('Delete Chunk answers absent for a chunk file with no sidecar, and leaves it', async () => {
     const chunkDir = await writeLiveChunk()

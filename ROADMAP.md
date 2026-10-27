@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 229
+nextAvailableId: 230
 
 <!-- roadmap-order:index:start -->
 
@@ -83,8 +83,7 @@ Ready:
   the auxiliary Space's controller across Spaces
 - WAS-225 [M] (*) Client-annex clause: a ladder-signed replica pull gated on the
   annex document's replica pointer
-- WAS-227 [M] (*) Pause a replica registration, and replace its pull capability
-  in place (blocks 1)
+- WAS-226 [M] (*) Open the replicas route to a root-chained delegated invocation
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -94,13 +93,7 @@ Ready:
 - WAS-184 [L] (*) Write-time creation and revision statements
 - WAS-221 [L] (*) Registration check under the data backend's lock for a
   Resource apply
-
-Chains:
-
-- WAS-227 [M] (*) Pause a replica registration, and replace its pull capability
-  in place
-  - WAS-226 [M] (*) Open the replicas route to a root-chained delegated
-    invocation
+- WAS-229 [L] (*) A pause stops an in-flight pull cycle at its next apply
 
 **Performance**
 
@@ -1410,86 +1403,13 @@ log, once per replica server.
 
 ---
 
-### WAS-227: [M] (*) [blocks 1] Pause a replica registration, and replace its pull capability in place
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: replication, registration, wire-contract
-- discovered-from: freewallet FW-688 (2026-10-26)
-- blocks: WAS-226
-- touches:
-  - was-teaching-server: `src/routes.ts` (a PUT route on the registration),
-    `src/requests/ReplicaRequest.ts` (the PUT handler; `replicaEtag`, whose
-    comment says the record never changes; the Delete Replica refusal text),
-    `src/sync/replication.ts` (a per-registration pause; `status`),
-    `src/sync/registration.ts` (re-validation of a replacement),
-    `src/lib/webvhLogLocation.ts`, `src/types.ts` (a replace method on the
-    backend contract), both backends, `src/config.default.ts` (the
-    `REPLICATION_VERSION` comment), docs/replication.md ("Registrations", "The
-    pull loop", "Stalls and backoff", "Guards on Delete Replica and Update
-    Space"), ARCHITECTURE.md
-  - storage-core: `ReplicaRegistration` gains `pausedAt`; `ReplicaStatus.state`
-    gains `paused`
-  - wallet-attached-storage-spec: decision 0013 amended (against its "no PUT in
-    v1" and "only the removal of its registration stops a loop") and WASS-50's
-    text
-  - was-client: pause, resume, and capability replacement on `Space`
-  - was-conformance-suite: PWSCS-23 gains the PUT cases
-- acceptance:
-  - [ ] The registration record gains `pausedAt`, an ISO 8601 UTC time; absent
-        means not paused. A PUT on the registration URL writes and clears it
-  - [ ] A paused registration's loop does not run, at boot included, and
-        `status.state` reports `paused` while no cycle is in flight. Clearing
-        the member schedules a cycle at once
-  - [ ] A paused registration keeps mapping its did:webvh controller in
-        `webvhLogLocation.ts`, so the DID still resolves and the Delete Replica
-        guard still holds
-  - [ ] A PUT may also replace the pull capability, with the same `fromSpace`.
-        The new capability is validated as a POST's is (grantee this server's
-        DID, chain and actions, and a read of the source Space through it, which
-        also re-reads `pullsChunks`). The registration keeps its id, its loop,
-        and its `.replica.<id>.state.json` checkpoint, and the running loop uses
-        the new capability from its next cycle
-  - [ ] The registration's `ETag` moves on every PUT, and the served `replicas`
-        member on the Space Metadata object is unchanged by a PUT
-  - [ ] Both backends store the replaced record atomically, beside today's
-        create-only `createReplica`
-  - [ ] The Delete Replica refusal no longer advises add-then-remove
-  - [ ] `REPLICATION_VERSION` stays `0.1`; its comment in
-        `src/config.default.ts` (`:452-456`) names the pause and the in-place
-        replacement
-  - [ ] Two-server tests: a paused registration pulls nothing, reports `paused`,
-        and its DID resolves; a resume pulls; a replacement keeps the id and the
-        checkpoint, so the next cycle does not re-read the source from the start
-
-Context. A wallet's Stop keeps the copy as a snapshot. Deregistering would leave
-a promoted Space's controller unresolvable, and the guard refuses it
-(`ReplicaRequest.ts:232-251`, through `controllerUnmappedByRemoval`,
-`webvhLogLocation.ts:570`). Leaving the loop running would back off on 404
-against a source that refuses it, forever. Today the only pause is manager-wide
-(`#paused`, `pause()` and `resume()` in `src/sync/replication.ts`, `:265`,
-`:386-400`, checked in `#schedule` at `:520`), used by tests. A renewal or a
-re-start of a stopped replica also needs a new pull capability. Without an
-in-place replacement that is a new registration id with an empty checkpoint,
-since loop state is per id, and the copy is read again from the start.
-
-Wire details to settle with Dmitri before coding. The member name, its format,
-the PUT verb, and the `paused` state are decided. Not decided: the PUT body (the
-full record as a POST carries it, with only `capability` and `pausedAt` allowed
-to differ, is the obvious candidate), who sets the `pausedAt` value (the client
-or this server's clock), whether a PUT takes `If-Match`, and the registration
-`ETag`'s new shape. The CORS defaults already list PUT
-(`src/plugin.ts:554-562`).
-
-### WAS-226: [M] (*) [after WAS-227] Open the replicas route to a root-chained delegated invocation
+### WAS-226: [M] (*) Open the replicas route to a root-chained delegated invocation
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: replication, registration, zcap, client-annex
 - discovered-from: freewallet FW-688 (2026-10-26)
-- blocked-by: WAS-227
 - touches:
   - was-teaching-server: `src/requests/ReplicaRequest.ts` (each handler's
     `containerRule: 'controller-only'`, `:78`, `:144`, `:180`, `:224`, `:305`,
@@ -1744,6 +1664,38 @@ plane, by the rule the apply uses, and applies under no `replicaId`, the way a
 policy copy is written. The apply's own in-lock check therefore covers the
 control plane only, and the `replicaId`-optional mode is on the general apply
 contract rather than confined to the loop.
+
+---
+
+### WAS-229: [L] (*) A pause stops an in-flight pull cycle at its next apply
+
+- status: todo
+- priority: low
+- backend: *
+- labels: replication, registration
+- discovered-from: WAS-227 (2026-10-27)
+- acceptance:
+  - [ ] An apply made for a registration whose stored record carries `pausedAt`
+        resolves without writing, as one for a removed registration does, so a
+        pause takes effect at the next apply of a cycle in flight rather than
+        at the end of that cycle
+  - [ ] The pull loop treats that outcome as it treats `unregistered`: the
+        cycle ends, the loop ends, and the loop state drops `nextPullAt` and
+        the failure count as a pause at the start of a cycle does today
+  - [ ] A two-server test pauses a registration while a cycle is held mid-way
+        (the `getReplicaState` seam the capability-replacement test uses) and
+        shows no Resource lands after the PUT returns
+  - [ ] docs/replication.md ("The pull loop") says when a pause takes effect
+
+Context: a `PUT` that pauses a registration calls `wake`, and a cycle in flight
+is left to finish; the successor cycle reads `pausedAt` and ends the loop. A
+cycle over many Collections or large chunk sets keeps writing after the PUT
+returned. A removed registration does not have that gap: every apply checks the
+registration inside its critical section (`registrationStands` in
+`src/lib/replicaApply.ts`) and resolves `unregistered` once it is gone. A paused
+registration still stands under that check. Extending the check to `pausedAt`
+(both backends read the stored record there already) puts the pause on the same
+mechanism as the removal, with no cancellation state in the manager.
 
 ---
 

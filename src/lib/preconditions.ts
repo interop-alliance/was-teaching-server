@@ -2,9 +2,9 @@
  * Backend-agnostic conditional-write precondition evaluation (the
  * `conditional-writes` feature). Both storage backends evaluate `If-Match` /
  * `If-None-Match` against the current state of a Resource, a Space or
- * Collection Metadata object, a Resource Metadata object, a history log, or
- * an access-control policy through these helpers, so the 412 semantics
- * cannot drift between them. Callers MUST invoke them atomically with the
+ * Collection Metadata object, a Resource Metadata object, a history log, an
+ * access-control policy, or a replica registration through these helpers, so
+ * the 412 semantics cannot drift between them. Callers MUST invoke them atomically with the
  * write that follows (under the filesystem backend's per-record lock, or
  * inside the Postgres backend's row-locking transaction). The current state arrives as the record's `ETag`
  * (from `etagOf`, or `resourceMetaEtag` for a Resource's `/meta` object),
@@ -245,6 +245,43 @@ export function assertPolicyWritePrecondition({
 }): void {
   assertPrecondition({
     subject: `Policy '${policyPath}'`,
+    exists,
+    currentEtag,
+    ifMatch,
+    ifNoneMatch
+  })
+}
+
+/**
+ * Evaluates a replica registration write precondition against the stored
+ * registration. `If-None-Match: *` is the guarded create, and `If-Match` the
+ * compare-and-swap on the registration's current `ETag`. Throws
+ * `PreconditionFailedError` (412) when it is not met. MUST be called
+ * atomically with the write (under the filesystem backend's `replica:` key,
+ * or inside the Postgres backend's row-locking transaction).
+ * @param options {object}
+ * @param options.replicaId {string}   for the error detail
+ * @param options.exists {boolean}   whether the registration is stored
+ * @param [options.currentEtag] {string}   the registration's current `ETag`
+ * @param [options.ifMatch] {string}   the `If-Match` header value
+ * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
+ * @returns {void}
+ */
+export function assertReplicaWritePrecondition({
+  replicaId,
+  exists,
+  currentEtag,
+  ifMatch,
+  ifNoneMatch
+}: {
+  replicaId: string
+  exists: boolean
+  currentEtag?: string
+  ifMatch?: string
+  ifNoneMatch?: HeldValidators
+}): void {
+  assertPrecondition({
+    subject: `Replica registration '${replicaId}'`,
     exists,
     currentEtag,
     ifMatch,
