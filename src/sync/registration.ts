@@ -13,7 +13,8 @@ import type { DIDDoc } from '@interop/did-method-webvh'
 import {
   REPLICATION_IDENTIFIER,
   REPLICATION_VERSION,
-  SPEC_IDENTIFIER
+  SPEC_IDENTIFIER,
+  ENCRYPTED_COLLECTIONS_IDENTIFIER
 } from '../config.default.js'
 import {
   InvalidRequestBodyError,
@@ -265,7 +266,8 @@ export function storedProjectionOfCollection(
  * @param [options.signingKey] {ServerSigningKey}
  * @param options.peerFetch {PeerFetch}
  * @param options.logger {FastifyBaseLogger}
- * @returns {Promise<void>}
+ * @returns {Promise<{ pullsChunks: boolean }>}   whether the peer lists the
+ *   Encrypted Collections entry, so the loop pulls chunk sets
  * @throws {ReplicaRefusedError}
  */
 export async function assertReplicaAcceptable({
@@ -288,7 +290,7 @@ export async function assertReplicaAcceptable({
   signingKey: ServerSigningKey | undefined
   peerFetch: PeerFetch
   logger: FastifyBaseLogger
-}): Promise<void> {
+}): Promise<{ pullsChunks: boolean }> {
   if (spaceId === SERVER_SPACE_ID) {
     throw new ReplicaRefusedError({
       detail: 'The "server" Space is not replicated.',
@@ -338,9 +340,10 @@ export async function assertReplicaAcceptable({
     capability: record.capability
   })
   try {
-    await assertPeerServes({ peer, record, storage })
+    const { pullsChunks } = await assertPeerServes({ peer, record, storage })
     await assertPeerSpaceMatches({ peer, record, spaceMetadata, serverUrl })
     await assertImmutableMembersMatch({ peer, record, spaceId, storage })
+    return { pullsChunks }
   } catch (err) {
     if (err instanceof PeerRequestError) {
       throw new ReplicaRefusedError({
@@ -353,12 +356,18 @@ export async function assertReplicaAcceptable({
 
 /**
  * The peer's service description must list the replication specification at
- * this server's version, and an origin id that is not this server's.
+ * this server's version, and an origin id that is not this server's. The
+ * same read decides whether the peer lists the Encrypted Collections entry,
+ * which is what gives it chunk endpoints: a registration made against a
+ * peer that lists none pulls no chunk sets, since its chunk listing route
+ * does not exist and would answer every chunk pull with a 404 or a 405.
+ * The result is read once, here; a peer that drops the profile later is
+ * covered by making the registration again.
  * @param options {object}
  * @param options.peer {PeerClient}
  * @param options.record {ReplicaRegistration}
  * @param options.storage {StorageBackend}
- * @returns {Promise<void>}
+ * @returns {Promise<{ pullsChunks: boolean }>}
  */
 async function assertPeerServes({
   peer,
@@ -368,7 +377,7 @@ async function assertPeerServes({
   peer: PeerClient
   record: ReplicaRegistration
   storage: StorageBackend
-}): Promise<void> {
+}): Promise<{ pullsChunks: boolean }> {
   const { json } = await peer.readJson({
     url: peerUrlOf({ path: '/service', fromSpace: record.fromSpace }),
     expect: [200],
@@ -404,6 +413,9 @@ async function assertPeerServes({
         `The peer carries this server's own origin id ("${originId}"). ` +
         'Two servers that replicate need different origin ids.'
     })
+  }
+  return {
+    pullsChunks: entriesOf(ENCRYPTED_COLLECTIONS_IDENTIFIER).length > 0
   }
 }
 

@@ -8,10 +8,10 @@
  * Design departures from the filesystem backend (deliberate):
  * - Quota accounting is transactional (`spaces.usage_bytes`, maintained in the
  *   same transaction as every write/delete), making the per-Space capacity a
- *   HARD limit under concurrency. "Usage" is exactly the stored content bytes;
- *   Space and Collection Metadata objects, policies, and Resource metadata
- *   are not counted (a divergence from the filesystem's `du`, which counts
- *   every file).
+ *   HARD limit under concurrency. "Usage" is exactly the stored content bytes,
+ *   the chunk pull's staged chunk bytes included; Space and Collection
+ *   Metadata objects, policies, and Resource metadata are not counted (a
+ *   divergence from the filesystem's `du`, which counts every file).
  * - Conditional writes use row locks (`SELECT ... FOR UPDATE`) and
  *   transactions instead of the single-process `KeyedMutex`. The write stamps
  *   come from one in-memory hybrid logical clock per backend (see
@@ -80,6 +80,7 @@ import { parseJsonOrUndefined } from '../lib/jsonBytes.js'
 import {
   type ApplyResult,
   assertReceivableStamps,
+  chunkSetRefusal,
   decideCollectionApply,
   decideCollectionTombstoneApply,
   decideLogApply,
@@ -235,6 +236,7 @@ import type {
   ReplicaRegistration,
   ReplicaLoopState,
   StoredReplica,
+  ChunkStagingRun,
   SpaceExportEntries
 } from '../types.js'
 
@@ -628,13 +630,14 @@ interface ReplicaRow {
   record: ReplicaRegistration
   generation: string
   space_generation: string
+  pulls_chunks: boolean
 }
 
 /**
  * The column list `ReplicaRow` is selected by. The loop state is read on its
  * own.
  */
-const REPLICA_COLUMNS = 'record, generation, space_generation'
+const REPLICA_COLUMNS = 'record, generation, space_generation, pulls_chunks'
 
 /**
  * The stored registration a `replicas` row holds.
@@ -645,9 +648,19 @@ function storedReplicaFromRow(row: ReplicaRow): StoredReplica {
   return {
     record: row.record,
     generation: row.generation,
-    spaceGeneration: row.space_generation
+    spaceGeneration: row.space_generation,
+    pullsChunks: row.pulls_chunks
   }
 }
+
+/**
+ * The `resources` columns a content apply locks and decides on: the held
+ * content stamp, the tombstone mark, the creating members a received record
+ * may leave unset, and the bytes of a held history log, which is compared by
+ * them (`content` is NULL for every other Resource).
+ */
+type AppliedResourcePrior = StampColumns &
+  Pick<ResourceRow, 'deleted' | 'created_at' | 'created_by' | 'content'>
 
 /**
  * A feed position as node-postgres hands a `bigint` column over (a string),
@@ -732,6 +745,44 @@ export interface PostgresBackendOptions {
   originId?: string
   physicalClock?: () => number
   clockBoundMs?: number
+}
+
+/**
+ * The `WHERE` conditions that select the chunk staging rows in the scope the
+ * ids give: the Space, and the Collection, Resource and registration when
+ * named.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param [options.collectionId] {string}
+ * @param [options.resourceId] {string}
+ * @param [options.replicaId] {string}
+ * @returns {{ values: unknown[], conditions: string[] }}
+ */
+function stagingScope({
+  spaceId,
+  collectionId,
+  resourceId,
+  replicaId
+}: {
+  spaceId: string
+  collectionId?: string
+  resourceId?: string
+  replicaId?: string
+}): { values: unknown[]; conditions: string[] } {
+  const values: unknown[] = [spaceId]
+  const conditions = ['space_id = $1']
+  const scope: Array<[string, string | undefined]> = [
+    ['collection_id', collectionId],
+    ['resource_id', resourceId],
+    ['replica_id', replicaId]
+  ]
+  for (const [column, value] of scope) {
+    if (value !== undefined) {
+      values.push(value)
+      conditions.push(`${column} = $${values.length}`)
+    }
+  }
+  return { values, conditions }
 }
 
 export class PostgresBackend implements StorageBackend {
@@ -924,7 +975,8 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * The work `open()` runs on a freshly constructed backend: connect, create
-   * the schema when one is named, apply the migrations, and build the clock.
+   * the schema when one is named, apply the migrations, reclaim every chunk
+   * staging row (`#reclaimAllStaging`), and build the clock.
    * @param options {object}
    * @param [options.configuredOriginId] {string}   the configured origin id
    *   (`WAS_ORIGIN_ID`)
@@ -958,6 +1010,7 @@ export class PostgresBackend implements StorageBackend {
         originId: configuredOriginId
       })
       this.#originId = originId
+      await this.#reclaimAllStaging(client)
       // Seeded from the persisted mark, which can trail the last stamp minted
       // before a crash by up to a second; it persists a new mark as it advances.
       this.#clock = new HybridLogicalClock({
@@ -976,6 +1029,51 @@ export class PostgresBackend implements StorageBackend {
       // Destroy rather than pool-return the client, so the lifted timeout
       // never leaks into a request-path connection.
       client.release(true)
+    }
+  }
+
+  /**
+   * Removes every chunk staging row in the store, returning its bytes to
+   * each Space's usage counter, in one statement. Run at `open()`, before
+   * the backend serves anything: no pull loop owns staging at boot, and the
+   * loop stages again what it still needs. A Postgres swap is one
+   * transaction, so there is no torn run to finish. Logs a `warn` when
+   * anything was removed.
+   * @param client {pg.PoolClient}   the open's dedicated client
+   * @returns {Promise<void>}
+   */
+  async #reclaimAllStaging(client: pg.PoolClient): Promise<void> {
+    // A data-modifying CTE runs to completion whether or not the main query
+    // reads it, so the usage update runs with the delete.
+    const { rows } = await client.query<{ runs: number; bytes: string }>(
+      `WITH removed AS (
+         DELETE FROM chunk_staging
+         RETURNING space_id, collection_id, resource_id, replica_id,
+                   parent_etag, size
+       ),
+       freed AS (
+         SELECT space_id, SUM(size) AS bytes FROM removed GROUP BY space_id
+       ),
+       returned AS (
+         UPDATE spaces
+            SET usage_bytes = GREATEST(spaces.usage_bytes - freed.bytes, 0)
+           FROM freed
+          WHERE spaces.space_id = freed.space_id
+       )
+       SELECT
+         (SELECT COUNT(*)::int FROM (
+            SELECT DISTINCT space_id, collection_id, resource_id, replica_id,
+                            parent_etag
+              FROM removed
+          ) runs) AS runs,
+         (SELECT COALESCE(SUM(size), 0) FROM removed) AS bytes`
+    )
+    const runs = rows[0]!.runs
+    if (runs > 0) {
+      this.logger.warn(
+        { runs, bytes: Number(rows[0]!.bytes) },
+        'Removed the chunk staging an earlier process left'
+      )
     }
   }
 
@@ -1281,21 +1379,27 @@ export class PostgresBackend implements StorageBackend {
    * updated with the row present means the write would not fit:
    * `QuotaExceededError` (507), rolling back the enclosing transaction.
    * MUST run inside the same transaction as the content mutation. A zero
-   * delta writes nothing.
+   * delta writes nothing. `credit` lowers the usage the capacity is checked
+   * against, not the usage written: a staged chunk counts in full, and the
+   * check credits the live bytes the chunk pull's swap will free.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
    * @param options.delta {number}   signed byte delta (new minus old size)
+   * @param [options.credit] {number}   bytes a later step of the same
+   *   operation frees, subtracted for the capacity check only
    * @returns {Promise<void>}
    */
   async #applyUsageDelta({
     client,
     spaceId,
-    delta
+    delta,
+    credit = 0
   }: {
     client: pg.PoolClient
     spaceId: string
     delta: number
+    credit?: number
   }): Promise<void> {
     if (delta === 0) {
       return
@@ -1307,8 +1411,8 @@ export class PostgresBackend implements StorageBackend {
       `UPDATE spaces
           SET usage_bytes = GREATEST(usage_bytes + $2, 0)
         WHERE space_id = $1
-          AND ($3::bigint IS NULL OR usage_bytes + $2 <= $3::bigint)`,
-      [spaceId, delta, cap]
+          AND ($3::bigint IS NULL OR usage_bytes + $2 - $4 <= $3::bigint)`,
+      [spaceId, delta, cap, credit]
     )
     if (result.rowCount === 0) {
       throw new QuotaExceededError({
@@ -1576,9 +1680,9 @@ export class PostgresBackend implements StorageBackend {
     )
     // The Space total and the per-Collection breakdown are independent reads:
     // issue both on the pool at once rather than paying the two round trips
-    // serially. Per-Collection usage sums both Resource content bytes and
-    // chunk bytes (the `chunked-streams` feature) so the breakdown agrees with
-    // the Space total in the transactional counter.
+    // serially. Per-Collection usage sums Resource content bytes, chunk bytes
+    // (the `chunked-streams` feature) and the chunk pull's staged bytes, so
+    // the breakdown agrees with the Space total in the transactional counter.
     const [{ rows }, collectionRows] = await Promise.all([
       totalQuery,
       includeCollections
@@ -1589,6 +1693,9 @@ export class PostgresBackend implements StorageBackend {
                    WHERE space_id = $1
                  UNION ALL
                  SELECT collection_id, size AS bytes FROM chunks
+                   WHERE space_id = $1
+                 UNION ALL
+                 SELECT collection_id, size AS bytes FROM chunk_staging
                    WHERE space_id = $1
                ) usage_rows
                 GROUP BY collection_id
@@ -1617,7 +1724,8 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Reports a single Collection's usage (its `SUM(size_bytes)` slice), with
+   * Reports a single Collection's usage (its `SUM(size_bytes)` slice, chunk
+   * and staged chunk bytes included), with
    * `state` / `limit` derived from the Space total (the quota is a per-Space
    * limit).
    * @param options {object}
@@ -1643,6 +1751,8 @@ export class PostgresBackend implements StorageBackend {
          (SELECT COALESCE(SUM(size_bytes), 0) FROM resources
            WHERE space_id = $1 AND collection_id = $2)
          + (SELECT COALESCE(SUM(size), 0) FROM chunks
+           WHERE space_id = $1 AND collection_id = $2)
+         + (SELECT COALESCE(SUM(size), 0) FROM chunk_staging
            WHERE space_id = $1 AND collection_id = $2) AS collection_total`,
       [spaceId, collectionId]
     )
@@ -2397,7 +2507,8 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Removes a Collection's member rows inside the caller's transaction: its
-   * chunks and Resources, then its policies. The freed bytes are subtracted
+   * chunk staging, chunks and Resources, then its policies. The freed bytes
+   * are subtracted
    * from the Space usage counter. The `collections` row is left to the
    * caller. Shared by Delete Collection and by the apply path, which deletes
    * a Collection on a received tombstone and before it replaces one life of
@@ -2433,6 +2544,13 @@ export class PostgresBackend implements StorageBackend {
       spaceId,
       collectionId
     })
+    // Chunk staging hangs off the `collections` row, which a Delete
+    // Collection keeps as a tombstone, so it is removed here too.
+    const staging = await this.#deleteStaging({
+      client,
+      spaceId,
+      collectionId
+    })
     const { rows: deletedResourceRows } = await client.query<{
       size_bytes: string
     }>(
@@ -2442,6 +2560,7 @@ export class PostgresBackend implements StorageBackend {
     )
     const freedBytes =
       freedChunkBytes +
+      staging.freedBytes +
       deletedResourceRows.reduce(
         (total, row) => total + Number(row.size_bytes),
         0
@@ -3304,14 +3423,22 @@ export class PostgresBackend implements StorageBackend {
       // key's ON DELETE CASCADE does not fire -- remove the Resource's chunks
       // (the `chunked-streams` feature) explicitly in this same transaction so
       // they never outlive their parent, and return their bytes to the quota
-      // counter alongside the Resource's content bytes.
+      // counter alongside the Resource's content bytes. Every registration's
+      // chunk staging of the Resource goes with them.
       const freedChunkBytes = await this.#deleteChunks({
         client,
         spaceId,
         collectionId,
         resourceId
       })
-      const freedBytes = Number(prior.size_bytes) + freedChunkBytes
+      const staging = await this.#deleteStaging({
+        client,
+        spaceId,
+        collectionId,
+        resourceId
+      })
+      const freedBytes =
+        Number(prior.size_bytes) + freedChunkBytes + staging.freedBytes
       await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       // The deletion is a revision of the content record, so it mints a new
       // stamp over the prior one (a later re-create reads this row and mints
@@ -3410,6 +3537,40 @@ export class PostgresBackend implements StorageBackend {
       // attribution"), when stamped.
       ...(row.writer_id !== null && { writerId: row.writer_id })
     }
+  }
+
+  /**
+   * Reads the write stamp of a Resource's content record, live or a
+   * tombstone.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<{ stamp: Partial<WriteStamp>, deleted: boolean } | undefined>}
+   *   `undefined` when no row names the Resource
+   */
+  async getResourceContentStamp({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<{ stamp: Partial<WriteStamp>; deleted: boolean } | undefined> {
+    const { rows } = await this.#reader().query<
+      StampColumns & { deleted: boolean }
+    >(
+      `SELECT deleted, updated_at, updated_at_counter, origin_id
+         FROM resources
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+      [spaceId, collectionId, resourceId]
+    )
+    const row = rows[0]
+    if (row === undefined) {
+      return undefined
+    }
+    return { stamp: stampOfRow(row), deleted: row.deleted }
   }
 
   /**
@@ -4941,6 +5102,8 @@ export class PostgresBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.record {ReplicaRegistration}
+   * @param options.pullsChunks {boolean}   whether the pull loop reads the
+   *   chunk sets of chunked Resources from the source server
    * @returns {Promise<StoredReplica>}
    * @throws {SpaceNotFoundError}   the Space has no Metadata object (404)
    * @throws {IdConflictError}   the Space holds a registration under
@@ -4948,10 +5111,12 @@ export class PostgresBackend implements StorageBackend {
    */
   async createReplica({
     spaceId,
-    record
+    record,
+    pullsChunks
   }: {
     spaceId: string
     record: ReplicaRegistration
+    pullsChunks: boolean
   }): Promise<StoredReplica> {
     return this.#withTransaction(async client => {
       await this.#lockSpaceMetadata({ client, spaceId })
@@ -4969,22 +5134,23 @@ export class PostgresBackend implements StorageBackend {
       // inserts nothing.
       const { rowCount } = await client.query(
         `INSERT INTO replicas (space_id, replica_id, record, generation,
-                               space_generation)
-         VALUES ($1, $2, $3::jsonb, $4, $5)
+                               space_generation, pulls_chunks)
+         VALUES ($1, $2, $3::jsonb, $4, $5, $6)
          ON CONFLICT (space_id, replica_id) DO NOTHING`,
         [
           spaceId,
           record.id,
           JSON.stringify(record),
           generation,
-          spaceGeneration
+          spaceGeneration,
+          pullsChunks
         ]
       )
       if (!rowCount) {
         throw new IdConflictError({ kind: 'Replica' })
       }
       await this.#advanceSpaceMetaLocal({ client, spaceId })
-      return { record, generation, spaceGeneration }
+      return { record, generation, spaceGeneration, pullsChunks }
     })
   }
 
@@ -5469,7 +5635,6 @@ export class PostgresBackend implements StorageBackend {
     const contentType = resource.deleted
       ? resource.contentType
       : resource.input.contentType
-    const isLog = resourceId === WEBVH_LOG_RESOURCE_ID && content !== null
 
     return this.#withTransaction(async client => {
       const ended = await this.#beginApply({
@@ -5488,39 +5653,13 @@ export class PostgresBackend implements StorageBackend {
       if (resource.deleted && resourceId === WEBVH_LOG_RESOURCE_ID) {
         return { outcome: 'skipped' }
       }
-      // The held bytes are read only for a history log, which is compared
-      // by them.
-      type PriorRow = StampColumns &
-        Pick<ResourceRow, 'deleted' | 'created_at' | 'created_by' | 'content'>
-      const prior = await this.#lockRowForWrite<PriorRow>({
+      const { prior, stopped } = await this.#lockResourceForApply({
         client,
         spaceId,
-        rowKey: `${collectionId}/${resourceId}`,
-        lockingSelect: async () => {
-          const { rows } = await client.query<PriorRow>(
-            `SELECT updated_at, updated_at_counter, origin_id, deleted,
-                    created_at, created_by,
-                    ${isLog ? 'content' : 'NULL::bytea AS content'}
-               FROM resources
-              WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
-              FOR UPDATE`,
-            [spaceId, collectionId, resourceId]
-          )
-          return rows[0]
-        }
-      })
-      const live = prior !== undefined && !prior.deleted
-      const stopped = decideResourceApply({
+        collectionId,
         resourceId,
-        deleted: resource.deleted,
         stamp,
-        held: prior && stampOfRow(prior),
-        log: isLog
-          ? {
-              held: live ? (prior.content ?? undefined) : undefined,
-              incoming: content
-            }
-          : undefined
+        content
       })
       if (stopped !== undefined) {
         return stopped
@@ -5528,103 +5667,786 @@ export class PostgresBackend implements StorageBackend {
 
       // A tombstone takes the chunks with it, as Delete Resource does. A
       // soft delete is an UPDATE, so the foreign key's cascade does not fire.
-      let freedChunkBytes = 0
-      if (content === null && prior !== undefined) {
-        freedChunkBytes = await this.#deleteChunks({
+      // It takes every registration's chunk staging of the Resource too,
+      // which a Resource never held here can have.
+      let freedBytes = 0
+      if (content === null) {
+        if (prior !== undefined) {
+          freedBytes += await this.#deleteChunks({
+            client,
+            spaceId,
+            collectionId,
+            resourceId
+          })
+        }
+        const staging = await this.#deleteStaging({
           client,
           spaceId,
           collectionId,
           resourceId
         })
+        freedBytes += staging.freedBytes
       }
 
-      // The Collection row is locked already (`#beginApply`), so the
-      // position is taken only by a record that is stored.
-      const feedPosition = (await this.#takeFeedPosition({
+      const parentDelta = await this.#writeAppliedResourceRow({
         client,
         spaceId,
-        collectionId
-      }))!
-      const size = content?.length ?? 0
-      // The members the origin's content write set. A live Resource takes
-      // them as received, `createdBy` cleared when absent. A tombstone keeps
-      // the held creator when none is received, as a local delete keeps it.
-      const storedCreatedAt = createdAt ?? prior?.created_at ?? stamp.updatedAt
-      const storedCreatedBy =
-        createdBy ?? (content === null ? (prior?.created_by ?? null) : null)
-      // The `/meta` record and `custom` stay as they stand on a live row a
-      // live Resource replaces. A tombstone on either side has none.
-      const written = await this.#insertOrUpsertVersioned({
-        client,
-        insertSql: `
-          INSERT INTO resources (
-            space_id, collection_id, resource_id, content_type, content,
-            is_json, size_bytes, generation, custom, deleted, created_at,
-            updated_at, updated_at_counter, origin_id, created_by, epoch,
-            writer_id, feed_position
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17)`,
-        priorSizeSql: `SELECT size_bytes AS prior_size, deleted AS prior_deleted
-             FROM resources
-            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-        conflictSql: `
-           ON CONFLICT (space_id, collection_id, resource_id) DO UPDATE SET
-             content_type = EXCLUDED.content_type,
-             content = EXCLUDED.content,
-             is_json = EXCLUDED.is_json,
-             size_bytes = EXCLUDED.size_bytes,
-             generation = EXCLUDED.generation,
-             meta_generation = CASE
-               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
-               ELSE resources.meta_generation END,
-             meta_updated_at = CASE
-               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
-               ELSE resources.meta_updated_at END,
-             meta_updated_at_counter = CASE
-               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
-               ELSE resources.meta_updated_at_counter END,
-             meta_origin_id = CASE
-               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
-               ELSE resources.meta_origin_id END,
-             custom = CASE
-               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
-               ELSE resources.custom END,
-             deleted = EXCLUDED.deleted,
-             created_at = EXCLUDED.created_at,
-             updated_at = EXCLUDED.updated_at,
-             updated_at_counter = EXCLUDED.updated_at_counter,
-             origin_id = EXCLUDED.origin_id,
-             created_by = EXCLUDED.created_by,
-             epoch = EXCLUDED.epoch,
-             writer_id = EXCLUDED.writer_id,
-             feed_position = EXCLUDED.feed_position`,
-        values: [
-          spaceId,
-          collectionId,
-          resourceId,
-          contentType,
-          content,
-          content !== null && isJsonContentType(contentType),
-          size,
-          generation,
-          content === null,
-          storedCreatedAt,
-          ...stampValues(stamp),
-          storedCreatedBy,
-          resource.deleted ? null : (resource.epoch ?? null),
-          writerId ?? null,
-          feedPosition
-        ],
-        createOnly: false,
+        collectionId,
+        resourceId,
         generation,
-        conflictDetail: `Resource '${resourceId}' already exists.`
+        stamp,
+        createdAt,
+        createdBy,
+        writerId,
+        contentType,
+        content,
+        epoch: resource.deleted ? undefined : resource.epoch,
+        prior
       })
       // Usage delta after the write, from the size the write replaced, so a
       // `QuotaExceededError` rolls the whole apply back.
-      const delta = size - written.priorSizeBytes - freedChunkBytes
-      await this.#applyUsageDelta({ client, spaceId, delta })
+      await this.#applyUsageDelta({
+        client,
+        spaceId,
+        delta: parentDelta - freedBytes
+      })
       return { outcome: 'applied' }
     })
+  }
+
+  /**
+   * Locks the `resources` row a content apply writes, re-reading it under
+   * the same-key create lock when it is absent (`#lockRowForWrite`), and
+   * decides the apply against the held content record
+   * (`decideResourceApply`). Shared by `applyResource` and
+   * `applyResourceWithChunks`, inside their transaction, after
+   * `#beginApply`.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.stamp {WriteStamp}   the received content stamp
+   * @param options.content {Buffer | null}   the received representation,
+   *   `null` for a tombstone
+   * @returns {Promise<{ prior?: AppliedResourcePrior,
+   *   stopped?: ApplyResult }>}   the held row, if any, and the result that
+   *   ends the apply when the received record is not to be stored
+   */
+  async #lockResourceForApply({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    stamp,
+    content
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    stamp: WriteStamp
+    content: Buffer | null
+  }): Promise<{ prior?: AppliedResourcePrior; stopped?: ApplyResult }> {
+    const isLog = resourceId === WEBVH_LOG_RESOURCE_ID && content !== null
+    // The held bytes are read only for a history log, which is compared by
+    // them.
+    const prior = await this.#lockRowForWrite<AppliedResourcePrior>({
+      client,
+      spaceId,
+      rowKey: `${collectionId}/${resourceId}`,
+      lockingSelect: async () => {
+        const { rows } = await client.query<AppliedResourcePrior>(
+          `SELECT updated_at, updated_at_counter, origin_id, deleted,
+                  created_at, created_by,
+                  ${isLog ? 'content' : 'NULL::bytea AS content'}
+             FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            FOR UPDATE`,
+          [spaceId, collectionId, resourceId]
+        )
+        return rows[0]
+      }
+    })
+    const live = prior !== undefined && !prior.deleted
+    const stopped = decideResourceApply({
+      resourceId,
+      deleted: content === null,
+      stamp,
+      held: prior && stampOfRow(prior),
+      log: isLog
+        ? {
+            held: live ? (prior.content ?? undefined) : undefined,
+            incoming: content
+          }
+        : undefined
+    })
+    return { prior, stopped }
+  }
+
+  /**
+   * Stores a received Resource content record, live or a tombstone, on the
+   * row `#lockResourceForApply` locked, under the received generation and
+   * stamp, and takes the Collection's next feed position for it. A live
+   * Resource keeps the `/meta` record and `custom` of a live row it
+   * replaces; a tombstone on either side has none. Shared by `applyResource`
+   * and `applyResourceWithChunks`; the caller applies the usage delta.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @param [options.createdAt] {string}
+   * @param [options.createdBy] {IDID}
+   * @param [options.writerId] {string}
+   * @param options.contentType {string}
+   * @param options.content {Buffer | null}   `null` for a tombstone
+   * @param [options.epoch] {string}
+   * @param [options.prior] {AppliedResourcePrior}   the held row
+   * @returns {Promise<number>}   the stored size less the size it replaced
+   */
+  async #writeAppliedResourceRow({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    generation,
+    stamp,
+    createdAt,
+    createdBy,
+    writerId,
+    contentType,
+    content,
+    epoch,
+    prior
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    generation: string
+    stamp: WriteStamp
+    createdAt?: string
+    createdBy?: IDID
+    writerId?: string
+    contentType: string
+    content: Buffer | null
+    epoch?: string
+    prior?: AppliedResourcePrior
+  }): Promise<number> {
+    // The Collection row is locked already (`#beginApply`), so the
+    // position is taken only by a record that is stored.
+    const feedPosition = (await this.#takeFeedPosition({
+      client,
+      spaceId,
+      collectionId
+    }))!
+    const size = content?.length ?? 0
+    // The members the origin's content write set. A live Resource takes
+    // them as received, `createdBy` cleared when absent. A tombstone keeps
+    // the held creator when none is received, as a local delete keeps it.
+    const storedCreatedAt = createdAt ?? prior?.created_at ?? stamp.updatedAt
+    const storedCreatedBy =
+      createdBy ?? (content === null ? (prior?.created_by ?? null) : null)
+    // The `/meta` record and `custom` stay as they stand on a live row a
+    // live Resource replaces. A tombstone on either side has none.
+    const written = await this.#insertOrUpsertVersioned({
+      client,
+      insertSql: `
+        INSERT INTO resources (
+          space_id, collection_id, resource_id, content_type, content,
+          is_json, size_bytes, generation, custom, deleted, created_at,
+          updated_at, updated_at_counter, origin_id, created_by, epoch,
+          writer_id, feed_position
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10, $11, $12,
+                  $13, $14, $15, $16, $17)`,
+      priorSizeSql: `SELECT size_bytes AS prior_size, deleted AS prior_deleted
+           FROM resources
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+      conflictSql: `
+         ON CONFLICT (space_id, collection_id, resource_id) DO UPDATE SET
+           content_type = EXCLUDED.content_type,
+           content = EXCLUDED.content,
+           is_json = EXCLUDED.is_json,
+           size_bytes = EXCLUDED.size_bytes,
+           generation = EXCLUDED.generation,
+           meta_generation = CASE
+             WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+             ELSE resources.meta_generation END,
+           meta_updated_at = CASE
+             WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+             ELSE resources.meta_updated_at END,
+           meta_updated_at_counter = CASE
+             WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+             ELSE resources.meta_updated_at_counter END,
+           meta_origin_id = CASE
+             WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+             ELSE resources.meta_origin_id END,
+           custom = CASE
+             WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+             ELSE resources.custom END,
+           deleted = EXCLUDED.deleted,
+           created_at = EXCLUDED.created_at,
+           updated_at = EXCLUDED.updated_at,
+           updated_at_counter = EXCLUDED.updated_at_counter,
+           origin_id = EXCLUDED.origin_id,
+           created_by = EXCLUDED.created_by,
+           epoch = EXCLUDED.epoch,
+           writer_id = EXCLUDED.writer_id,
+           feed_position = EXCLUDED.feed_position`,
+      values: [
+        spaceId,
+        collectionId,
+        resourceId,
+        contentType,
+        content,
+        content !== null && isJsonContentType(contentType),
+        size,
+        generation,
+        content === null,
+        storedCreatedAt,
+        ...stampValues(stamp),
+        storedCreatedBy,
+        content === null ? null : (epoch ?? null),
+        writerId ?? null,
+        feedPosition
+      ],
+      createOnly: false,
+      generation,
+      conflictDetail: `Resource '${resourceId}' already exists.`
+    })
+    return size - written.priorSizeBytes
+  }
+
+  // The chunk pull (replication)
+
+  /**
+   * Stages one chunk a chunk pull read from the source server, in one
+   * transaction under the apply path's locks: the registration check
+   * (`replicaId`, as on `applyResource`) and a live Collection
+   * (`#beginApply`), then the staging row at the key of `run` and
+   * `chunkIndex`, replacing a row staged there before. The parent is not
+   * required to be held: a Resource replicated for the first time has no
+   * row until the swap. The registration's staging of the same Resource
+   * under any other parent revision is removed here, since the loop that
+   * owns it has moved past that revision. The bytes count toward usage. The
+   * capacity check credits the live chunks at every index staged under
+   * `run`, which the swap replaces, so a same-size rewrite of a stream fits
+   * under a quota its live set already fills. That credit is read from the
+   * rows under the lock. A staged chunk takes no feed position, and its
+   * stamp and generation are minted at the swap.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.replicaId] {string}   absent for a backend other than the
+   *   control plane, which holds no registrations
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.run {ChunkStagingRun}
+   * @param options.chunkIndex {number}
+   * @param options.input {ResourceInput}
+   * @param options.peerEtag {string}   the source server's `ETag` of the
+   *   chunk, opaque
+   * @returns {Promise<ApplyResult>}
+   * @throws {PayloadTooLargeError}   the body exceeds the upload cap
+   * @throws {QuotaExceededError}   the staged bytes would exceed the quota
+   */
+  async stageChunk({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    run,
+    chunkIndex,
+    input,
+    peerEtag
+  }: {
+    spaceId: string
+    replicaId?: string
+    collectionId: string
+    resourceId: string
+    run: ChunkStagingRun
+    chunkIndex: number
+    input: ResourceInput
+    peerEtag: string
+  }): Promise<ApplyResult> {
+    // Buffered before the transaction, so a slow body holds no row lock.
+    const bytes = await this.#bufferInputCapped(input)
+
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: []
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const superseded = await this.#deleteStaging({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        replicaId: run.replicaId,
+        exceptRun: run
+      })
+      const runKey = [
+        spaceId,
+        collectionId,
+        resourceId,
+        run.replicaId,
+        run.parentEtag
+      ]
+      const { rows } = await client.query<{ prior_size: string }>(
+        `WITH prior AS (
+           SELECT size FROM chunk_staging
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              AND replica_id = $4 AND parent_etag = $5 AND chunk_index = $6
+         )
+         INSERT INTO chunk_staging (
+           space_id, collection_id, resource_id, replica_id, parent_etag,
+           chunk_index, content_type, bytes, size, peer_etag
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (space_id, collection_id, resource_id, replica_id,
+                      parent_etag, chunk_index)
+         DO UPDATE SET
+           content_type = EXCLUDED.content_type,
+           bytes = EXCLUDED.bytes,
+           size = EXCLUDED.size,
+           peer_etag = EXCLUDED.peer_etag
+         RETURNING COALESCE((SELECT size FROM prior), 0) AS prior_size`,
+        [
+          ...runKey,
+          chunkIndex,
+          input.contentType,
+          bytes,
+          bytes.length,
+          peerEtag
+        ]
+      )
+      const { rows: creditRows } = await client.query<{ credit: string }>(
+        `SELECT COALESCE(SUM(c.size), 0) AS credit
+           FROM chunk_staging s
+           JOIN chunks c
+             ON c.space_id = s.space_id AND c.collection_id = s.collection_id
+            AND c.resource_id = s.resource_id
+            AND c.chunk_index = s.chunk_index
+          WHERE s.space_id = $1 AND s.collection_id = $2
+            AND s.resource_id = $3 AND s.replica_id = $4
+            AND s.parent_etag = $5`,
+        runKey
+      )
+      await this.#applyUsageDelta({
+        client,
+        spaceId,
+        delta:
+          bytes.length - Number(rows[0]!.prior_size) - superseded.freedBytes,
+        credit: Number(creditRows[0]!.credit)
+      })
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * The chunks staged under `run`, by ascending index, each with its size
+   * and the source server's `ETag` it was read under.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.run {ChunkStagingRun}
+   * @returns {Promise<Array<{ index: number, size: number,
+   *   peerEtag: string }>>}
+   */
+  async listStagedChunks({
+    spaceId,
+    collectionId,
+    resourceId,
+    run
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    run: ChunkStagingRun
+  }): Promise<Array<{ index: number; size: number; peerEtag: string }>> {
+    const { rows } = await this.#reader().query<{
+      chunk_index: number
+      size: string
+      peer_etag: string
+    }>(
+      `SELECT chunk_index, size, peer_etag FROM chunk_staging
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          AND replica_id = $4 AND parent_etag = $5
+        ORDER BY chunk_index`,
+      [spaceId, collectionId, resourceId, run.replicaId, run.parentEtag]
+    )
+    return rows.map(row => ({
+      index: row.chunk_index,
+      size: Number(row.size),
+      peerEtag: row.peer_etag
+    }))
+  }
+
+  /**
+   * Applies a live Resource content record with its chunk set, in one
+   * transaction: the registration check and the clock (`#beginApply`), the
+   * parent's row lock and the last-writer-wins decision as `applyResource`
+   * takes them. On a win, the live chunks in neither `kept` nor `staged` are
+   * deleted, the parent row is written as `applyResource` writes it and
+   * takes its feed position (first, since a chunk row needs its parent
+   * row), each staged row is moved into `chunks` under a fresh generation
+   * and a stamp minted here, and the registration's staging of the Resource
+   * is released. Every row moves by key in SQL, so no bytes pass through
+   * this process. On a loss or an equal stamp the staging is released and
+   * the result is `skipped`. The transaction's commit is the moment the
+   * parent and its set become visible together. Staged bytes already count
+   * toward usage, so the net delta is the parent's change less the live
+   * bytes removed or replaced and the staged bytes released unused.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.replicaId] {string}   absent for a backend other than the
+   *   control plane, which holds no registrations
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @param [options.createdAt] {string}
+   * @param [options.createdBy] {IDID}
+   * @param [options.writerId] {string}
+   * @param options.resource {object}   the received representation
+   * @param options.chunks {object}   the staging run, the live indexes the
+   *   source server's set keeps, and the indexes staged under the run
+   * @returns {Promise<ApplyResult>}   `refused` with `container-refused` for
+   *   a staged index with no staging row or a kept index with no live chunk
+   * @throws {PayloadTooLargeError}   the body exceeds the upload cap
+   * @throws {QuotaExceededError}   the parent's growth exceeds the quota
+   */
+  async applyResourceWithChunks({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    generation,
+    stamp,
+    createdAt,
+    createdBy,
+    writerId,
+    resource,
+    chunks
+  }: {
+    spaceId: string
+    replicaId?: string
+    collectionId: string
+    resourceId: string
+    generation: string
+    stamp: WriteStamp
+    createdAt?: string
+    createdBy?: IDID
+    writerId?: string
+    resource: { input: ResourceInput; epoch?: string }
+    chunks: { run: ChunkStagingRun; kept: number[]; staged: number[] }
+  }): Promise<ApplyResult> {
+    // Buffered before the transaction, so a slow body holds no row lock.
+    const content = await this.#bufferInputCapped(resource.input)
+
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: [stamp]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const resourceKey = [spaceId, collectionId, resourceId]
+      const releaseStaging = async (): Promise<number> => {
+        const { freedBytes } = await this.#deleteStaging({
+          client,
+          spaceId,
+          collectionId,
+          resourceId,
+          replicaId: chunks.run.replicaId
+        })
+        return freedBytes
+      }
+      const { prior, stopped } = await this.#lockResourceForApply({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        stamp,
+        content
+      })
+      if (stopped !== undefined) {
+        const releasedBytes = await releaseStaging()
+        await this.#applyUsageDelta({ client, spaceId, delta: -releasedBytes })
+        return stopped
+      }
+
+      const { rows: liveRows } = await client.query<{
+        chunk_index: number
+        size: string
+      }>(
+        `SELECT chunk_index, size FROM chunks
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          FOR UPDATE`,
+        resourceKey
+      )
+      const { rows: stagedRows } = await client.query<{ chunk_index: number }>(
+        `SELECT chunk_index FROM chunk_staging
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            AND replica_id = $4 AND parent_etag = $5
+          FOR UPDATE`,
+        [...resourceKey, chunks.run.replicaId, chunks.run.parentEtag]
+      )
+      const live = new Map(
+        liveRows.map(row => [row.chunk_index, Number(row.size)])
+      )
+      const refusal = chunkSetRefusal({
+        resourceId,
+        kept: chunks.kept,
+        staged: chunks.staged,
+        live: new Set(live.keys()),
+        stagedHeld: new Set(stagedRows.map(row => row.chunk_index))
+      })
+      if (refusal !== undefined) {
+        return refusal
+      }
+
+      const keep = new Set([...chunks.kept, ...chunks.staged])
+      const removed = [...live.keys()].filter(index => !keep.has(index))
+      const replacedBytes = chunks.staged.reduce(
+        (total, index) => total + (live.get(index) ?? 0),
+        0
+      )
+      let removedBytes = 0
+      if (removed.length > 0) {
+        const { rows } = await client.query<{ size: string }>(
+          `DELETE FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              AND chunk_index = ANY($4::int[])
+            RETURNING size`,
+          [...resourceKey, removed]
+        )
+        removedBytes = rows.reduce((total, row) => total + Number(row.size), 0)
+      }
+
+      // The parent row goes first: a chunk row's foreign key needs it, and a
+      // Resource replicated for the first time has none yet.
+      const parentDelta = await this.#writeAppliedResourceRow({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        generation,
+        stamp,
+        createdAt,
+        createdBy,
+        writerId,
+        contentType: resource.input.contentType,
+        content,
+        epoch: resource.epoch,
+        prior
+      })
+
+      let movedBytes = 0
+      if (chunks.staged.length > 0) {
+        // Each moved chunk is a local record: a fresh generation and a stamp
+        // from this store's clock, as a client's write at a free index gets.
+        const minted: EtagValidator[] = []
+        while (minted.length < chunks.staged.length) {
+          minted.push(
+            await mintValidator({ clock: this.#clock, prior: undefined })
+          )
+        }
+        const { rows } = await client.query<{ size: string }>(
+          `INSERT INTO chunks (
+             space_id, collection_id, resource_id, chunk_index, content_type,
+             bytes, size, generation, updated_at, updated_at_counter,
+             origin_id
+           )
+           SELECT s.space_id, s.collection_id, s.resource_id, s.chunk_index,
+                  s.content_type, s.bytes, s.size, v.generation,
+                  v.updated_at, v.updated_at_counter, v.origin_id
+             FROM chunk_staging s
+             JOIN unnest($6::int[], $7::text[], $8::text[], $9::int[],
+                         $10::text[])
+               AS v(chunk_index, generation, updated_at, updated_at_counter,
+                    origin_id)
+               ON v.chunk_index = s.chunk_index
+            WHERE s.space_id = $1 AND s.collection_id = $2
+              AND s.resource_id = $3 AND s.replica_id = $4
+              AND s.parent_etag = $5
+           ON CONFLICT (space_id, collection_id, resource_id, chunk_index)
+           DO UPDATE SET
+             content_type = EXCLUDED.content_type,
+             bytes = EXCLUDED.bytes,
+             size = EXCLUDED.size,
+             generation = EXCLUDED.generation,
+             updated_at = EXCLUDED.updated_at,
+             updated_at_counter = EXCLUDED.updated_at_counter,
+             origin_id = EXCLUDED.origin_id
+           RETURNING size`,
+          [
+            ...resourceKey,
+            chunks.run.replicaId,
+            chunks.run.parentEtag,
+            chunks.staged,
+            minted.map(validator => validator.generation),
+            minted.map(validator => validator.stamp.updatedAt),
+            minted.map(validator => validator.stamp.updatedAtCounter),
+            minted.map(validator => validator.stamp.originId)
+          ]
+        )
+        movedBytes = rows.reduce((total, row) => total + Number(row.size), 0)
+      }
+      const releasedBytes = await releaseStaging()
+
+      await this.#applyUsageDelta({
+        client,
+        spaceId,
+        delta:
+          parentDelta -
+          removedBytes -
+          replacedBytes +
+          movedBytes -
+          releasedBytes
+      })
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * Removes the chunk staging in the scope the ids select, the bytes it
+   * held returned to the Space's usage counter: a registration's on Delete
+   * Replica, a Resource's, a Collection's or a Space's. A Postgres swap is
+   * one transaction, so no run is ever left half swapped and every run in
+   * scope is removed, less `exceptRun`. A scope that holds no staging row
+   * is answered from one read, with no transaction and no Space row lock,
+   * since the pull loop reclaims before every chunked Resource it applies.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param [options.replicaId] {string}
+   * @param [options.exceptRun] {ChunkStagingRun}   the run to leave
+   * @returns {Promise<number>}   how many runs were removed
+   */
+  async reclaimStaging({
+    spaceId,
+    collectionId,
+    resourceId,
+    replicaId,
+    exceptRun
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    replicaId?: string
+    exceptRun?: ChunkStagingRun
+  }): Promise<number> {
+    const { values, conditions } = stagingScope({
+      spaceId,
+      collectionId,
+      resourceId,
+      replicaId
+    })
+    const { rowCount } = await this.#reader().query(
+      `SELECT 1 FROM chunk_staging WHERE ${conditions.join(' AND ')} LIMIT 1`,
+      values
+    )
+    if (rowCount === 0) {
+      return 0
+    }
+    return this.#withTransaction(async client => {
+      // First lock of the backend-wide order (`#lockSpaceRow`), ahead of the
+      // staging rows, as `stageChunk` takes them.
+      await this.#lockSpaceRow({ client, spaceId })
+      const { freedBytes, runs } = await this.#deleteStaging({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        replicaId,
+        exceptRun
+      })
+      await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
+      return runs
+    })
+  }
+
+  /**
+   * Deletes the chunk staging rows in the scope the ids select, inside the
+   * caller's transaction, which holds the Space row. The caller returns the
+   * freed bytes to the usage counter.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param [options.replicaId] {string}
+   * @param [options.exceptRun] {ChunkStagingRun}   keeps this run
+   * @returns {Promise<{ freedBytes: number, runs: number }>}   the bytes the
+   *   removed rows held and how many runs they made up
+   */
+  async #deleteStaging({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    replicaId,
+    exceptRun
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    replicaId?: string
+    exceptRun?: ChunkStagingRun
+  }): Promise<{ freedBytes: number; runs: number }> {
+    const { values, conditions } = stagingScope({
+      spaceId,
+      collectionId,
+      resourceId,
+      replicaId
+    })
+    if (exceptRun !== undefined) {
+      values.push(exceptRun.replicaId, exceptRun.parentEtag)
+      conditions.push(
+        `NOT (replica_id = $${values.length - 1} AND ` +
+          `parent_etag = $${values.length})`
+      )
+    }
+    const { rows } = await client.query<{
+      collection_id: string
+      resource_id: string
+      replica_id: string
+      parent_etag: string
+      size: string
+    }>(
+      `DELETE FROM chunk_staging WHERE ${conditions.join(' AND ')}
+        RETURNING collection_id, resource_id, replica_id, parent_etag, size`,
+      values
+    )
+    const runs = new Set(
+      rows.map(row =>
+        JSON.stringify([
+          row.collection_id,
+          row.resource_id,
+          row.replica_id,
+          row.parent_etag
+        ])
+      )
+    )
+    return {
+      freedBytes: rows.reduce((total, row) => total + Number(row.size), 0),
+      runs: runs.size
+    }
   }
 
   /**

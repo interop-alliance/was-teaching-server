@@ -315,7 +315,8 @@ describe('A did:webvh controller resolved from a replicated log', () => {
     const record = await registration(options)
     await mirror.backend.createReplica({
       spaceId: options.toSpaceId,
-      record: record as any
+      record: record as any,
+      pullsChunks: false
     })
     invalidateReplicaIndex({ storage: mirror.fastify.storage })
     mirror.fastify.replication.register({

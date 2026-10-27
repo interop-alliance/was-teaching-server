@@ -24,6 +24,13 @@ The new stamp therefore sorts above the one it replaces, even when physical time
 stepped back or the process restarted. The physical clock is injectable (a
 `physicalClock` option), so a test can freeze or step it.
 
+A chunk's stamp is local and orders nothing across servers. A replicated chunk
+does not carry the source server's stamp: the replica server mints a stamp and a
+generation for each chunk it stores, from its own clock, as it does for a chunk
+a client writes, and the chunk set follows its parent revision (see
+[replication.md](replication.md)). A chunk's `ETag` on one server therefore
+says nothing about the same index on another.
+
 ### High-water mark
 
 The clock persists a high-water mark of its physical part at most about once a
@@ -78,7 +85,8 @@ tombstone and its re-create, so its generation does too.
 
 A hard delete (a chunk, a Space) removes the record, so the next record under
 the same id mints a new generation and its validators never coincide with the
-old record's. A client's stale cached `ETag` then matches nothing instead of
+old record's. A chunk's generation is the replica server's own on a replicated
+chunk, minted when the chunk set is swapped in, and dies with the chunk. A client's stale cached `ETag` then matches nothing instead of
 being answered 304 over different bytes.
 
 Delete Collection leaves a tombstone (see the Collection tombstone entry in the

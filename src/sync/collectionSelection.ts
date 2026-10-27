@@ -32,16 +32,46 @@ export function selectedCollectionIds({
     return undefined
   }
   const wanted = new Set(record.collections.map(({ id }) => id))
+  const logCollectionId = controllerLogCollectionId({
+    record,
+    localController
+  })
+  if (logCollectionId !== undefined) {
+    wanted.add(logCollectionId)
+  }
+  return wanted
+}
+
+/**
+ * The peer Collection that holds the history log of the local Space's
+ * controller, when that controller is a `did:webvh` the peer Space hosts.
+ * A registration always selects it, and the pull loop pulls it first in
+ * every cycle, so a key retired at the source server stops authorizing here
+ * after the next cycle whatever the other Collections cost. A `did:key`
+ * controller, or a `did:webvh` hosted elsewhere, names none.
+ *
+ * @param options {object}
+ * @param options.record {ReplicaRegistration}   the registration
+ * @param [options.localController] {string}   the local Space's controller
+ * @returns {string | undefined}
+ */
+export function controllerLogCollectionId({
+  record,
+  localController
+}: {
+  record: Pick<ReplicaRegistration, 'fromSpace'>
+  localController?: string
+}): string | undefined {
   const hosted = parseSelfHostedWebvh(localController, {
     serverUrl: new URL(record.fromSpace).origin
   })
   if (
-    hosted !== undefined &&
-    hosted.spaceId === spaceIdOfSpaceUrl(record.fromSpace)
+    hosted === undefined ||
+    hosted.spaceId !== spaceIdOfSpaceUrl(record.fromSpace)
   ) {
-    wanted.add(hosted.collectionId)
+    return undefined
   }
-  return wanted
+  return hosted.collectionId
 }
 
 /**

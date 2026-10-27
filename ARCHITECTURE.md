@@ -181,14 +181,18 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   server's DID. One pull loop per registration reads the peer's Space and each
   selected Collection's `changes` feed, and stores what it reads through the
   backend's `apply*` methods only, under the peer's stamp and generation. No
-  request route can supply a write stamp. The container objects, logs and
-  policies are applied on the control plane; a Collection's Resources go to the
-  server backend its `backend.id` selects, the id meaning here what it means on
-  the peer, after the loop checks the registration on the control plane. A
-  `backend.id` this deployment does not configure stalls the Collection. A
-  replicated `did:webvh` resolves from the local copy of its log when exactly
-  one registration maps it there. See [docs/replication.md](docs/replication.md)
-  and [decision 0004](decisions/0004-stamps-are-minted-only-by-this-server.md).
+  request route can supply a write stamp. The chunk pull adds `stageChunk`,
+  `listStagedChunks`, `applyResourceWithChunks` and `reclaimStaging` to that
+  family. A chunked Resource's set is staged, then swapped in with its parent in
+  one critical section, so its parent takes a feed position only once the set is
+  whole. The container objects, logs and policies are applied on the control
+  plane; a Collection's Resources go to the server backend its `backend.id`
+  selects, the id meaning here what it means on the peer, after the loop checks
+  the registration on the control plane. A `backend.id` this deployment does not
+  configure stalls the Collection. A replicated `did:webvh` resolves from the
+  local copy of its log when exactly one registration maps it there. See
+  [docs/replication.md](docs/replication.md) and
+  [decision 0004](decisions/0004-stamps-are-minted-only-by-this-server.md).
 - **`src/lib/importTar.ts`**, **`src/lib/importPlan.ts`**,
   **`src/lib/importRevocations.ts`** and each backend's `exportSpace` /
   `importSpace` -- Export and Import Space. The archive codec lives in
@@ -414,8 +418,10 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
   inside the write's critical section (`lib/hlc.ts`). Every versioned record
   carries one. With the record's generation it forms the `ETag`. Stamps order
   two revisions of one record by `(ms, counter, originId)`; they do not order
-  the `changes` feed, which the feed position does. Avoid: version,
-  `metaVersion`, revision number, timestamp.
+  the `changes` feed, which the feed position does. A chunk's stamp is local: a
+  replicated chunk carries the replica server's own stamp and generation, minted
+  when its parent's chunk set is swapped in, and orders nothing across servers.
+  Avoid: version, `metaVersion`, revision number, timestamp.
 - **Local segment** -- the fifth `ETag` segment of a Space or Collection
   Metadata object, a per-record counter this server keeps. It advances when the
   served object changes through a derived member without a write of the object

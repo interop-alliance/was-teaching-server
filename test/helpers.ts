@@ -29,6 +29,7 @@ import {
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
 import { PostgresBackend } from '../src/backends/postgres.js'
+import { createApp } from '../src/server.js'
 import type { PostgresBackendOptions } from '../src/backends/postgres.js'
 import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
@@ -38,12 +39,15 @@ import type { ImportRevocationScope } from '../src/lib/importRevocations.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { PeerFetch } from '../src/sync/peerFetch.js'
+import { openTempBackend } from '../src/testing.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { webvhLogSigner } from '../src/testing.js'
 import type {
   FeedDocument,
   IDID,
   IRootZcap,
   ImportStats,
+  ReplicaRegistration,
   StorageBackend
 } from '../src/types.js'
 
@@ -1128,6 +1132,88 @@ export function injectPeerFetch(
 }
 
 /**
+ * One of the servers a replication suite boots in one process: its app, its
+ * filesystem backend, the clock its write stamps read, and its own DID.
+ */
+export interface PeerServer {
+  serverUrl: string
+  fastify: FastifyInstance
+  backend: TempFileSystemBackend
+  clock: ReturnType<typeof frozenClock>
+  did: string
+  didLog: string
+}
+
+/**
+ * The `peerLogFetcher` of a server booted beside its peers: a peer's
+ * `did:webvh` log is read from the peer's own storage. `servers` is read on
+ * every fetch, so a server may be added after the fetcher is built.
+ * @param servers {Map<string, { didLog: string }>}   the servers, by URL
+ * @returns {(options: { url: string }) => Promise<Buffer>}
+ */
+export function peerLogFetcherOf(
+  servers: Map<string, { didLog: string }>
+): (options: { url: string }) => Promise<Buffer> {
+  return async ({ url }) => {
+    const peer = servers.get(new URL(url).origin)
+    if (peer === undefined) {
+      throw new Error(`No test server at ${url}.`)
+    }
+    return Buffer.from(peer.didLog)
+  }
+}
+
+/**
+ * Boots one server of a replication suite over its own temp data dir, with
+ * an identity whose key may invoke, so it can pull, and its timers paused so
+ * every pull is run by hand. The server never listens: its pull loop reaches
+ * its peers through `peerFetch`, and it is added to `servers` under its URL.
+ * @param options {object}
+ * @param options.serverUrl {string}
+ * @param options.start {number}   the clock's start, epoch milliseconds
+ * @param options.prefix {string}   the temp dir prefix
+ * @param options.peerFetch {PeerFetch}   the transport the pull loop uses
+ * @param options.servers {Map<string, PeerServer>}   the suite's servers
+ * @returns {Promise<PeerServer>}
+ */
+export async function bootPeerServer({
+  serverUrl,
+  start,
+  prefix,
+  peerFetch,
+  servers
+}: {
+  serverUrl: string
+  start: number
+  prefix: string
+  peerFetch: PeerFetch
+  servers: Map<string, PeerServer>
+}): Promise<PeerServer> {
+  const clock = frozenClock(start)
+  const backend = await openTempBackend({ prefix, physicalClock: clock.read })
+  const seed = randomBytes(32)
+  const { did, didLog } = await provisionServerIdentity({
+    backend,
+    serverUrl,
+    seed,
+    purpose: ['assertionMethod', 'capabilityInvocation']
+  })
+  const fastify = createApp({
+    serverUrl,
+    backend,
+    logger: false,
+    serverKeySeed: seed,
+    peerFetch,
+    peerLogFetcher: peerLogFetcherOf(servers)
+  })
+  await fastify.ready()
+  fastify.replication.pause()
+  const server = { serverUrl, fastify, backend, clock, did, didLog }
+  servers.set(serverUrl, server)
+  return server
+}
+
+/**
  * Sends one signed request to a server that never listens, through
  * `fastify.inject`, signed as a client would sign it.
  *
@@ -1323,4 +1409,44 @@ export function watchWitnessFetches(): {
       return realFetch(input, init)
     })
   return { witnessFetches, restore: () => spy.mockRestore() }
+}
+
+export const REPLICA_CAPABILITY_ID = 'urn:uuid:test-suite-pull-capability'
+
+/**
+ * A replica registration for a backend-level test. The capability is a
+ * stand-in: a backend stores it and never reads it.
+ * @param options {object}
+ * @param options.id {string}
+ * @param options.spaceId {string}   the local Space
+ * @param [options.collectionId] {string}   the one selected Collection
+ * @returns {ReplicaRegistration}
+ */
+export function replicaRegistration({
+  id,
+  spaceId,
+  collectionId = 'col'
+}: {
+  id: string
+  spaceId: string
+  collectionId?: string
+}): ReplicaRegistration {
+  const fromSpace = `https://peer.example/space/${spaceId}/`
+  return {
+    id,
+    fromSpace,
+    toSpace: `https://was.example/space/${spaceId}/`,
+    capability: {
+      '@context': ['https://w3id.org/zcap/v1'],
+      id: REPLICA_CAPABILITY_ID,
+      parentCapability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+      controller: 'did:webvh:scid:was.example:space:server:id',
+      invocationTarget: fromSpace,
+      allowedAction: ['GET', 'HEAD'],
+      expires: '2099-01-01T00:00:00Z',
+      proof: {}
+    } as unknown as ReplicaRegistration['capability'],
+    collections: [{ id: collectionId }],
+    role: 'source'
+  }
 }

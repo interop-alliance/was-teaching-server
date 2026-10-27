@@ -101,7 +101,15 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // holding one is refused, every boot, until it is wiped or restored from
   // an archive (an import writes each tombstone under its own name). A store
   // with none passes and is stamped at this version.
-  refuseTombstonesUnderLiveName
+  refuseTombstonesUnderLiveName,
+  // v6: a Collection dir may hold a chunk staging directory,
+  // `.staging.chunks.<encodedResourceId>/`, beside a Resource's chunk
+  // directory: what a pull loop staged for the Resource's chunk set, and the
+  // manifest that lets a swap cut short be finished at boot. A store at an
+  // earlier layout holds none, so there is nothing to convert. The step
+  // exists so that a server built before this layout, which neither
+  // reclaims staging nor finishes a torn swap, refuses the store.
+  async () => {}
 ]
 
 /**

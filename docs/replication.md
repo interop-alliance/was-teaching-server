@@ -71,6 +71,13 @@ peer, and a break of one is `replica-refused` (409). The checks are:
 
 The peer Space's id need not equal the local one.
 
+The `/service` read also records whether the source server lists the Encrypted
+Collections entry. The answer is stored as `pullsChunks` on the stored
+registration. It is not a member of the wire record the controller sends and
+reads back. A registration made against a server without the entry pulls no
+chunks. One made before chunk replication shipped holds no `pullsChunks` and
+pulls none either, until it is made again.
+
 The controller match has two branches. The two controllers are equal, or the
 peer controller is a `did:webvh` hosted in the peer Space whose current document
 lists the local Space's `did:key` controller under `capabilityInvocation`. The
@@ -214,12 +221,53 @@ write takes, and checks there, in order:
 
 An applied record takes a local feed position, so it appears in this server's
 own `changes` feed and a third server can pull it from here (see
-[changes-feed.md](changes-feed.md)). Preconditions, the encrypted-Collection
-envelope rule, the write-once rule and the unique-attribute claims are not
-evaluated, since the origin server admitted the write. Quotas and the upload cap
-are. The Space Metadata object replicates its `name` alone: `controller`, `type`
-and the server-derived members stay per server. Revocations, backend
-registrations, keystores and chunks are not replicated.
+[changes-feed.md](changes-feed.md)). A chunked Resource takes its position once
+its chunk set is complete. Preconditions, the encrypted-Collection envelope
+rule, the write-once rule and the unique-attribute claims are not evaluated,
+since the origin server admitted the write. Quotas and the upload cap are. The
+Space Metadata object replicates its `name` alone: `controller`, `type` and the
+server-derived members stay per server. Revocations, backend registrations and
+keystores are not replicated. Chunks replicate with their parent Resource. A
+chunk-only write on the source server takes no feed position, so it replicates
+with the next write of the parent.
+
+### Chunks
+
+A chunked Resource is applied with its chunk set. The rules are:
+
+- The loop discovers the set when the parent's feed document applies. It reads
+  the parent's chunk listing on the source server, then makes one conditional
+  `GET` per listed chunk, then reads the parent last as a closing check. The
+  parent's `ETag` must still equal the one the feed document named, else the
+  pull is run again next cycle.
+- The listing is untrusted input. Each `index` must be an integer in range,
+  strictly ascending and unique. Each `size` must be a non-negative integer.
+  Each `contentType` must be an ASCII media type of at most 128 characters. A
+  listing that fails stalls the Collection as `source-unavailable`. So does a
+  feed document whose `etag` is not printable ASCII of at most 160 characters,
+  since that `ETag` keys the staging.
+- The chunks are staged, and nothing live changes until the set is whole. The
+  backend's `stageChunk` writes one chunk to staging, and `listStagedChunks`
+  reports what a run holds, with the source server's `ETag` for each. Then
+  `applyResourceWithChunks` takes the parent and its set in one critical
+  section. It removes the live indexes the source server no longer lists, moves
+  the staged chunks into place, writes the parent and takes its feed position.
+  `reclaimStaging` removes staging nobody owns.
+- There is no last-writer-wins per chunk. The set resolves with its parent
+  revision. The loop decides it before reading anything from the source server,
+  against the held content record, a tombstone included. When the held parent
+  wins or is equal, the staging is discarded and the set stays as it is.
+- A chunk carries this server's own stamp and generation, minted at the swap.
+  The source server's chunk `ETag` is opaque here. It is the key of the
+  conditional `GET` of a re-run and nothing else: the `If-None-Match` names what
+  an earlier run staged, never a live chunk, whose validator the source server
+  cannot match. A parent rewritten on the source server with its chunks
+  untouched therefore re-transfers them.
+- An individual chunk delete does not replicate on its own. It converges on the
+  next write of the parent, when the chunk pull removes the index the source
+  server no longer lists.
+- A Resource with no chunks costs one listing read.
+- The chunk pull runs only when the registration's `pullsChunks` is true.
 
 ## Where a replicated Collection lands
 
@@ -272,11 +320,12 @@ and policy (conditional reads), then its Collection listing under
 
 The registration's `collections` list selects among the listed Collections, live
 and tombstoned, and the Collection that holds the controller's history log is
-always selected. The rule is `peerCollectionSelector` in
-`sync/collectionSelection.ts`, which the pull loop shares with
-`lib/webvhLogLocation.ts`, so the two cannot drift. A selected tombstone is
-applied. One for a Collection the registration does not pull is ignored, so it
-cannot remove a local Collection that shares its id.
+always selected. That Collection is pulled first in every cycle, so a retired
+key stops authorizing here even while a long chunk pull is waiting. The rule is
+`peerCollectionSelector` in `sync/collectionSelection.ts`, which the pull loop
+shares with `lib/webvhLogLocation.ts`, so the two cannot drift. A selected
+tombstone is applied. One for a Collection the registration does not pull is
+ignored, so it cannot remove a local Collection that shares its id.
 
 For each selected live Collection the loop applies the Collection Metadata
 object when this server does not hold that life of the Collection, then reads
@@ -287,6 +336,23 @@ set. An `ETag` that no longer equals the one the feed named means the record
 moved, and the Collection is read again next cycle. The checkpoint advances past
 a document once it is applied or skipped.
 
+A chunk pull checks the stop signal and the registration between chunks. It ends
+before the next chunk when the loop is stopped or the registration is gone, so a
+shutdown does not wait for a whole stream. The loop persists its state after
+each Resource whose chunk pull ran, so a long pull that is cut by a restart
+keeps its checkpoint.
+
+Staging is keyed by the registration and the parent revision's `ETag`. A pull
+that is run again within one process life moves only the chunks that are
+missing. Before its quota check, a chunk pull reclaims the registration's
+staging of the Resource under any other revision, since those bytes still count
+toward usage. All staging is reclaimed at boot, and a swap that was cut short is
+finished first. The next chunk pull stages again what the restart removed.
+Delete Replica, Delete Resource, Delete Collection and Delete Space reclaim the
+staging in their scope. Delete Replica does so even when the registration is
+already gone. See [filesystem-layout.md](filesystem-layout.md) for the staging
+layout.
+
 A feed page too large to buffer is asked for again at half the size, down to one
 document, which is read up to the upload cap. A binary Resource's read times out
 on the wait for the response and for each chunk, so a long transfer is not cut
@@ -296,23 +362,36 @@ off.
 
 A `refused` apply stalls that Collection alone. The checkpoint holds and the
 reason (`clock-bound`, `fork`, `quota-exceeded`, `unsupported-backend`,
-`container-refused`) is stored with the loop state, which
-`GET .../replicas/:replicaId/status` serves beside the loop `state` and the pull
-times. The Collection is retried each cycle while the others go on, and a
-clock-bound stall clears itself as local time catches up. A Collection whose
-`backend.id` selects no server backend of this deployment stalls as
-`unsupported-backend`, before its Metadata object is stored: a fixed id this
-deployment does not configure, or a backend registered on the peer. The stall
-detail reads: The Collection selects backend "<id>", which is not a server
+`container-refused`, `chunk-listing-obsolete`, `source-unavailable`) is stored
+with the loop state, which `GET .../replicas/:replicaId/status` serves beside
+the loop `state` and the pull times. The Collection is retried each cycle while
+the others go on, and a clock-bound stall clears itself as local time catches
+up. A Collection whose `backend.id` selects no server backend of this deployment
+stalls as `unsupported-backend`, before its Metadata object is stored: a fixed
+id this deployment does not configure, or a backend registered on the peer. The
+stall detail reads: The Collection selects backend "<id>", which is not a server
 backend this deployment configures. The stall clears once the deployment
 configures that backend. See
 [Where a replicated Collection lands](#where-a-replicated-collection-lands).
 
-A request to the peer that fails, a 404 for the Space included, ends the cycle.
-The loop then backs off, doubling its delay up to a limit, and logs one `warn`
-when the failures begin. Nothing stops a loop but the removal of its
-registration. The manager stops every loop in the same `onClose` hook that
-closes the backend, ahead of it.
+Two reasons come from the chunk pull. `chunk-listing-obsolete` means the source
+server rewrites the Resource faster than the pull completes, so the closing
+check fails cycle after cycle. `source-unavailable` means a request to the
+source server keeps failing inside a chunk pull, or its chunk listing is
+malformed. The detail names the URL. Both follow a bounded retry. A pull that
+cannot complete holds the checkpoint, and the Collection stays `syncing`. After
+`REPLICA_CHUNK_PULL_RETRY_LIMIT` consecutive cycles stuck on one feed document,
+counted in memory and so restarted by a restart, the Collection stalls. The
+stall clears on the first chunk pull that passes. A request that fails inside a
+chunk pull stalls that Collection rather than ending the cycle. A reader of the
+status treats a reason it does not recognize as stalled for an unrecognized
+reason.
+
+A request to the peer that fails outside a chunk pull, a 404 for the Space
+included, ends the cycle. The loop then backs off, doubling its delay up to a
+limit, and logs one `warn` when the failures begin. Nothing stops a loop but the
+removal of its registration. The manager stops every loop in the same `onClose`
+hook that closes the backend, ahead of it.
 
 ## Transport
 

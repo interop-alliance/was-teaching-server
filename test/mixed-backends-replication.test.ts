@@ -31,6 +31,7 @@ import {
   injectPeerFetch,
   openTempBackend,
   openTempPostgres,
+  peerLogFetcherOf,
   provisionServerIdentity,
   registerReplica,
   replicaStatus,
@@ -98,13 +99,7 @@ async function boot({
     logger: false,
     serverKeySeed: seed,
     peerFetch,
-    peerLogFetcher: async ({ url }) => {
-      const peer = servers.get(new URL(url).origin)
-      if (peer === undefined) {
-        throw new Error(`No test server at ${url}.`)
-      }
-      return Buffer.from(peer.didLog)
-    }
+    peerLogFetcher: peerLogFetcherOf(servers)
   })
   await fastify.ready()
   fastify.replication.pause()

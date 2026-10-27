@@ -59,10 +59,12 @@ describe('PeerClient.readStream', () => {
       { delayMs: 40, text: 'three ' },
       { delayMs: 40, text: 'four' }
     ])
-    const { stream, release } = await client.readStream({
+    const served = await client.readStream({
       url: 'https://peer.example/space/a/c/r',
       idleTimeoutMs: 100
     })
+    assert.ok(served.stream !== undefined)
+    const { stream, release } = served
     try {
       assert.equal(await text(stream), 'one two three four')
     } finally {
@@ -75,10 +77,12 @@ describe('PeerClient.readStream', () => {
       { delayMs: 10, text: 'first' },
       { delayMs: 500, text: 'late' }
     ])
-    const { stream, release } = await client.readStream({
+    const served = await client.readStream({
       url: 'https://peer.example/space/a/c/r',
       idleTimeoutMs: 60
     })
+    assert.ok(served.stream !== undefined)
+    const { stream, release } = served
     try {
       await assert.rejects(text(stream), /sent nothing for 60 ms/)
     } finally {

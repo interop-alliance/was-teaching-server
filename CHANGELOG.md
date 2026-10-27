@@ -1,5 +1,34 @@
 # History
 
+## 0.43.0 - TBD
+
+### Added
+
+- Chunk replication. A pull loop that applies a chunked Resource now reads the
+  source server's chunk listing, reads each listed chunk with a conditional
+  `GET`, stages what it does not hold, and applies the parent and its chunk set
+  in one critical section, so the replica never serves an envelope over a
+  partial set and the parent reaches the replica's own `changes` feed only with
+  its set. Each replicated chunk carries the replica server's own stamp and
+  validator; the source server's chunk `ETag` is opaque. A chunk-only mutation
+  on the source server replicates with the next parent write. Staging lives in
+  `.staging.chunks.<id>/` beside the chunk directory (filesystem layout
+  version 6) or the `chunk_staging` table (Postgres); staged bytes count toward
+  usage, and a same-size rewrite of a stream fits under the source server's
+  quota. Chunk sets are pulled only from a source server whose `/service` lists
+  the Encrypted Collections entry, recorded on the registration when it is made;
+  a registration made before this release pulls no chunk sets until it is made
+  again. Two new stall reasons: `chunk-listing-obsolete` (the Resource is
+  rewritten on the source server faster than its chunk set can be pulled) and
+  `source-unavailable` (a request inside a chunk pull keeps failing), each after
+  a bounded number of cycles stuck on one feed document. The Collection that
+  holds the controller's history log is pulled first in every cycle, and the
+  loop persists its state after each chunked Resource.
+
+### Changed
+
+- Consumes `@interop/storage-core` 0.39.0 (the two stall reasons).
+
 ## 0.42.3 - 2026-10-26
 
 ### Added

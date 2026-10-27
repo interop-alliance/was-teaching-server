@@ -311,10 +311,10 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, five, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 5)
+  it('stamps an empty store at the current version, six, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 6)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 5)
+    assert.equal(await storedVersion(dataDir), 6)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
   })
 
@@ -470,7 +470,7 @@ describe('Filesystem store version', () => {
       '{"deleted":true,"feedPosition":2}'
     )
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 5)
+    assert.equal(await storedVersion(dataDir), 6)
   })
 
   it('refuses a store.json with no integer version', async () => {

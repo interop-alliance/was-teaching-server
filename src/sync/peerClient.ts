@@ -7,6 +7,8 @@
  * A read resolves for the statuses its caller handles and rejects with
  * `PeerRequestError` for every other one, so a peer that is down, a grant
  * that expired, and a masked `not-found` all end the cycle the same way.
+ * Inside a chunk pull the loop catches the rejection instead, and counts it
+ * toward that Collection's bounded retry.
  */
 import { Readable } from 'node:stream'
 import type { ISigner } from '@interop/data-integrity-core'
@@ -32,6 +34,26 @@ export interface PeerDocument {
   contentType?: string
   body: Buffer
 }
+
+/**
+ * A streamed answer from a peer (`PeerClient.readStream`): the status and
+ * the `ETag` and `Content-Type` headers when sent. A 200 carries the body as
+ * `stream` with its declared length and the `release` its reader calls once
+ * done. Any other status carries no stream, and the response is already
+ * released.
+ */
+export type PeerStream = {
+  status: number
+  etag?: string
+  contentType?: string
+} & (
+  | {
+      stream: Readable
+      declaredBytes?: number
+      release: () => void
+    }
+  | { stream?: undefined }
+)
 
 export class PeerClient {
   #signer?: ISigner
@@ -196,32 +218,39 @@ export class PeerClient {
   }
 
   /**
-   * Makes one `GET` of a Resource representation and hands its body over as
-   * a stream, for a backend to store under its own upload cap. The caller
-   * calls `release` once the stream has been consumed or abandoned.
+   * Makes one `GET` of a Resource or chunk representation and hands its body
+   * over as a stream, for a backend to store under its own upload cap. A 200
+   * resolves with `stream` and `release`, and the caller calls `release`
+   * once the stream has been consumed or abandoned. Any other status in
+   * `expect` (a 304 to a conditional read, a 404) resolves with no stream:
+   * the response is released here, and only the status and the headers are
+   * kept.
    *
    * The timeout bounds the wait for the response, and then each wait for the
    * peer's next chunk. It does not bound the whole transfer, so a large body
    * on a slow link is read to its end, and time the consumer spends between
-   * two reads does not count.
+   * two reads does not count. A body that fails mid-read errors the stream
+   * with a `PeerRequestError`.
    * @param options {object}
    * @param options.url {string}
+   * @param [options.ifNoneMatch] {string}   the held `ETag`s, for a
+   *   conditional read; one value or a comma-separated list
+   * @param [options.expect] {number[]}   the statuses the caller handles;
+   *   defaults to `[200]`
    * @param [options.idleTimeoutMs] {number}   defaults to the request timeout
-   * @returns {Promise<{ etag?: string, contentType?: string, declaredBytes?: number, stream: Readable, release: () => void }>}
+   * @returns {Promise<PeerStream>}
    */
   async readStream({
     url,
+    ifNoneMatch,
+    expect = [200],
     idleTimeoutMs = REPLICATION_REQUEST_TIMEOUT_MS
   }: {
     url: string
+    ifNoneMatch?: string
+    expect?: number[]
     idleTimeoutMs?: number
-  }): Promise<{
-    etag?: string
-    contentType?: string
-    declaredBytes?: number
-    stream: Readable
-    release: () => void
-  }> {
+  }): Promise<PeerStream> {
     const controller = new AbortController()
     let timer: NodeJS.Timeout | undefined
     const arm = (): void => {
@@ -241,11 +270,17 @@ export class PeerClient {
     try {
       response = await this.request({
         url,
-        expect: [200],
+        expect,
+        ...(ifNoneMatch !== undefined && { ifNoneMatch }),
         signal: controller.signal
       })
     } finally {
       clearTimeout(timer)
+    }
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => {})
+      response.release()
+      return { status: response.status, ...headerMembers(response) }
     }
     const { body } = response
     // Rejects a pending read on the idle timeout, whether or not the
@@ -270,12 +305,24 @@ export class PeerClient {
       try {
         for (;;) {
           arm()
-          const { done, value } = await Promise.race([reader.read(), aborted])
+          let read: Awaited<ReturnType<typeof reader.read>>
+          try {
+            read = await Promise.race([reader.read(), aborted])
+          } catch (err) {
+            if (err instanceof PeerRequestError) {
+              throw err
+            }
+            throw new PeerRequestError({
+              url,
+              detail: 'the body could not be read.',
+              cause: err
+            })
+          }
           clearTimeout(timer)
-          if (done) {
+          if (read.done) {
             return
           }
-          yield value
+          yield read.value
         }
       } finally {
         clearTimeout(timer)
@@ -286,6 +333,7 @@ export class PeerClient {
     }
     const declared = Number(response.headers.get('content-length'))
     return {
+      status: 200,
       ...headerMembers(response),
       ...(Number.isSafeInteger(declared) &&
         response.headers.get('content-length') !== null && {

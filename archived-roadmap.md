@@ -6237,3 +6237,79 @@ checks the registration on the control plane; the loop brings that backend's
 copy of the Collection level before the first Resource of a cycle. Chunks are
 not replicated, so there is no chunk apply to route. The two-server test is
 `test/mixed-backends-replication.test.ts`.
+
+---
+
+### WAS-14: [M] (*) Chunk replication for sync
+
+- status: done
+- done: 2026-10-26
+- priority: medium
+- backend: *
+- labels: replication, sync
+- design: designs/WAS-14-chunk-replication.md
+- design-approved: 2026-10-25
+- touches:
+  - portable-web-spaces-spec: the Encrypted Collections profile (`ec/spec.md`,
+    now hosted in this repo) "Chunk lifecycle" says a replicating server carries
+    the chunk set with the parent write it surfaces, and a chunk-only mutation
+    stays where it was made, behavior text only; the replication specification
+    gains the chunk apply rule; its decision 0013, whose chunk sentences were a
+    deferral to this item, is amended in place with the chunk apply rule, and
+    WASS-50's acceptance line naming chunks among what does not replicate is
+    revised. Part of replication `0.1`, no version bump. Filed 2026-10-25: 0013
+    amended, WASS-50's acceptance box revised, the profile sentence written
+    (checkout `portable-web-spaces-spec`)
+  - storage-core: `ReplicaStallReason` gains `chunk-listing-obsolete` and
+    `source-unavailable`
+  - was-teaching-server: `src/sync/replication.ts`, `src/lib/replicaApply.ts`,
+    `src/sync/peerClient.ts`, both backends (`stageChunk`,
+    `applyResourceWithChunks`, `reclaimStaging`, the staging layouts, the stored
+    registration's `pullsChunks`), `docs/replication.md`,
+    `docs/changes-feed.md`, `docs/filesystem-layout.md`, ARCHITECTURE.md's
+    replication facet entry; `decisions/0006` minted at approval
+  - was-client: unaffected (no wire change)
+  - conformance-suite: unaffected (no wire change)
+- acceptance:
+  - [x] The design doc is adversarially reviewed (2026-10-24, six lenses plus a
+        critic; findings folded in, review log in its section 9)
+  - [x] The design doc is approved (2026-10-25), every open point in its section
+        8 decided, and the wire and layout names signed off (the staging layout,
+        `pullsChunks`, the two stall reasons)
+  - [x] Each invariant in design section 2 is upheld by a test named in section
+        7, or its exemption is recorded in the doc
+        (`test/chunk-replication-api.test.ts`,
+        `test/filesystem-chunk-staging.test.ts`,
+        `test/postgres-replica-apply.test.ts`; invariant 7 is exempt per the
+        doc)
+  - [x] Each changed consumer in design section 3 is handled, and each "changed"
+        or "refused" cell of section 4 has a test or a doc sentence
+  - [x] A two-server test replicates a chunked Resource byte for byte under the
+        replica server's own chunk `ETag`s, converges a removal on the next
+        parent write, and converges a concurrent whole-stream rewrite on the
+        winning parent's set
+  - [x] `docs/replication.md` no longer lists chunks among what does not
+        replicate, and states the chunk-only-mutation caveat
+  - [x] The spec and profile items in `touches` are filed
+
+Pulled out of Someday / Maybe on 2026-10-23, with the design doc drafted the
+same day. The design keeps chunk writes invisible to the `changes` feed, as the
+core profile and the Encrypted Collections profile require, and discovers a
+Resource's chunk set by reading its chunk listing when the parent's own feed
+document applies, then each chunk with a conditional `GET`, so a resumed chunk
+pull moves no held bytes. A chunk delete leaves no tombstone and converges on
+the next parent write. The chunk set applies after the parent revision that won
+last-writer-wins, pinned to that revision at apply time, so two origins
+rewriting one stream converge on one origin's set.
+
+Context from the WAS-96 design (2026-10-01), which this item inherited: a chunk
+is a versioned record, so it takes the same origin stamp and four-field
+validator (WAS-172), and a puller fetching chunk bytes with a plain `GET` learns
+the stamp from the `ETag` alone. Chunks inherit the Collection's `revisions`
+descriptor. The design revised two of those sentences on 2026-10-24: chunks
+resolve with their parent revision, not per chunk under LWW (design section
+5.3), and a replicated chunk carries the replica's own stamp and generation, the
+peer's chunk `ETag` being opaque to it, so no stamp is learned from an `ETag`
+and the validator layout is not a requirement on peers (design open point 3).
+The three questions that design left open (discovery, chunk tombstones,
+whole-stream consistency) are answered in the design doc's section 1.
