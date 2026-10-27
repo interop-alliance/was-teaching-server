@@ -75,10 +75,9 @@ liveness is the `deleted` column.
 ### Version 6: chunk staging
 
 A Collection dir may hold a chunk staging directory beside a Resource's chunk
-directory (see [Chunk staging](#chunk-staging)). A store at an earlier layout
-holds none, so the step converts nothing. It exists so that a server built
-before this layout, which neither reclaims staging nor finishes a torn swap,
-refuses the store. The Postgres twin is schema migration 14, which adds the
+directory (see [Chunk staging](#chunk-staging)). The step converts nothing: it
+is a version fence, so a server that does not reclaim staging or finish a torn
+swap refuses the store. The Postgres twin is schema migration 14, which adds the
 `chunk_staging` table and the `pulls_chunks` column of `replicas`, with existing
 rows reading `false`. It has no manifest: the swap there is one transaction, so
 no torn state remains to detect at boot.

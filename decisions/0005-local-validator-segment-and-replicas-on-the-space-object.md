@@ -19,12 +19,11 @@
 
 A strong validator must move with the representation. A Space Metadata object's
 served form carries derived members a write never sets: `backends` moves when a
-backend is registered or deregistered, and now `replicas` moves when a replica
+backend is registered or deregistered, and `replicas` moves when a replica
 registration is added or removed. A Collection Metadata object's served
-`encryption` moves on a governed-log append. Today each of these bumps the
-per-record version counter without touching `updatedAt`.
+`encryption` moves on a governed-log append.
 
-The design removes that counter. The replication order is the four-field stamp
+The replication order is the four-field stamp
 `(generation, ms, counter, originId)`, minted by a write at its origin and
 compared by every peer. Minting a stamp on a derived change would turn a local
 bookkeeping action into a write that wins last-writer-wins on every peer over a
@@ -63,10 +62,10 @@ clause's `GET /space/<S>/meta` shape) which hosts hold the user's data.
 
 - **Serving `backends` and `replicas` only at their sub-resources.** It removes
   one derived member from the validated object and closes the disclosure
-  question, but it reverses the earlier decision to carry `backends` on the
-  Space Metadata object so a reader learns it without a second request, and it
-  does not help the Collection Metadata object, whose derived `encryption` still
-  moves on a log append.
+  question, but it gives up carrying `backends` on the Space Metadata object,
+  which lets a reader learn it without a second request, and it does not help
+  the Collection Metadata object, whose derived `encryption` still moves on a
+  log append.
 - **Minting a stamp on a derived change.** A local bookkeeping change would
   replicate as a write and win last-writer-wins on every peer over a real
   earlier edit. It also makes `backends` and `replicas`, which are per-server
@@ -79,14 +78,13 @@ clause's `GET /space/<S>/meta` shape) which hosts hold the user's data.
 
 - Two validator shapes exist: four fields on a Resource, a chunk, a Resource's
   `/meta` object and a policy; five on a Space or Collection Metadata object. A
-  client treats the whole quoted value as opaque, as the spec already asks; the
-  trailing-integer-as-revision reading is withdrawn.
+  client treats the whole quoted value as opaque, as the spec asks, and does not
+  read the trailing integer as a revision number.
 - Served container Metadata objects are not byte-identical across replicas
   (`backends`, `replicas`, `history.resource`), so the byte-equality claim in
   the replication test is scoped to Resources.
 - The local segment is one more per-record member in each backend's storage
-  layout, and the derived-change paths that today bump a version counter now
-  advance it instead.
+  layout.
 - Any reader of the Space Metadata object learns the Space's replica hosts. A
   controller who does not want that issues no Space-wide grant.
 

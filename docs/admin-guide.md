@@ -262,10 +262,10 @@ change, so the next rotation needs a fresh identity.
 
 Both are read at startup. A malformed seed, a seed of the wrong length, or a
 `WAS_ADMIN_DID` that is not an Ed25519 `did:key` fails the deploy. So does a
-stored `server` Space that is not typed `ServerInstanceSpace` (one written
-before the id was reserved; delete it or unset the variable) or whose controller
-is not `WAS_ADMIN_DID` (the admin DID changed; update the Space's controller
-through Update Space, or restore the variable).
+stored `server` Space that is not typed `ServerInstanceSpace` (delete it or
+unset the variable) or whose controller is not `WAS_ADMIN_DID` (the admin DID
+changed; update the Space's controller through Update Space, or restore the
+variable).
 
 ### Provisioning the identity
 

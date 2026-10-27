@@ -28,9 +28,8 @@ method to the client-annex clause.
 
 Replication adds a second role. The pulling server invokes a delegated read
 capability on its peer, and the peer verifies that invocation against the
-controller the capability names. The draft design derived a second key for this
-(an HKDF sync key, advertised on `/service` as `syncInvocationKey`) and allowed
-a `did:key` signing form until the admin listed the key in the log.
+controller the capability names. The question is whether that role gets a key of
+its own.
 
 ## Decision
 
@@ -68,7 +67,7 @@ The one seed key serves both roles.
 
 - Retiring a stolen sync key means rotating the seed, which rotates the export
   key too. The admin guide says so. Past export statements stay verifiable
-  through the log's history, as they do today.
+  through the log's history.
 - The wallet learns no key. It delegates to `serverDid`, and the admin rotates
   the key inside the log without any re-delegation.
 - A server with no identity cannot replicate, in either direction. Replication

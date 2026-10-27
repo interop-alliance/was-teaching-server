@@ -7,11 +7,12 @@
   replicated a chunked Resource's parent envelope and left its chunk bytes
   behind, so a replica server served an envelope it could not decrypt.
 - Affects: was-teaching-server (`src/sync/replication.ts`, the chunk pull;
-  `src/lib/replicaApply.ts`; both backends' `stageChunk`,
-  `applyResourceWithChunks` and `reclaimStaging`; the staging layouts;
-  `docs/replication.md`, `docs/changes-feed.md`); storage-core (two
-  `ReplicaStallReason` members). The contract half, what a puller reads and in
-  what order, is the spec repo's decision 0013 as amended 2026-10-25.
+  `src/lib/replicaApply.ts`; both backends' staging verbs (`beginChunkStaging`,
+  `stageChunk`, `listStagedChunks`, `reclaimStaging`) and the `chunks` option of
+  `applyResource`; the staging layouts; `docs/replication.md`,
+  `docs/changes-feed.md`); storage-core (two `ReplicaStallReason` members). The
+  contract half, what a puller reads and in what order, is the spec repo's
+  decision 0013.
 
 ## Context
 
@@ -69,10 +70,9 @@ A chunk set replicates with its parent revision and applies as one unit.
   The chunk pull reads one extra document per changed Resource instead.
 - Stamped chunk tombstones. Do not reopen, for the same reasons: a chunk delete
   is cascade-only or converges on the next parent write.
-- Parent first, then the chunks into the live set. Chosen on 2026-10-24 and
-  reversed the same day after the design review. Do not reopen: a reader in its
-  window gets silent wrong plaintext, a cut pull needs a durable marker in the
-  loop state to resume, the parent's feed position has to be deferred or a
+- Parent first, then the chunks into the live set. Do not reopen: a reader in
+  its window gets silent wrong plaintext, a cut pull needs a durable marker in
+  the loop state to resume, the parent's feed position has to be deferred or a
   downstream puller copies a torn set, and a stall leaves the torn set in place
   for as long as it lasts.
 - Chunks before the parent, into the live set. The parent's last-writer-wins

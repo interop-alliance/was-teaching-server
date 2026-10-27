@@ -13,7 +13,7 @@
   the import plan in `src/lib/importPlan.ts`; `docs/admin-guide.md`;
   ARCHITECTURE.md beside the cache entries that already rest on a
   single-instance deployment). `@interop/space-archive` keeps archived stamps in
-  its Metadata files, which import now reads for provenance only. The wallet's
+  its Metadata files, which import reads for provenance only. The wallet's
   restore flow warns when the destination Space has registrations.
 
 ## Context
@@ -22,20 +22,20 @@ Under last-writer-wins, the greater stamp wins on every replica, and a stamp is
 never re-examined once stored. Anything that lets a stamp into a store without
 the clock discipline can therefore break convergence for good: a stamp dated far
 ahead beats every honest write until physical time catches up, and two different
-writes under one stamp let a peer dedup the second away. The design already
-rejected a client-declared clock for this reason. Three other doors were open.
+writes under one stamp let a peer dedup the second away. A client-declared clock
+is rejected for this reason, and three other doors need the same rule.
 
-Import restored archived stamps verbatim in the draft. A delegated importer
-could then land a stamp dated far in the future, and every peer's pull of that
-Collection would stall at the clock bound permanently.
+An import that restored archived stamps verbatim would let a delegated importer
+land a stamp dated far in the future, and every peer's pull of that Collection
+would stall at the clock bound permanently.
 
 Two server processes over one Postgres store would share one origin id and mint
 identical `(ms, 0, originId)` for two successive writes to one record, giving
 different bytes the same strong validator.
 
-A data directory booted before stamps existed holds records with no stamp at
-all, and the clock is in memory, so after a restart it can stand below a stamp
-the store already holds.
+A store written by a server without stamps holds records with no stamp at all,
+and the clock is in memory, so after a restart it can stand below a stamp the
+store already holds.
 
 ## Decision
 
@@ -47,12 +47,11 @@ write's critical section, or a peer's stamp, through the apply path.
   high-water mark of the clock in `store.json` or the store row on a cadence and
   seeds the clock from it at boot. A local write therefore never carries a lower
   stamp than the one it overwrites.
-- Import re-mints every stamp with the importing server as origin, as
-  `updatedAt` is re-stamped today. The archived stamps are read for provenance
-  verification only.
+- Import re-mints every stamp with the importing server as origin. The archived
+  stamps are read for provenance verification only.
 - One minting process per origin. A store is served by one server process; this
   is documented in ARCHITECTURE.md beside the cache entries that already rest on
-  it, and in the admin guide. The multi-process case is parked as a later item.
+  it, and in the admin guide. The multi-process case is revisit criterion 1.
 - A store holding any Space whose records carry no stamp is refused at boot with
   `StoreVersionError`. There is no stamping migration. An empty store is stamped
   at the new layout version and boots.
@@ -60,12 +59,11 @@ write's critical section, or a peer's stamp, through the apply path.
   and shape-checks every received stamp before storing it (`ms` and
   `updatedAtCounter` safe non-negative integers, `originId` within
   `[A-Za-z0-9_-]{1,64}`).
-- Amended 2026-10-26 (chunk replication, decision 0006): a chunk is not a
-  replicated-identity record. A replicated chunk carries no source server stamp
-  or generation; the replica server mints both from its own clock when the
-  parent's chunk set is swapped in, as for a chunk a client writes. The stamp
-  rule and the `originId` refusal above never see a chunk, and a chunk's stamp
-  orders nothing across servers.
+- A chunk is not a replicated-identity record (decision 0006). A replicated
+  chunk carries no source server stamp or generation; the replica server mints
+  both from its own clock when the parent's chunk set is swapped in, as for a
+  chunk a client writes. The stamp rule and the `originId` refusal above never
+  see a chunk, and a chunk's stamp orders nothing across servers.
 - On the filesystem backend the sidecar, which holds the stamp and the feed
   position in one write, is the commit point: the representation lands first,
   under a name the sidecar then points at, so a torn write reads as the prior
@@ -96,8 +94,7 @@ write's critical section, or a peer's stamp, through the apply path.
   check in the apply path catches a direct pull between clones, and a third
   server pulling from two clones is a documented operator error it does not
   catch.
-- A deployment running several server processes over one store is unsupported
-  until the parked item lands.
+- A deployment running several server processes over one store is unsupported.
 - An operator upgrading a populated pre-stamp store wipes it or restores from an
   archive, whose stamps are re-minted on the way in.
 - The high-water mark adds a write to the store file on a cadence, not per
@@ -116,3 +113,9 @@ Reopen this decision when one or more of the following holds:
    of re-minting.
 3. A populated deployment must upgrade in place without a wipe. Design a
    stamping step then, with the counter and origin rules stated.
+
+## Changelog
+
+- 2026-10-26: the chunk rule added with decision 0006. A replicated chunk
+  carries no source server stamp or generation; the replica server mints both at
+  the swap.

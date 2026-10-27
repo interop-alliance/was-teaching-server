@@ -1345,7 +1345,16 @@ describe('Chunk replication between servers', () => {
         resourceId: 'r',
         json: { revision: 'C' }
       })
-      const held = await readChunks({
+      // What the replica holds before the pull, whichever revision the
+      // earlier tests left it at: the stalled pull must change neither.
+      const heldParent = (
+        await readParent({
+          server: replica,
+          spaceId: 'c7-dst',
+          resourceId: 'r'
+        })
+      ).json()
+      const heldChunks = await readChunks({
         server: replica,
         spaceId: 'c7-dst',
         resourceId: 'r'
@@ -1366,7 +1375,7 @@ describe('Chunk replication between servers', () => {
               resourceId: 'r'
             })
           ).json(),
-          { revision: 'B' }
+          heldParent
         )
         assert.deepStrictEqual(
           await readChunks({
@@ -1374,7 +1383,7 @@ describe('Chunk replication between servers', () => {
             spaceId: 'c7-dst',
             resourceId: 'r'
           }),
-          held
+          heldChunks
         )
       } finally {
         replica.backend.maxUploadBytes = cap
