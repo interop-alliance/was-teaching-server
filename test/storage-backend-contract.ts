@@ -39,6 +39,7 @@ import {
   importArchive,
   mintServerDid,
   parseEtagSegments,
+  binaryInput,
   provisionServerIdentity,
   REPLICA_CAPABILITY_ID,
   replicaRegistration,
@@ -229,20 +230,6 @@ function jsonInput(data: unknown): ResourceInput {
   return { kind: 'json', contentType: 'application/json', data }
 }
 
-function binaryInput(
-  bytes: Buffer,
-  options: { contentType?: string; declaredBytes?: number } = {}
-): ResourceInput {
-  return {
-    kind: 'binary',
-    contentType: options.contentType ?? 'application/octet-stream',
-    stream: Readable.from(bytes),
-    ...(options.declaredBytes !== undefined && {
-      declaredBytes: options.declaredBytes
-    })
-  }
-}
-
 /**
  * A binary input whose stream yields a few bytes and then errors, standing in
  * for an upload the client abandons mid-body. The write must fail without
@@ -413,14 +400,6 @@ async function archivedRevocations({
 }
 
 /**
- * Registers the shared StorageBackend contract suite for one backend.
- * @param options {ContractOptions}
- */
-/**
- * The id of the stand-in pull capability a contract registration carries, so
- * a test can look for it where it must not appear.
- */
-/**
  * A write stamp as a peer would serve it, minted by another origin.
  * @param options {object}
  * @param options.ms {number}   epoch milliseconds
@@ -441,6 +420,10 @@ function peerStamp({
   }
 }
 
+/**
+ * Registers the shared StorageBackend contract suite for one backend.
+ * @param options {ContractOptions}
+ */
 export function describeStorageBackendContract(options: ContractOptions): void {
   const { name, makeBackend, hardQuota, exactUsage } = options
 
@@ -7764,6 +7747,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             generation: 'log1',
             stamp
           }),
+          await backend.beginChunkStaging({
+            ...unknown,
+            collectionId,
+            resourceId: 'r1',
+            run: { replicaId: 'no-such-peer', parentEtag: '"r1"' },
+            listed: [{ index: 0, size: 5 }]
+          }),
           await backend.stageChunk({
             ...unknown,
             collectionId,
@@ -7773,16 +7763,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             input: binaryInput(Buffer.from('chunk')),
             peerEtag: '"c0"'
           }),
-          await backend.applyResourceWithChunks({
+          await backend.applyResource({
             ...unknown,
             collectionId,
             resourceId: 'r1',
             generation: 'gen1',
             stamp,
-            resource: { input: jsonInput({ a: 1 }) },
+            resource: { deleted: false, input: jsonInput({ a: 1 }) },
             chunks: {
               run: { replicaId: 'no-such-peer', parentEtag: '"r1"' },
-              kept: [],
               staged: [0]
             }
           })

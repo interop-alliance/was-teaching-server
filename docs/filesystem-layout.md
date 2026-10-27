@@ -219,9 +219,12 @@ Under it is one run directory per registration and parent revision:
   The sidecar records `contentType`, `size`, `peerEtag` and `fileName`.
   `peerEtag` is the source server's opaque `ETag`. A staged chunk carries no
   stamp and no generation.
-- `.manifest.json`, with `parentEtag`, `kept`, `staged`, `swapped` and `parent`.
-  `kept` lists the live indexes the swap keeps and `staged` the indexes it moves
-  in. `parent` is the parent's sidecar as the swap will write it.
+- `.manifest.json`, with `parentEtag`, `staged` and `parent`. `staged` lists the
+  indexes the swap moves in, and `parent` is the parent's sidecar as the swap
+  will write it. The manifest is written once the swap is decided, so its
+  presence is the swap flag. Every live chunk the swap does not move in is
+  removed: the source server's listing is staged whole, since a live chunk's
+  validator is this server's own and the source server cannot match it.
 - `next/`, the chunk directory being built.
 - `prior/`, the live chunk directory once it is renamed aside.
 - `parent/`, the parent's representation file until it is moved into the
@@ -230,11 +233,9 @@ Under it is one run directory per registration and parent revision:
 The swap runs under the parent's lock, in this order:
 
 1. The parent's file is written into `parent/`.
-2. `next/` is created and the manifest is written with `swapped: true`.
-3. Each kept chunk is copied into `next/`, file and sidecar (a reflink where the
-   filesystem offers one; never a hard link, which the data dir's filesystem may
-   not support). Each staged chunk is moved in, with a sidecar that carries a
-   stamp minted from this store's clock and a fresh generation.
+2. `next/` is created and the manifest is written.
+3. Each staged chunk is moved into `next/`, with a sidecar that carries a stamp
+   minted from this store's clock and a fresh generation.
 4. The live chunk directory is renamed to `prior/`, and `next/` takes its place.
    Two renames are needed, since a non-empty directory cannot be replaced by
    one. An empty set leaves no chunk directory.
@@ -270,11 +271,11 @@ Chunk of an index with no sidecar answers 404 and leaves its file in place.
 A crash during a chunk pull has three cases:
 
 - A crash after staging and before the swap changed nothing live. The run has no
-  manifest, or a manifest that says `swapped: false`. It is discarded at boot,
-  or at the next call for the Resource.
+  manifest. It is discarded at boot, or at the next open of a run for the
+  Resource.
 - A crash between the directory swap and the parent's sidecar leaves the new set
-  beside the old parent. The manifest says `swapped: true`. The swap is finished
-  from the manifest at boot, or at the next call for the Resource. It is
+  beside the old parent. The manifest stands. The swap is finished from the
+  manifest at boot, or at the next open of a run for the Resource. It is
   finished only if the manifest's parent stamp still wins over the held parent.
   When a later write of the parent stands, the run is removed and the set that
   write was made over is kept: `prior/` goes back in place when no chunk

@@ -22,8 +22,11 @@
   rewritten on the source server faster than its chunk set can be pulled) and
   `source-unavailable` (a request inside a chunk pull keeps failing), each after
   a bounded number of cycles stuck on one feed document. The Collection that
-  holds the controller's history log is pulled first in every cycle, and the
-  loop persists its state after each chunked Resource.
+  holds the controller's history log is pulled first in every cycle. The chunks
+  of a set are read a few at once, the quota pre-check of a set is made by the
+  backend when its staging run is opened, and the loop persists its state once
+  the chunk pulls since the last persist moved 64 MiB or ran for 16 Resources,
+  and at the end of each Collection.
 
 ### Changed
 

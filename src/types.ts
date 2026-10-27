@@ -811,6 +811,16 @@ export interface ChunkStagingRun {
 }
 
 /**
+ * One chunk staged under a run: its index, its size in bytes, and the
+ * source server's `ETag` it was read under (empty when none was served).
+ */
+export interface StagedChunk {
+  index: number
+  size: number
+  peerEtag: string
+}
+
+/**
  * A registration's pull-loop state for one Collection, as stored: what the
  * `status` sub-resource serves for it, beside the peer's opaque changes
  * checkpoint and the peer Collection generation that checkpoint was read
@@ -876,16 +886,6 @@ export interface StorageBackend {
    * oversize multipart upload is rejected before it is fully buffered).
    */
   maxUploadBytes?: number
-
-  /**
-   * Whether the backend's in-write quota check is gross: it compares a
-   * cached usage measurement plus the write's bytes against the capacity,
-   * with no credit for what the write replaces. The chunk pull's quota
-   * pre-check adds one chunk of headroom for such a backend. Absent or
-   * `false` when the check is net, as a counter kept under the write's lock
-   * is.
-   */
-  usageCheckIsGross?: boolean
 
   /**
    * The backend's self-description, as advertised at
@@ -1907,6 +1907,21 @@ export interface StorageBackend {
    * registrations: the pull loop checked the registration on the control
    * plane, the registration check is skipped, and the Space and the
    * Collection must still be held (their copies) as on any apply.
+   *
+   * With `chunks`, a live `resource` is applied together with its chunk
+   * set, in the same critical section under the parent's lock: the
+   * registration check, the clock, and the last-writer-wins decision as
+   * above. On a win, every live chunk whose index is not in `staged` is
+   * removed as a chunk delete removes it, each staged chunk of `run` is
+   * moved into place under a stamp and generation minted here, the parent
+   * is stored as above and takes its feed position, and the staging of
+   * `run` is released. On a loss or an equal stamp the staging of `run` is
+   * released and the result is `skipped`. A staged index the run holds no
+   * staged chunk for is a fault of the caller and is refused as
+   * `container-refused`. The parent's feed position is the first moment the
+   * parent and its set are visible, to a reader and to this server's own
+   * `changes` feed alike. `chunks` with a tombstone is a fault of the
+   * caller.
    */
   applyResource(options: {
     spaceId: string
@@ -1921,6 +1936,7 @@ export interface StorageBackend {
     resource:
       | { deleted: false; input: ResourceInput; epoch?: string }
       | { deleted: true; contentType: string }
+    chunks?: { run: ChunkStagingRun; staged: number[] }
   }): Promise<ApplyResult>
   /**
    * Applies a Resource's `/meta` record when `meta` (its stamp and
@@ -1939,32 +1955,62 @@ export interface StorageBackend {
   /**
    * The chunk pull of the replication facet (the `chunked-streams` feature
    * under replication). A pull loop that meets a live `resource` document
-   * reads the source server's chunk listing, stages each chunk it does not
-   * hold, and then applies the parent and its chunk set in one critical
-   * section, so nothing live changes until the whole set is here. A chunk
-   * is a local record that follows its parent: it carries no source server
+   * reads the source server's chunk listing, opens a staging run for it,
+   * stages each chunk it does not hold, and then applies the parent and
+   * its chunk set in one critical section (`applyResource` with `chunks`),
+   * so nothing live changes until the whole set is here. A chunk is a
+   * local record that follows its parent: it carries no source server
    * stamp, and the backend mints its stamp and generation at the swap, as
    * for a chunk a client writes. The source server's chunk `ETag` is kept
    * as an opaque string, for the conditional read of a re-run only.
    *
+   * `beginChunkStaging` opens the staging of `run` for the set the source
+   * server lists, once per chunk pull, under the parent's lock: it checks
+   * that the registration stands (`replicaId`, as on `applyResource`) and
+   * that the Collection is live, drops the same registration's staging of
+   * the Resource under any other `parentEtag` (the loop moved past that
+   * revision, and those bytes still count toward usage), and makes the
+   * quota pre-check of the set: each listed `size` against the upload cap,
+   * and the set's net
+   * growth (each listed size, less what the run already staged, less the
+   * live chunks the swap will free, plus whatever headroom the backend's
+   * own in-write check needs) against the Space's remaining capacity. A set
+   * that does not fit is `refused` as `quota-exceeded` with nothing staged.
+   * The check is advisory: a 507 or 413 from `stageChunk` stays
+   * authoritative. It resolves what the run already holds, by ascending
+   * index with the source server's `ETag` each was read under, so the loop
+   * reads each one conditionally. A backend whose swap is not one atomic
+   * step finishes a swap of the Resource a fault left torn here first,
+   * which changes the live set before the pre-check answers; a backend
+   * whose swap is one transaction has no torn swap to finish.
+   *
    * `stageChunk` writes one chunk's bytes to the staging of `run`, under
    * the upload cap and the quota as a chunk write is, with the live chunk
-   * sizes the swap will free credited against the quota check (the backend
-   * sums them over the run under its lock). It
-   * checks, under the parent's lock, that the registration stands
-   * (`replicaId`, as on `applyResource`) and that the Collection is live,
-   * and answers `unregistered` or `skipped` without writing when either
-   * fails; the transfer itself runs outside the lock. The parent need not
-   * be held: a first-time replication stages under no parent record, and
-   * last-writer-wins at the swap decides. Staging a run drops the same
-   * registration's staging of the Resource under any other `parentEtag`,
-   * since the loop moved past that revision. A staged chunk takes no feed
+   * sizes the swap will free credited against the quota check (the live
+   * chunks at the indexes the run has staged so far, this one included). It
+   * checks, under the parent's lock, that the registration stands and that
+   * the Collection is live, and answers `unregistered` or `skipped` without
+   * writing when either fails; the transfer itself runs outside the lock,
+   * so several chunks of one run may be staged at once. The parent need
+   * not be held: a first-time replication stages under no parent record,
+   * and last-writer-wins at the swap decides. A staged chunk takes no feed
    * position and is served by nothing. A 507 or 413 here changes nothing
    * live. `retry` means the staging was removed during the transfer (a
    * local Delete Resource, say) while the Collection stands: nothing was
    * staged, and the loop reads the document again next cycle without
    * counting it toward the bounded retry.
    */
+  beginChunkStaging(options: {
+    spaceId: string
+    replicaId?: string
+    collectionId: string
+    resourceId: string
+    run: ChunkStagingRun
+    /** the source server's listing, checked */
+    listed: Array<{ index: number; size: number }>
+  }): Promise<
+    { staged: StagedChunk[] } | Exclude<ApplyResult, { outcome: 'applied' }>
+  >
   stageChunk(options: {
     spaceId: string
     replicaId?: string
@@ -1986,36 +2032,7 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     run: ChunkStagingRun
-  }): Promise<Array<{ index: number; size: number; peerEtag: string }>>
-  /**
-   * Applies a live Resource content record together with its chunk set, as
-   * `applyResource` applies the record alone, in one critical section under
-   * the parent's lock: the registration check, the clock, and the
-   * last-writer-wins decision against the held content record. On a win,
-   * every live chunk whose index is in neither `kept` nor `staged` is
-   * removed as a chunk delete removes it, each staged chunk is moved into
-   * place under a stamp and generation minted here, the parent is stored as
-   * `applyResource` stores it and takes its feed position, and the staging
-   * of `run` is released. On a loss or an equal stamp the staging of `run`
-   * is released and the result is `skipped`. A staged index absent from the
-   * staging, or a kept index absent from the live set, is a fault of the
-   * caller and is refused as `container-refused`. The parent's feed
-   * position is the first moment the parent and its set are visible, to a
-   * reader and to this server's own `changes` feed alike.
-   */
-  applyResourceWithChunks(options: {
-    spaceId: string
-    replicaId?: string
-    collectionId: string
-    resourceId: string
-    generation: string
-    stamp: WriteStamp
-    createdAt?: string
-    createdBy?: IDID
-    writerId?: string
-    resource: { input: ResourceInput; epoch?: string }
-    chunks: { run: ChunkStagingRun; kept: number[]; staged: number[] }
-  }): Promise<ApplyResult>
+  }): Promise<StagedChunk[]>
   /**
    * Removes the chunk staging the pull loop no longer owns, in the scope
    * the ids select: a registration's on Delete Replica (`replicaId`), a
@@ -2023,17 +2040,13 @@ export interface StorageBackend {
    * every registration's at boot. A run whose swap was done but whose
    * parent record was never written is finished rather than removed, so a
    * crash between the two leaves no torn set. Resolves how many runs were
-   * removed or finished. With `exceptRun`, that one run is left as it
-   * stands: given with `replicaId` and `resourceId`, every other run of
-   * that registration for the Resource is removed, which is how the pull
-   * loop drops an earlier revision's staging before its quota pre-check.
+   * removed or finished.
    */
   reclaimStaging(options: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     replicaId?: string
-    exceptRun?: ChunkStagingRun
   }): Promise<number>
   /**
    * Applies an access-control policy, live or a tombstone, at the level the

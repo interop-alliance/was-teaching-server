@@ -266,6 +266,23 @@ export const REPLICATION_DOCUMENT_MAX_BYTES = 4 * 1024 * 1024
  * first chunk pull that completes.
  */
 export const REPLICA_CHUNK_PULL_RETRY_LIMIT = 5
+/**
+ * How many chunks of one chunk set a pull loop reads from the source server
+ * at once. Each read is one stream staged under the upload cap, so the
+ * memory a chunk pull holds is bounded by this many times `maxUploadBytes`
+ * on a backend that buffers a staged chunk.
+ */
+export const REPLICA_CHUNK_PULL_CONCURRENCY = 4
+/**
+ * When a pull loop persists its state inside one Collection's pull, beside
+ * the end of the Collection: once the chunk pulls since the last persist
+ * moved this many bytes, or ran for this many Resources. A chunk pull may
+ * move many bytes, so a long one cut by a restart loses at most this much
+ * of its checkpoint, while a run of small chunked Resources does not
+ * rewrite the state after each.
+ */
+export const REPLICA_STATE_PERSIST_BYTES = 64 * 1024 * 1024
+export const REPLICA_STATE_PERSIST_DOCUMENTS = 16
 
 /**
  * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it

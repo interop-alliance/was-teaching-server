@@ -16,12 +16,13 @@ import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
 import { ProblemTypes } from '@interop/storage-core'
 
-import type { IDID } from '../src/types.js'
 import {
   bootPeerServer,
   delegate,
+  createPeerSpace,
   injectPeerFetch,
   type PeerServer,
+  pullOnce,
   registerReplica,
   replicaStatus,
   signedInject,
@@ -78,14 +79,7 @@ describe('Replication between two servers', () => {
     spaceId: string
     controller?: string
   }): Promise<void> {
-    await server.backend.writeSpace({
-      spaceId,
-      spaceMetadata: {
-        id: spaceId,
-        type: ['Space'],
-        controller: controller as IDID
-      }
-    })
+    await createPeerSpace({ server, spaceId, controller })
   }
 
   /**
@@ -102,20 +96,7 @@ describe('Replication between two servers', () => {
     return registerReplica({ signer: alice.signer, delegator, ...options })
   }
 
-  /**
-   * Runs one pull cycle of a registration.
-   */
-  async function pull({
-    server,
-    spaceId,
-    replicaId = 'peer'
-  }: {
-    server: PeerServer
-    spaceId: string
-    replicaId?: string
-  }): Promise<void> {
-    await server.fastify.replication.pullNow({ spaceId, replicaId })
-  }
+  const pull = pullOnce
 
   /**
    * Reads a registration's status, as Alice.

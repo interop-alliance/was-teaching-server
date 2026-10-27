@@ -237,9 +237,11 @@ A chunked Resource is applied with its chunk set. The rules are:
 
 - The loop discovers the set when the parent's feed document applies. It reads
   the parent's chunk listing on the source server, then makes one conditional
-  `GET` per listed chunk, then reads the parent last as a closing check. The
-  parent's `ETag` must still equal the one the feed document named, else the
-  pull is run again next cycle.
+  `GET` per listed chunk, a few at once (`REPLICA_CHUNK_PULL_CONCURRENCY`), then
+  reads the parent last as a closing check. The parent's `ETag` must still equal
+  the one the feed document named, else the pull is run again next cycle. A
+  chunk-only delete on the source server during the pull is not caught by that
+  check: it converges on the next write of the parent, as any chunk delete does.
 - The listing is untrusted input. Each `index` must be an integer in range,
   strictly ascending and unique. Each `size` must be a non-negative integer.
   Each `contentType` must be an ASCII media type of at most 128 characters. A
@@ -247,12 +249,30 @@ A chunked Resource is applied with its chunk set. The rules are:
   feed document whose `etag` is not printable ASCII of at most 160 characters,
   since that `ETag` keys the staging.
 - The chunks are staged, and nothing live changes until the set is whole. The
-  backend's `stageChunk` writes one chunk to staging, and `listStagedChunks`
-  reports what a run holds, with the source server's `ETag` for each. Then
-  `applyResourceWithChunks` takes the parent and its set in one critical
-  section. It removes the live indexes the source server no longer lists, moves
-  the staged chunks into place, writes the parent and takes its feed position.
-  `reclaimStaging` removes staging nobody owns.
+  backend's `beginChunkStaging` opens the run once per chunk pull: it drops the
+  registration's staging of the Resource under any other revision, makes the
+  quota pre-check of the set, and reports what the run already holds, with the
+  source server's `ETag` for each. On the filesystem backend it first finishes a
+  swap of the Resource a fault left torn, which changes the live set before the
+  pre-check answers; a Postgres swap is one transaction, so there is none to
+  finish. `stageChunk` writes one chunk to staging. Then `applyResource` with
+  `chunks` takes the parent and its set in one critical section. It removes the
+  live indexes the source server no longer lists, moves the staged chunks into
+  place, writes the parent and takes its feed position. `reclaimStaging` removes
+  staging nobody owns, and `listStagedChunks` is a plain read of a run.
+- The quota pre-check is the backend's. Each listed size is checked against the
+  upload cap, and the set's net growth (the listed sizes, less what the run
+  already staged, less the live chunks the swap frees) against the remaining
+  capacity. The filesystem backend reads the remaining capacity from the same
+  cached measurement its in-write check reads (and reads none under no quota),
+  and adds one listed chunk of headroom, since that check is gross; the Postgres
+  counter needs none. A set that does not fit stalls the Collection as
+  `quota-exceeded` with nothing staged. A 507 or 413 during staging stays
+  authoritative. While a run is open, each `stageChunk` credits the live chunks
+  at the indexes the run has staged so far, so a same-size rewrite of a stream
+  fits under a quota its live set already fills. A chunk directory left beside a
+  tombstone is credited too, since the swap removes it. A swap refused as
+  `container-refused` releases the run's staging, as a loss does.
 - There is no last-writer-wins per chunk. The set resolves with its parent
   revision. The loop decides it before reading anything from the source server,
   against the held content record, a tombstone included. When the held parent
@@ -267,7 +287,12 @@ A chunked Resource is applied with its chunk set. The rules are:
   next write of the parent, when the chunk pull removes the index the source
   server no longer lists.
 - A Resource with no chunks costs one listing read.
-- The chunk pull runs only when the registration's `pullsChunks` is true.
+- The chunk pull runs only when the registration's `pullsChunks` is true. The
+  flag is read from the source server's `/service` once, when the registration
+  is made, and stored with it rather than read again each cycle: the
+  registration check already reads that document, a server that drops the
+  profile after registration is not a case worth one more request per cycle per
+  registration, and making the registration again covers it.
 
 ## Where a replicated Collection lands
 
@@ -336,17 +361,21 @@ set. An `ETag` that no longer equals the one the feed named means the record
 moved, and the Collection is read again next cycle. The checkpoint advances past
 a document once it is applied or skipped.
 
-A chunk pull checks the stop signal and the registration between chunks. It ends
-before the next chunk when the loop is stopped or the registration is gone, so a
-shutdown does not wait for a whole stream. The loop persists its state after
-each Resource whose chunk pull ran, so a long pull that is cut by a restart
-keeps its checkpoint.
+A chunk pull checks the stop signal between chunks, so a shutdown does not wait
+for a whole stream. The registration is checked once per chunk set, before the
+run is opened; on the control plane each staging and the swap check it again
+under the lock, and on another server backend the swap meets a Space gone. The
+loop persists its state inside a Collection's pull once the chunk pulls since
+the last persist moved `REPLICA_STATE_PERSIST_BYTES` or ran for
+`REPLICA_STATE_PERSIST_DOCUMENTS` Resources, and at the end of each Collection,
+so a long pull that is cut by a restart loses at most that much of its
+checkpoint, without a write of the state after every small chunked Resource.
 
 Staging is keyed by the registration and the parent revision's `ETag`. A pull
 that is run again within one process life moves only the chunks that are
-missing. Before its quota check, a chunk pull reclaims the registration's
-staging of the Resource under any other revision, since those bytes still count
-toward usage. All staging is reclaimed at boot, and a swap that was cut short is
+missing. Opening a run reclaims the registration's staging of the Resource under
+any other revision before the quota check, since those bytes still count toward
+usage. All staging is reclaimed at boot, and a swap that was cut short is
 finished first. The next chunk pull stages again what the restart removed.
 Delete Replica, Delete Resource, Delete Collection and Delete Space reclaim the
 staging in their scope. Delete Replica does so even when the registration is

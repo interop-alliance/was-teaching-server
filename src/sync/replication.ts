@@ -23,21 +23,26 @@
  * Encrypted Collections entry (`pullsChunks` on the registration). A held
  * revision that wins or is equal already has its chunk set, so only its
  * `/meta` record is applied. Otherwise the loop reads the peer's chunk
- * listing, and when either server holds a chunk of the Resource it checks
- * the listing and the quota, reads each listed chunk with a conditional
- * `GET` into staging, reads the parent last as the closing check, and
- * applies the parent and its set in one `applyResourceWithChunks` call. So
- * nothing live changes until the whole set is here, and the parent takes
- * its feed position only then. The loop state is persisted after each
- * Resource whose chunk pull ran. A chunk pull whose closing check fails, or
- * whose request to the peer fails, ends in a `retry` that holds the
- * checkpoint, and staging keyed by the document's `etag` lets the next
- * cycle skip what it already moved. The retry is bounded: after
- * `REPLICA_CHUNK_PULL_RETRY_LIMIT` consecutive cycles from one checkpoint
- * the Collection stalls as `chunk-listing-obsolete` (the peer rewrites the
- * Resource faster than the pull completes) or `source-unavailable` (the
- * request keeps failing), and the rest of the cycle goes on. A stop signal
- * or a removed registration ends the chunk pull before the next chunk.
+ * listing, and when either server holds a chunk of the Resource it opens
+ * the staging run on the data backend (`beginChunkStaging`, which checks
+ * the quota), reads the listed chunks with conditional `GET`s into
+ * staging, a few at once, reads the parent last as the closing check, and
+ * applies the parent and its set in one `applyResource` call with
+ * `chunks`. So nothing live changes until the whole set is here, and the
+ * parent takes its feed position only then. The loop state is persisted
+ * inside a Collection's pull once the chunk pulls since the last persist
+ * moved `REPLICA_STATE_PERSIST_BYTES` or ran for
+ * `REPLICA_STATE_PERSIST_DOCUMENTS` Resources, and at the end of each
+ * Collection. A chunk pull whose closing check fails, or whose request to
+ * the peer fails, ends in a `retry` that holds the checkpoint, and staging
+ * keyed by the document's `etag` lets the next cycle skip what it already
+ * moved. The retry is bounded: after `REPLICA_CHUNK_PULL_RETRY_LIMIT`
+ * consecutive cycles from one checkpoint the Collection stalls as
+ * `chunk-listing-obsolete` (the peer rewrites the Resource faster than the
+ * pull completes) or `source-unavailable` (the request keeps failing), and
+ * the rest of the cycle goes on. A stop signal ends the chunk pull before
+ * the next chunk, and a removed registration ends it at the next chunk
+ * set.
  *
  * A refusal from the apply path stalls that Collection alone. The checkpoint
  * holds, the reason is stored with the loop state, and the Collection is
@@ -49,10 +54,17 @@
 import type { Readable } from 'node:stream'
 import type { FastifyBaseLogger } from 'fastify'
 import type { ISigner } from '@interop/data-integrity-core'
-import { MAX_CHUNK_INDEX, fileNameFor } from '@interop/space-archive'
+import {
+  MAX_CHUNK_INDEX,
+  fileNameFor,
+  parseChunkIndexSegment
+} from '@interop/space-archive'
 
 import {
+  REPLICA_CHUNK_PULL_CONCURRENCY,
   REPLICA_CHUNK_PULL_RETRY_LIMIT,
+  REPLICA_STATE_PERSIST_BYTES,
+  REPLICA_STATE_PERSIST_DOCUMENTS,
   REPLICATION_BACKOFF_BASE_MS,
   REPLICATION_BACKOFF_MAX_MS,
   REPLICATION_DOCUMENT_MAX_BYTES,
@@ -147,13 +159,21 @@ interface ChunkPullFailure {
  * between the feed page and its read; one that carries `chunkPull` ended a
  * chunk pull and counts toward the bounded retry. `pending` means the step
  * stopped the Collection's pull and already recorded why in its loop state.
- * An apply result with `pulledChunks` finished a chunk pull, after which the
- * loop state is persisted.
+ * An apply result with `pulledBytes` finished a chunk pull that read that
+ * many chunk bytes from the peer, which counts toward the next persist of
+ * the loop state.
  */
 type ChangeResult =
-  | (ApplyResult & { pulledChunks?: true })
+  | (ApplyResult & { pulledBytes?: number })
   | { outcome: 'retry'; chunkPull?: ChunkPullFailure }
   | { outcome: 'pending' }
+
+/**
+ * How a chunk pull ended: a change result, or `created` (the `/meta` read
+ * it made) when neither server holds a chunk of the Resource, so the
+ * document applies as a plain record.
+ */
+type ChunkPullEnd = ChangeResult | { created: { createdAt?: string } }
 
 /**
  * How one Collection's pull ended: `done` when its feed was read to the end,
@@ -1062,6 +1082,8 @@ export class ReplicationManager {
     // A feed page inlines JSON bodies, so a full page can outgrow what the
     // loop buffers. The page size is then halved, down to one document.
     let limit = REPLICATION_FEED_PAGE_SIZE
+    // What the chunk pulls moved since the loop state was last persisted.
+    const sincePersist = { bytes: 0, documents: 0 }
     for (;;) {
       const params = new URLSearchParams({
         profile: 'changes',
@@ -1161,10 +1183,21 @@ export class ReplicationManager {
         if (typeof document.checkpoint === 'string') {
           collection.checkpoint = document.checkpoint
         }
-        // A chunk pull may have moved many bytes, so its checkpoint is kept
-        // at once rather than at the end of the Collection's pull.
-        if ('pulledChunks' in result && !(await options.persist())) {
-          return 'unregistered'
+        // A run of chunk pulls may have moved many bytes, so their
+        // checkpoint is kept before the end of the Collection's pull.
+        if (result.pulledBytes !== undefined) {
+          sincePersist.bytes += result.pulledBytes
+          sincePersist.documents += 1
+          if (
+            sincePersist.bytes >= REPLICA_STATE_PERSIST_BYTES ||
+            sincePersist.documents >= REPLICA_STATE_PERSIST_DOCUMENTS
+          ) {
+            if (!(await options.persist())) {
+              return 'unregistered'
+            }
+            sincePersist.bytes = 0
+            sincePersist.documents = 0
+          }
         }
         // The Collection moved to another life under this very document.
         if (collection.generation === undefined) {
@@ -1391,6 +1424,7 @@ export class ReplicationManager {
     }
 
     const peerResource = { spaceId: peerSpaceId, collectionId, resourceId }
+    let created: { createdAt?: string } | undefined
     // A history log is decided by its bytes and carries no chunk set.
     if (options.pullsChunks && resourceId !== WEBVH_LOG_RESOURCE_ID) {
       // The `ETag` keys the staging, as a directory name on the filesystem
@@ -1414,12 +1448,12 @@ export class ReplicationManager {
         peerResource,
         run: { replicaId: options.replicaId, parentEtag: document.etag }
       })
-      if (chunked !== undefined) {
+      if (!('created' in chunked)) {
         return chunked
       }
+      created = chunked.created
     }
-
-    const created = await this.#readCreatedAt({
+    created ??= await this.#readCreatedAt({
       peer,
       peerUrl,
       peerResource,
@@ -1428,8 +1462,6 @@ export class ReplicationManager {
     if (created === undefined) {
       return { outcome: 'retry' }
     }
-    const epoch = document.epoch
-
     const acquired = await this.#acquireResourceInput({
       peer,
       peerUrl,
@@ -1440,7 +1472,49 @@ export class ReplicationManager {
     if (acquired === undefined) {
       return { outcome: 'retry' }
     }
-    const { input, release } = acquired
+    return this.#applyLiveResource({
+      members,
+      created,
+      acquired,
+      document,
+      dataBackend
+    })
+  }
+
+  /**
+   * Applies a live `resource` change document's content record, then its
+   * `/meta` record: one `applyResource`, with `chunks` when the content is
+   * the parent of a chunk set, whose input is destroyed and released
+   * whatever the outcome.
+   * @param options {object}
+   * @param options.members {ResourceApplyMembers}
+   * @param options.created {{ createdAt?: string }}   from the `/meta` read
+   * @param options.acquired {{ input: ResourceInput, release: () => void }}
+   *   the content the apply stores
+   * @param options.document {Record<string, unknown>}   the feed document
+   * @param options.dataBackend {StorageBackend}   the backend that serves
+   *   the Collection's data plane
+   * @param [options.chunks] {{ run: ChunkStagingRun, staged: number[] }}
+   *   the staged set the apply swaps in with the content
+   * @returns {Promise<ApplyResult>}
+   */
+  async #applyLiveResource({
+    members,
+    created,
+    acquired: { input, release },
+    document,
+    dataBackend,
+    chunks
+  }: {
+    members: ResourceApplyMembers
+    created: { createdAt?: string }
+    acquired: { input: ResourceInput; release: () => void }
+    document: Record<string, unknown>
+    dataBackend: StorageBackend
+    chunks?: { run: ChunkStagingRun; staged: number[] }
+  }): Promise<ApplyResult> {
+    const { spaceId, replicaId, collectionId, resourceId } = members
+    const { epoch } = document
     let result: ApplyResult
     try {
       result = await dataBackend.applyResource({
@@ -1450,7 +1524,8 @@ export class ReplicationManager {
           deleted: false,
           input,
           ...(typeof epoch === 'string' && { epoch })
-        }
+        },
+        ...(chunks !== undefined && { chunks })
       })
     } finally {
       if (input.kind === 'binary') {
@@ -1530,10 +1605,9 @@ export class ReplicationManager {
    * fails inside the pull ends it in a `retry` counted toward
    * `source-unavailable`, rather than ending the cycle.
    * @param chunk {ChunkPull}
-   * @returns {Promise<ChangeResult | undefined>}   `undefined` when neither
-   *   server holds a chunk of the Resource, so it applies as a plain record
+   * @returns {Promise<ChunkPullEnd>}
    */
-  async #pullChunkSet(chunk: ChunkPull): Promise<ChangeResult | undefined> {
+  async #pullChunkSet(chunk: ChunkPull): Promise<ChunkPullEnd> {
     const { members, dataBackend, document, run } = chunk
     const { spaceId, replicaId, collectionId, resourceId, stamp } = members
     // A held tombstone decides as a live record does.
@@ -1582,73 +1656,78 @@ export class ReplicationManager {
 
   /**
    * The chunk pull of a revision that wins over the held one, in order: the
-   * peer's chunk listing, the `/meta` read, the quota pre-check, each listed
-   * chunk into staging, the closing read of the parent, and one
-   * `applyResourceWithChunks`. Nothing live changes before that last call.
+   * peer's chunk listing and the `/meta` read together, the open of the
+   * staging run with its quota pre-check, each listed chunk into staging,
+   * the closing read of the parent, and one `applyResource` with `chunks`.
+   * Nothing live changes before that last call.
    * @param chunk {ChunkPull}
-   * @returns {Promise<ChangeResult | undefined>}   `undefined` when neither
-   *   server holds a chunk of the Resource
+   * @returns {Promise<ChunkPullEnd>}
    * @throws {PeerRequestError}   a request to the peer failed
    */
-  async #pullWinningChunkSet(
-    chunk: ChunkPull
-  ): Promise<ChangeResult | undefined> {
+  async #pullWinningChunkSet(chunk: ChunkPull): Promise<ChunkPullEnd> {
     const { pull, members, dataBackend, peerResource, run } = chunk
     const { spaceId, collectionId, resourceId } = members
-    const staging = {
-      spaceId,
-      collectionId,
-      resourceId,
-      replicaId: run.replicaId
-    }
-    const listing = await this.#readChunkListing(chunk)
+    const [listing, created] = await Promise.all([
+      this.#readChunkListing(chunk),
+      this.#readCreatedAt({
+        peer: pull.peer,
+        peerUrl: pull.peerUrl,
+        peerResource,
+        stamp: members.stamp
+      })
+    ])
     if (!('chunks' in listing)) {
       return listing
     }
-    const live = await dataBackend.listChunks({
-      spaceId,
-      collectionId,
-      resourceId
-    })
-    if (listing.chunks.length === 0 && live.count === 0) {
-      // The Resource applies as a plain record, so no run of the
-      // registration for it is left to finish.
-      await dataBackend.reclaimStaging(staging)
-      return undefined
+    if (listing.chunks.length === 0) {
+      // `beginChunkStaging` reads the live set again under the lock, so it
+      // is read here only when the peer lists no chunk.
+      const live = await dataBackend.listChunks({
+        spaceId,
+        collectionId,
+        resourceId
+      })
+      if (live.count === 0) {
+        // The Resource applies as a plain record, so no run of the
+        // registration for it is left to finish.
+        await dataBackend.reclaimStaging({
+          spaceId,
+          collectionId,
+          resourceId,
+          replicaId: run.replicaId
+        })
+        return created === undefined ? { outcome: 'retry' } : { created }
+      }
     }
-    const created = await this.#readCreatedAt({
-      peer: pull.peer,
-      peerUrl: pull.peerUrl,
-      peerResource,
-      stamp: members.stamp
-    })
     if (created === undefined) {
       return obsoleteRetry(pull.peerUrl(metaPath(peerResource)))
     }
-    // The registration's staging of an earlier revision of the Resource
-    // still counts toward usage. Staging drops it too, but the pre-check
-    // below runs first.
-    await dataBackend.reclaimStaging({ ...staging, exceptRun: run })
-    const stagedBefore = await dataBackend.listStagedChunks({
-      spaceId,
-      collectionId,
-      resourceId,
-      run
+    // One registration verdict covers the staging of the set. On the
+    // control plane the backend reads the registration itself.
+    if (
+      (await this.#dataBackendRegistration({
+        dataBackend,
+        spaceId,
+        replicaId: pull.replicaId
+      })) === undefined
+    ) {
+      return { outcome: 'unregistered' }
+    }
+    // Opens the run: drops the registration's staging of an earlier
+    // revision of the Resource, checks the quota, and tells what an earlier
+    // run of this pull staged.
+    const opened = await dataBackend.beginChunkStaging({
+      ...members,
+      run,
+      listed: listing.chunks
     })
-    const overQuota = await chunkSetOverQuota({
-      dataBackend,
-      spaceId,
-      listed: listing.chunks,
-      live: live.chunks,
-      staged: stagedBefore
-    })
-    if (overQuota !== undefined) {
-      return { outcome: 'refused', reason: 'quota-exceeded', detail: overQuota }
+    if (!('staged' in opened)) {
+      return opened
     }
     const pulled = await this.#stageChunks({
       chunk,
       listed: listing.chunks,
-      staged: stagedBefore
+      staged: opened.staged
     })
     if (!('staged' in pulled)) {
       return pulled
@@ -1657,7 +1736,17 @@ export class ReplicationManager {
     if (!('input' in parent)) {
       return parent
     }
-    return this.#applyChunkSet({ chunk, created, parent, ...pulled })
+    const result = await this.#applyLiveResource({
+      members,
+      created,
+      acquired: parent,
+      document: chunk.document,
+      dataBackend,
+      // Every listed index is staged: a live chunk's validator is this
+      // server's own, so the source server never answers 304 for it.
+      chunks: { run, staged: pulled.staged }
+    })
+    return { ...result, pulledBytes: pulled.pulledBytes }
   }
 
   /**
@@ -1717,18 +1806,23 @@ export class ReplicationManager {
   }
 
   /**
-   * Reads each listed chunk the replica does not hold into the staging of
-   * the run, one at a time. Before each read it checks the loop's stop
-   * signal and, on a server backend other than the control plane, the
-   * registration on the control plane, so a stop, a Delete Replica or a
-   * Delete Space ends the pull at the next chunk.
+   * Reads each listed chunk into the staging of the run,
+   * `REPLICA_CHUNK_PULL_CONCURRENCY` at a time, in listing order. Before
+   * each read it checks the loop's stop signal, so a stop ends the pull at
+   * the next chunk. The first read that does not end `staged`, or that
+   * throws, ends the pull: no further chunk is started, and the reads in
+   * flight finish first, so what they staged is there for the re-run. The
+   * registration was checked once for the set; a Delete Replica or a
+   * Delete Space during the set is met by `stageChunk` on the control
+   * plane, and by the swap on any backend.
    * @param options {object}
    * @param options.chunk {ChunkPull}
    * @param options.listed {ChunkListing['chunks']}   the peer's checked listing
    * @param options.staged {{ index: number, peerEtag: string }[]}   what an
    *   earlier run of this pull staged
-   * @returns {Promise<{ staged: number[] } | ChangeResult>}   the staged
-   *   indexes, or how the pull ends
+   * @returns {Promise<{ staged: number[], pulledBytes: number } | ChangeResult>}
+   *   the staged indexes and the chunk bytes read from the peer, or how the
+   *   pull ends
    * @throws {PeerRequestError}   a request to the peer failed
    */
   async #stageChunks({
@@ -1739,36 +1833,55 @@ export class ReplicationManager {
     chunk: ChunkPull
     listed: ChunkListing['chunks']
     staged: Array<{ index: number; peerEtag: string }>
-  }): Promise<{ staged: number[] } | ChangeResult> {
-    const { pull, members, dataBackend } = chunk
+  }): Promise<{ staged: number[]; pulledBytes: number } | ChangeResult> {
+    const { pull } = chunk
     const stagedEtags = new Map(
       staged.map(({ index, peerEtag }) => [index, peerEtag])
     )
-    const outcome = { staged: [] as number[] }
-    for (const entry of listed) {
-      // A stopped loop ends its cycle as a removed registration does.
-      if (pull.loop.stopped) {
-        return { outcome: 'unregistered' }
+    const outcome = { staged: [] as number[], pulledBytes: 0 }
+    let ended: ChangeResult | undefined
+    let failure: unknown
+    let next = 0
+    const worker = async (): Promise<void> => {
+      try {
+        while (
+          ended === undefined &&
+          failure === undefined &&
+          next < listed.length
+        ) {
+          // A stopped loop ends its cycle as a removed registration does.
+          if (pull.loop.stopped) {
+            ended = { outcome: 'unregistered' }
+            return
+          }
+          const entry = listed[next++]!
+          const pulled = await this.#pullChunk({
+            chunk,
+            entry,
+            stagedEtag: stagedEtags.get(entry.index)
+          })
+          if (pulled === 'staged' || pulled === 'held') {
+            outcome.staged.push(entry.index)
+            if (pulled === 'staged') {
+              outcome.pulledBytes += entry.size
+            }
+          } else {
+            ended ??= pulled
+          }
+        }
+      } catch (err) {
+        failure ??= err
       }
-      const registration = await this.#dataBackendRegistration({
-        dataBackend,
-        spaceId: members.spaceId,
-        replicaId: pull.replicaId
-      })
-      if (registration === undefined) {
-        return { outcome: 'unregistered' }
-      }
-      const pulled = await this.#pullChunk({
-        chunk,
-        entry,
-        applyReplicaId: registration.replicaId,
-        stagedEtag: stagedEtags.get(entry.index)
-      })
-      if (pulled !== 'staged') {
-        return pulled
-      }
-      outcome.staged.push(entry.index)
     }
+    const workers = Math.min(REPLICA_CHUNK_PULL_CONCURRENCY, listed.length)
+    await Promise.all(Array.from({ length: workers }, worker))
+    if (failure !== undefined) {
+      throw failure
+    }
+    if (ended !== undefined) {
+      return ended
+    }
+    outcome.staged.sort((left, right) => left - right)
     return outcome
   }
 
@@ -1783,26 +1896,22 @@ export class ReplicationManager {
    * @param options {object}
    * @param options.chunk {ChunkPull}
    * @param options.entry {ChunkListing['chunks'][number]}   the listed chunk
-   * @param [options.applyReplicaId] {string}   the id the staging runs
-   *   under: the registration's on the control plane, none on another
-   *   server backend
    * @param [options.stagedEtag] {string}   the source server's `ETag` an
    *   earlier run staged the index under
-   * @returns {Promise<'staged' | ChangeResult>}
+   * @returns {Promise<'staged' | 'held' | ChangeResult>}   `staged` for a
+   *   chunk read and staged, `held` for one an earlier run staged
    * @throws {PeerRequestError}   a request to the peer failed
    */
   async #pullChunk({
     chunk: { pull, members, dataBackend, peerResource, run },
     entry,
-    applyReplicaId,
     stagedEtag
   }: {
     chunk: ChunkPull
     entry: ChunkListing['chunks'][number]
-    applyReplicaId: string | undefined
     stagedEtag: string | undefined
-  }): Promise<'staged' | ChangeResult> {
-    const { spaceId, collectionId, resourceId } = members
+  }): Promise<'staged' | 'held' | ChangeResult> {
+    const { spaceId, replicaId, collectionId, resourceId } = members
     const chunkIndex = entry.index
     // A staging record whose peer served no `ETag` holds an empty one.
     const sentStaged = stagedEtag === '' ? undefined : stagedEtag
@@ -1820,7 +1929,7 @@ export class ReplicationManager {
         sentStaged !== undefined &&
         (served.etag ?? sentStaged) === sentStaged
       ) {
-        return 'staged'
+        return 'held'
       }
       return {
         outcome: 'retry',
@@ -1834,7 +1943,7 @@ export class ReplicationManager {
     try {
       result = await dataBackend.stageChunk({
         spaceId,
-        ...(applyReplicaId !== undefined && { replicaId: applyReplicaId }),
+        replicaId,
         collectionId,
         resourceId,
         run,
@@ -1863,8 +1972,8 @@ export class ReplicationManager {
    * document named, else the staged chunks may belong to a newer one. An
    * inline JSON body comes from the feed document, so its read is
    * conditional on the document's `ETag` and must answer 304. A binary
-   * parent is read whole and its `ETag` compared, and its stream is the
-   * input of the apply.
+   * parent is read as a plain record's content is
+   * ({@link ReplicationManager.#acquireResourceInput}), a 404 a `retry`.
    * @param chunk {ChunkPull}
    * @returns {Promise<{ input: ResourceInput, release: () => void } | ChangeResult>}
    *   the parent's content, or a `retry` counted toward
@@ -1896,84 +2005,15 @@ export class ReplicationManager {
         release: () => {}
       }
     }
-    const served = await pull.peer.readStream({ url, expect: [200, 404] })
-    if (served.stream === undefined) {
-      return obsoleteRetry(url)
-    }
-    if (served.etag !== run.parentEtag) {
-      discard(served)
-      return obsoleteRetry(url)
-    }
-    return {
-      input: binaryInputOf({ ...served, contentType }),
-      release: served.release
-    }
-  }
-
-  /**
-   * The last step of a chunk pull: one `applyResourceWithChunks`, which
-   * swaps the staged chunks in and writes the parent in one critical
-   * section, then the `/meta` record.
-   * @param options {object}
-   * @param options.chunk {ChunkPull}
-   * @param options.created {{ createdAt?: string }}   from the `/meta` read
-   * @param options.parent {{ input: ResourceInput, release: () => void }}
-   *   the parent's content, from the closing read
-   * @param options.staged {number[]}   the staged indexes the set takes
-   * @returns {Promise<ChangeResult>}
-   */
-  async #applyChunkSet({
-    chunk: { members, dataBackend, document, run },
-    created,
-    parent,
-    staged
-  }: {
-    chunk: ChunkPull
-    created: { createdAt?: string }
-    parent: { input: ResourceInput; release: () => void }
-    staged: number[]
-  }): Promise<ChangeResult> {
-    const { spaceId, replicaId, collectionId, resourceId } = members
-    const { epoch } = document
-    let result: ApplyResult
-    try {
-      result = await dataBackend.applyResourceWithChunks({
-        ...members,
-        ...created,
-        resource: {
-          input: parent.input,
-          ...(typeof epoch === 'string' && { epoch })
-        },
-        // The set keeps no live index: every listed chunk is staged, since
-        // a live chunk's validator is this server's own (`#pullChunk`).
-        chunks: { run, kept: [], staged }
-      })
-    } finally {
-      if (parent.input.kind === 'binary') {
-        parent.input.stream.destroy()
-      }
-      parent.release()
-    }
-    this.#dropCaches({
-      kind: 'resource',
-      result,
-      spaceId,
-      collectionId,
-      resourceId
-    })
-    if (result.outcome === 'unregistered' || result.outcome === 'refused') {
-      return result
-    }
-    const metaResult = await this.#applyResourceMeta({
-      spaceId,
-      replicaId,
-      collectionId,
-      resourceId,
+    const acquired = await this.#acquireResourceInput({
+      peer: pull.peer,
+      peerUrl: pull.peerUrl,
+      peerResource,
       document,
-      dataBackend,
-      contentResult: result
+      contentType,
+      expect: [200, 404]
     })
-    return { ...metaResult, pulledChunks: true }
+    return acquired ?? obsoleteRetry(url)
   }
 
   /**
@@ -2068,6 +2108,8 @@ export class ReplicationManager {
    * @param options.peerResource {{ spaceId: string, collectionId: string, resourceId: string }}
    * @param options.document {Record<string, unknown>}
    * @param options.contentType {string}
+   * @param [options.expect] {number[]}   the statuses handled, any but 200
+   *   as a moved record; by default a 404 throws
    * @returns {Promise<{ input: ResourceInput, release: () => void } | undefined>}
    *   `undefined` when the peer's record moved since the feed page, so the
    *   change is retried
@@ -2077,13 +2119,15 @@ export class ReplicationManager {
     peerUrl,
     peerResource,
     document,
-    contentType
+    contentType,
+    expect
   }: {
     peer: PeerClient
     peerUrl: (path: string) => string
     peerResource: { spaceId: string; collectionId: string; resourceId: string }
     document: Record<string, unknown>
     contentType: string
+    expect?: number[]
   }): Promise<{ input: ResourceInput; release: () => void } | undefined> {
     if ('data' in document) {
       return {
@@ -2092,7 +2136,8 @@ export class ReplicationManager {
       }
     }
     const content = await peer.readStream({
-      url: peerUrl(resourcePath(peerResource))
+      url: peerUrl(resourcePath(peerResource)),
+      ...(expect !== undefined && { expect })
     })
     if (content.stream === undefined) {
       return undefined
@@ -2630,7 +2675,8 @@ function isStorableChunkContentType(
 
 /**
  * The entries of a source server's chunk listing, checked before any of it
- * is used: each `index` an integer in `[0, MAX_CHUNK_INDEX]`, strictly
+ * is used: each `index` one a chunk route addresses
+ * (`parseChunkIndexSegment`), strictly
  * ascending, each `size` a non-negative safe integer, each `contentType` a
  * media type a store can hold (`isStorableChunkContentType`).
  * @param json {Record<string, unknown>}   the listing body
@@ -2652,9 +2698,8 @@ function checkedChunkListing(
     const { index, size, contentType } = entry
     if (
       typeof index !== 'number' ||
-      !Number.isInteger(index) ||
+      parseChunkIndexSegment(String(index)) !== index ||
       index <= previous ||
-      index > MAX_CHUNK_INDEX ||
       typeof size !== 'number' ||
       !Number.isSafeInteger(size) ||
       size < 0 ||
@@ -2666,82 +2711,6 @@ function checkedChunkListing(
     previous = index
   }
   return checked
-}
-
-/**
- * A chunk listing's sizes by index.
- * @param chunks {Array<{ index: number, size: number }>}
- * @returns {Map<number, number>}
- */
-function sizesByIndex(
-  chunks: Array<{ index: number; size: number }>
-): Map<number, number> {
-  return new Map(chunks.map(({ index, size }) => [index, size]))
-}
-
-/**
- * The quota pre-check of a chunk pull, made before anything is staged. Each
- * listed chunk must fit the data backend's upload cap. The set's net growth
- * is each listed size less the live chunk the swap replaces at that index
- * and less what an earlier run already staged there (counted in the usage
- * already). A backend whose in-write check is gross against a cached
- * measurement (`usageCheckIsGross`) gets one chunk of headroom. The check
- * is advisory: a 507 or 413 from staging stays authoritative.
- * @param options {object}
- * @param options.dataBackend {StorageBackend}
- * @param options.spaceId {string}
- * @param options.listed {ChunkListing['chunks']}   the peer's listing
- * @param options.live {ChunkListing['chunks']}   the live chunks held here
- * @param options.staged {{ index: number, size: number }[]}   what an
- *   earlier run of this pull staged
- * @returns {Promise<string | undefined>}   the stall detail when the set
- *   does not fit, else `undefined`
- */
-async function chunkSetOverQuota({
-  dataBackend,
-  spaceId,
-  listed,
-  live,
-  staged
-}: {
-  dataBackend: StorageBackend
-  spaceId: string
-  listed: ChunkListing['chunks']
-  live: ChunkListing['chunks']
-  staged: Array<{ index: number; size: number }>
-}): Promise<string | undefined> {
-  const cap = dataBackend.maxUploadBytes
-  const oversized =
-    cap === undefined ? undefined : listed.find(({ size }) => size > cap)
-  if (oversized !== undefined) {
-    return (
-      `Chunk ${oversized.index} is ${oversized.size} bytes, over this ` +
-      `server's upload cap of ${cap} bytes.`
-    )
-  }
-  const liveSizes = sizesByIndex(live)
-  const stagedSizes = sizesByIndex(staged)
-  let growth = 0
-  let largest = 0
-  for (const { index, size } of listed) {
-    growth += size - (liveSizes.get(index) ?? 0) - (stagedSizes.get(index) ?? 0)
-    largest = Math.max(largest, size)
-  }
-  if (dataBackend.usageCheckIsGross) {
-    growth += largest
-  }
-  const { usageBytes, limit } = await dataBackend.reportUsage({ spaceId })
-  if (
-    limit.isUnlimited ||
-    limit.capacityBytes === undefined ||
-    usageBytes + growth <= limit.capacityBytes
-  ) {
-    return undefined
-  }
-  return (
-    `The chunk set needs ${growth} more bytes, and the Space uses ` +
-    `${usageBytes} of its ${limit.capacityBytes}.`
-  )
 }
 
 /**

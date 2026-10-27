@@ -12,9 +12,9 @@
  * tombstone removes every life of the Collection created before it, whatever
  * the stamps of its members. Two lives of one Collection id are ordered by
  * their creating stamps. A chunk carries no received stamp at all: its set
- * is applied with its parent revision in one call
- * (`applyResourceWithChunks`), under a stamp and generation this server
- * mints, so a chunk's stamp orders nothing across servers.
+ * is applied with its parent revision in one call (`applyResource` with
+ * `chunks`), under a stamp and generation this server mints, so a chunk's
+ * stamp orders nothing across servers.
  */
 import { StorageError } from '../errors.js'
 import type {
@@ -47,6 +47,11 @@ export type ApplyResult =
   | { outcome: 'skipped' }
   | { outcome: 'unregistered' }
   | { outcome: 'refused'; reason: ReplicaStallReason; detail: string }
+
+/**
+ * The `refused` member of `ApplyResult`.
+ */
+type RefusedApply = Extract<ApplyResult, { outcome: 'refused' }>
 
 /**
  * Whether a received value is a whole write stamp a store can hold: an
@@ -490,48 +495,107 @@ export function decideResourceApply({
 }
 
 /**
- * The refusal of a chunk swap whose chunk set does not match what is held:
- * an index listed twice, or both kept and staged, a staged index the run
- * holds no staged chunk for, or a kept index with no live chunk. Each is a
- * fault of the caller, which derives both lists from the source server's
- * listing, its own staging and the live set.
+ * The refusal of a chunk swap whose chunk set does not match the staging:
+ * an index listed twice, or a staged index the run holds no staged chunk
+ * for. Each is a fault of the caller, which derives the list from the
+ * source server's listing and its own staging.
  * @param options {object}
  * @param options.resourceId {string}   names the Resource in the detail
- * @param options.kept {number[]}
  * @param options.staged {number[]}
- * @param options.live {Set<number>}   the live chunk indexes
  * @param options.stagedHeld {Set<number>}   the indexes staged under the run
- * @returns {ApplyResult | undefined}   the refusal, or `undefined` when the
+ * @returns {RefusedApply | undefined}   the refusal, or `undefined` when the
  *   set matches
  */
 export function chunkSetRefusal({
   resourceId,
-  kept,
   staged,
-  live,
   stagedHeld
 }: {
   resourceId: string
-  kept: number[]
   staged: number[]
-  live: Set<number>
   stagedHeld: Set<number>
-}): ApplyResult | undefined {
-  const refused = (detail: string): ApplyResult => ({
+}): RefusedApply | undefined {
+  const refused = (detail: string): RefusedApply => ({
     outcome: 'refused',
     reason: 'container-refused',
     detail: `The chunk set of Resource '${resourceId}' ${detail}`
   })
-  if (new Set([...kept, ...staged]).size !== kept.length + staged.length) {
+  if (new Set(staged).size !== staged.length) {
     return refused('names an index twice.')
   }
   const unstaged = staged.find(index => !stagedHeld.has(index))
   if (unstaged !== undefined) {
     return refused(`stages index ${unstaged}, which is not staged.`)
   }
-  const missing = kept.find(index => !live.has(index))
-  if (missing !== undefined) {
-    return refused(`keeps index ${missing}, which is not held.`)
-  }
   return undefined
+}
+
+/**
+ * The quota pre-check of a chunk set, made by `beginChunkStaging` before
+ * anything is staged. Each listed chunk must fit the upload cap. The set's
+ * net growth is the listed sizes, less what the run already staged (counted
+ * in the usage already), less the live chunks the swap frees, plus the
+ * headroom the backend's own in-write check needs (one chunk for a check
+ * that is gross against a cached measurement, none for a counter kept under
+ * the write's lock). Both backends decide through this one function, so
+ * they cannot drift on what fits. The check is advisory: a 507 or 413 from
+ * staging stays authoritative.
+ * @param options {object}
+ * @param options.listed {Array<{ index: number, size: number }>}   the
+ *   source server's listing
+ * @param options.staged {Array<{ size: number }>}   what the run holds
+ * @param options.liveBytes {number}   the live chunk bytes the swap frees
+ * @param options.headroomBytes {number}   `0` for a net in-write check
+ * @param options.usageBytes {number}   the Space's usage
+ * @param [options.capacityBytes] {number}   the Space's capacity; absent
+ *   for no byte quota
+ * @param [options.maxUploadBytes] {number}   the upload cap; absent for none
+ * @returns {RefusedApply | undefined}   the `quota-exceeded` refusal, or
+ *   `undefined` when the set fits
+ */
+export function chunkSetQuotaRefusal({
+  listed,
+  staged,
+  liveBytes,
+  headroomBytes,
+  usageBytes,
+  capacityBytes,
+  maxUploadBytes
+}: {
+  listed: Array<{ index: number; size: number }>
+  staged: Array<{ size: number }>
+  liveBytes: number
+  headroomBytes: number
+  usageBytes: number
+  capacityBytes?: number
+  maxUploadBytes?: number
+}): RefusedApply | undefined {
+  const refused = (detail: string): RefusedApply => ({
+    outcome: 'refused',
+    reason: 'quota-exceeded',
+    detail
+  })
+  const oversized =
+    maxUploadBytes === undefined
+      ? undefined
+      : listed.find(({ size }) => size > maxUploadBytes)
+  if (oversized !== undefined) {
+    return refused(
+      `Chunk ${oversized.index} is ${oversized.size} bytes, over this ` +
+        `server's upload cap of ${maxUploadBytes} bytes.`
+    )
+  }
+  if (capacityBytes === undefined) {
+    return undefined
+  }
+  const sum = (sizes: Array<{ size: number }>): number =>
+    sizes.reduce((total, { size }) => total + size, 0)
+  const growth = sum(listed) - sum(staged) - liveBytes + headroomBytes
+  if (usageBytes + growth <= capacityBytes) {
+    return undefined
+  }
+  return refused(
+    `The chunk set needs ${growth} more bytes, and the Space uses ` +
+      `${usageBytes} of its ${capacityBytes}.`
+  )
 }

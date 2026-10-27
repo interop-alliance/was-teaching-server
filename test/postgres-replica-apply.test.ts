@@ -19,7 +19,7 @@ import {
   SpaceNotFoundError
 } from '../src/errors.js'
 import { formatEtag } from '../src/lib/etag.js'
-import { openTempPostgres, postgresAdminQuery } from './helpers.js'
+import { binaryInput, openTempPostgres, postgresAdminQuery } from './helpers.js'
 import type {
   CollectionMetadata,
   ReplicaRegistration,
@@ -957,26 +957,16 @@ if (!connectionString) {
           await applyNotes({ stamp: peerStamp(-9000) })
         })
 
-        function binary(text: string) {
-          return {
-            kind: 'binary' as const,
-            contentType: 'application/octet-stream',
-            stream: Readable.from([Buffer.from(text)])
-          }
-        }
-
         function stage({
           index,
           text,
           run = runA,
-          resourceId = 'doc',
-          replaces
+          resourceId = 'doc'
         }: {
           index: number
           text: string
           run?: { replicaId: string; parentEtag: string }
           resourceId?: string
-          replaces?: number
         }) {
           return backend.stageChunk({
             ...at,
@@ -984,9 +974,8 @@ if (!connectionString) {
             resourceId,
             run,
             chunkIndex: index,
-            input: binary(text),
-            peerEtag: `"peer-${index}-${text}"`,
-            ...(replaces !== undefined && { replaces })
+            input: binaryInput(text),
+            peerEtag: `"peer-${index}-${text}"`
           })
         }
 
@@ -994,23 +983,44 @@ if (!connectionString) {
           stamp,
           envelope,
           run = runA,
-          kept = [],
           staged = []
         }: {
           stamp: WriteStamp
           envelope: string
           run?: { replicaId: string; parentEtag: string }
-          kept?: number[]
           staged?: number[]
         }) {
-          return backend.applyResourceWithChunks({
+          return backend.applyResource({
             ...at,
             replicaId,
             generation: 'genDoc',
             stamp,
             createdAt: '2026-10-01T00:00:00.000Z',
-            resource: { input: binary(envelope) },
-            chunks: { run, kept, staged }
+            resource: { deleted: false, input: binaryInput(envelope) },
+            chunks: { run, staged }
+          })
+        }
+
+        function begin({
+          run = runA,
+          listed,
+          resourceId = 'doc',
+          collectionId = 'notes',
+          replicaId: under = replicaId
+        }: {
+          run?: { replicaId: string; parentEtag: string }
+          listed: Array<{ index: number; size: number }>
+          resourceId?: string
+          collectionId?: string
+          replicaId?: string
+        }) {
+          return backend.beginChunkStaging({
+            spaceId,
+            replicaId: under,
+            collectionId,
+            resourceId,
+            run,
+            listed
           })
         }
 
@@ -1049,7 +1059,7 @@ if (!connectionString) {
           )
         })
 
-        it('swaps a staged set in with its parent, keeping and removing live chunks', async () => {
+        it('swaps a staged set in with its parent, removing the live chunks it does not list', async () => {
           for (const [index, text] of ['aa', 'bbb', 'cccc'].entries()) {
             assert.deepStrictEqual(await stage({ index, text }), {
               outcome: 'applied'
@@ -1082,22 +1092,25 @@ if (!connectionString) {
             []
           )
           assert.equal(await usage(), 4 + 9)
-          const kept = (await backend.getChunkMetadata({
+          const first0 = (await backend.getChunkMetadata({
             ...at,
             chunkIndex: 0
           }))!
-          const replaced = (await backend.getChunkMetadata({
+          const first1 = (await backend.getChunkMetadata({
             ...at,
             chunkIndex: 1
           }))!
           // Each chunk is a local record under this store's clock.
-          for (const chunk of [kept, replaced]) {
+          for (const chunk of [first0, first1]) {
             assert.equal(chunk.originId, backend.originId)
             assert.notEqual(chunk.generation, 'genDoc')
           }
 
-          // The next revision keeps 0, replaces 1, adds 3 and drops 2.
-          await stage({ index: 1, text: 'BBBBB', run: runB, replaces: 3 })
+          // The next revision lists 0 again, replaces 1, adds 3 and drops 2.
+          // Every listed chunk is staged, since a live chunk's validator is
+          // this server's own.
+          await stage({ index: 0, text: 'aa', run: runB })
+          await stage({ index: 1, text: 'BBBBB', run: runB })
           await stage({ index: 3, text: 'd', run: runB })
           // Nothing live moved before the swap.
           assert.deepStrictEqual(await chunkTexts(), {
@@ -1105,14 +1118,13 @@ if (!connectionString) {
             1: 'bbb',
             2: 'cccc'
           })
-          assert.equal(await usage(), 4 + 9 + 6)
+          assert.equal(await usage(), 4 + 9 + 8)
           assert.deepStrictEqual(
             await swap({
               stamp: peerStamp(-500),
               envelope: 'env-2',
               run: runB,
-              kept: [0],
-              staged: [1, 3]
+              staged: [0, 1, 3]
             }),
             { outcome: 'applied' }
           )
@@ -1126,16 +1138,14 @@ if (!connectionString) {
             'env-2'
           )
           assert.equal(await usage(), 5 + 2 + 5 + 1)
-          assert.deepStrictEqual(
-            await backend.getChunkMetadata({ ...at, chunkIndex: 0 }),
-            kept
-          )
-          const rewritten = (await backend.getChunkMetadata({
-            ...at,
-            chunkIndex: 1
-          }))!
-          assert.equal(rewritten.originId, backend.originId)
-          assert.notEqual(rewritten.generation, replaced.generation)
+          for (const [index, before] of [first0, first1].entries()) {
+            const rewritten = (await backend.getChunkMetadata({
+              ...at,
+              chunkIndex: index
+            }))!
+            assert.equal(rewritten.originId, backend.originId)
+            assert.notEqual(rewritten.generation, before.generation)
+          }
           assert.deepStrictEqual(
             await backend.listStagedChunks({ ...at, run: runB }),
             []
@@ -1164,7 +1174,7 @@ if (!connectionString) {
           assert.equal(await usage(), 3 + 3)
         })
 
-        it('refuses a set that does not match the staging or the live chunks', async () => {
+        it('refuses a set that does not match the staging', async () => {
           await stage({ index: 0, text: 'aa' })
           assert.partialDeepStrictEqual(
             await swap({ stamp: peerStamp(-1000), envelope: 'e', staged: [1] }),
@@ -1174,16 +1184,17 @@ if (!connectionString) {
             await swap({
               stamp: peerStamp(-1000),
               envelope: 'e',
-              kept: [1],
-              staged: [0]
+              staged: [0, 0]
             }),
             { outcome: 'refused', reason: 'container-refused' }
           )
           assert.equal(await backend.getResourceMetadata(at), undefined)
-          assert.equal(
-            (await backend.listStagedChunks({ ...at, run: runA })).length,
-            1
+          // The refusal releases the staging, as a loss does.
+          assert.deepStrictEqual(
+            await backend.listStagedChunks({ ...at, run: runA }),
+            []
           )
+          assert.equal(await usage(), 0)
         })
 
         it('lists staged chunks with their peer ETags, a restage replacing one', async () => {
@@ -1202,13 +1213,82 @@ if (!connectionString) {
             await backend.listStagedChunks({ ...at, run: runB }),
             []
           )
-          // A run of a later revision replaces the registration's earlier one.
+          // Opening a run of a later revision drops the registration's
+          // earlier one; staging alone does not.
           await stage({ index: 0, text: 'z', run: runB })
+          assert.equal(
+            (await backend.listStagedChunks({ ...at, run: runA })).length,
+            2
+          )
+          assert.deepStrictEqual(
+            await begin({ run: runB, listed: [{ index: 0, size: 1 }] }),
+            { staged: [{ index: 0, size: 1, peerEtag: '"peer-0-z"' }] }
+          )
           assert.deepStrictEqual(
             await backend.listStagedChunks({ ...at, run: runA }),
             []
           )
           assert.equal(await usage(), 1)
+        })
+
+        it('opens a run under the registration and a live Collection only, and checks the quota', async () => {
+          assert.deepStrictEqual(
+            await begin({ listed: [], replicaId: 'unknown' }),
+            { outcome: 'unregistered' }
+          )
+          assert.deepStrictEqual(
+            await begin({ listed: [], collectionId: 'absent' }),
+            { outcome: 'skipped' }
+          )
+          // A chunk over the upload cap.
+          const cap = backend.maxUploadBytes
+          backend.maxUploadBytes = 4
+          assert.partialDeepStrictEqual(
+            await begin({ listed: [{ index: 0, size: 5 }] }),
+            { outcome: 'refused', reason: 'quota-exceeded' }
+          )
+          backend.maxUploadBytes = cap
+          // 20 bytes held, a quota of 30: a 10-byte set fits and an 11-byte
+          // one does not. The check is net of what the run staged already
+          // and of the live set the swap frees.
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId: 'notes',
+            resourceId: 'filler',
+            generation: 'genFiller',
+            stamp: peerStamp(-2000),
+            resource: { deleted: false, input: binaryInput('f'.repeat(20)) }
+          })
+          backend.capacityBytes = 30
+          const ten = [
+            { index: 0, size: 4 },
+            { index: 1, size: 6 }
+          ]
+          assert.deepStrictEqual(await begin({ listed: ten }), { staged: [] })
+          assert.partialDeepStrictEqual(
+            await begin({ listed: [...ten, { index: 2, size: 1 }] }),
+            { outcome: 'refused', reason: 'quota-exceeded' }
+          )
+          await stage({ index: 0, text: 'aaaa' })
+          assert.deepStrictEqual(await begin({ listed: ten }), {
+            staged: [{ index: 0, size: 4, peerEtag: '"peer-0-aaaa"' }]
+          })
+          await stage({ index: 1, text: 'bbbbbb' })
+          await swap({ stamp: peerStamp(-1000), envelope: '', staged: [0, 1] })
+          assert.equal(await usage(), 30)
+          // The live set of 10 bytes frees under the swap, so a set of 10
+          // fits again under the full quota and a set of 11 does not.
+          assert.deepStrictEqual(await begin({ run: runB, listed: ten }), {
+            staged: []
+          })
+          assert.partialDeepStrictEqual(
+            await begin({
+              run: runB,
+              listed: [...ten, { index: 2, size: 1 }]
+            }),
+            { outcome: 'refused', reason: 'quota-exceeded' }
+          )
         })
 
         it('answers unregistered and skipped without staging', async () => {
@@ -1218,7 +1298,7 @@ if (!connectionString) {
               replicaId: 'unknown',
               run: runA,
               chunkIndex: 0,
-              input: binary('x'),
+              input: binaryInput('x'),
               peerEtag: '"x"'
             }),
             { outcome: 'unregistered' }
@@ -1230,7 +1310,7 @@ if (!connectionString) {
               replicaId,
               run: runA,
               chunkIndex: 0,
-              input: binary('x'),
+              input: binaryInput('x'),
               peerEtag: '"x"'
             }),
             { outcome: 'skipped' }
@@ -1276,25 +1356,6 @@ if (!connectionString) {
           assert.equal(await usage(), 0)
         })
 
-        it('reclaims the other runs of a registration for a Resource, less one', async () => {
-          await stage({ index: 0, text: 'aa' })
-          const scope = { ...at, replicaId }
-          assert.equal(
-            await backend.reclaimStaging({ ...scope, exceptRun: runA }),
-            0
-          )
-          assert.equal(await usage(), 2)
-          assert.equal(
-            await backend.reclaimStaging({ ...scope, exceptRun: runB }),
-            1
-          )
-          assert.equal(await usage(), 0)
-          assert.deepStrictEqual(
-            await backend.listStagedChunks({ ...at, run: runA }),
-            []
-          )
-        })
-
         it('counts staged bytes toward usage and fits a same-size rewrite under a full quota', async () => {
           // 20 bytes elsewhere, and a 50-byte stream of two chunks under a
           // 0-byte envelope: 70 bytes held, a quota of 70.
@@ -1305,7 +1366,7 @@ if (!connectionString) {
             resourceId: 'filler',
             generation: 'genFiller',
             stamp: peerStamp(-2000),
-            resource: { deleted: false, input: binary('f'.repeat(20)) }
+            resource: { deleted: false, input: binaryInput('f'.repeat(20)) }
           })
           await stage({ index: 0, text: 'a'.repeat(25) })
           await stage({ index: 1, text: 'b'.repeat(25) })
@@ -1319,18 +1380,8 @@ if (!connectionString) {
             QuotaExceededError
           )
           assert.equal(await usage(), 70)
-          await stage({
-            index: 0,
-            text: 'A'.repeat(25),
-            run: runB,
-            replaces: 25
-          })
-          await stage({
-            index: 1,
-            text: 'B'.repeat(25),
-            run: runB,
-            replaces: 25
-          })
+          await stage({ index: 0, text: 'A'.repeat(25), run: runB })
+          await stage({ index: 1, text: 'B'.repeat(25), run: runB })
           assert.equal(await usage(), 120)
           assert.deepStrictEqual(
             await swap({

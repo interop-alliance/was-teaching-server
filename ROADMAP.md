@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 223
+nextAvailableId: 229
 
 <!-- roadmap-order:index:start -->
 
@@ -36,6 +36,7 @@ Ready:
 
 Ready:
 
+- WAS-223 [M] (*) Chunk listing entries carry each chunk's `etag`
 - WAS-142 [M] (*) Problem documents on every route, and Fastify's own errors
   typed
 - WAS-66 [M] (*) Accept ids beyond the unreserved charset (percent-encoding on
@@ -79,6 +80,12 @@ Ready:
 - WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
 - WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
+- WAS-224 [M] (*) Admit a replica Space under a bootstrap did:key, and resolve
+  the auxiliary Space's controller across Spaces
+- WAS-225 [M] (*) Client-annex clause: a ladder-signed replica pull gated on the
+  annex document's replica pointer
+- WAS-227 [M] (*) Pause a replica registration, and replace its pull capability
+  in place (blocks 1)
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -88,8 +95,13 @@ Ready:
 - WAS-184 [L] (*) Write-time creation and revision statements
 - WAS-221 [L] (*) Registration check under the data backend's lock for a
   Resource apply
-- WAS-222 [L] (*) Chunk replication cleanups: fixed manifest members, one apply
-  verb, cheaper staging
+
+Chains:
+
+- WAS-227 [M] (*) Pause a replica registration, and replace its pull capability
+  in place
+  - WAS-226 [M] (*) Open the replicas route to a root-chained delegated
+    invocation
 
 **Performance**
 
@@ -113,6 +125,7 @@ Ready:
 - WAS-47 [M] (*) Cover `start.ts` and the untested config parsers
 - WAS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 - WAS-10 [M] (*) Open the upstream `edv-client` truncation issue
+- WAS-228 [M] (*) Export the two-server test helpers from the `/testing` entry
 - WAS-103 [L] (*) Make `spacePath` / `collectionPath` return the canonical
   container URL by default
 - WAS-168 [L] (*) `SERVER_URL` move runbook for the server DID log (portable
@@ -552,6 +565,45 @@ orders by content stamps would not see that change as a content revision.
 
 Conformance gaps against the spec, spec-side proposals this server would
 implement once decided, and research that may end in either.
+
+### WAS-223: [M] (*) Chunk listing entries carry each chunk's `etag`
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: chunks, wire-contract
+- discovered-from: was-client code review of chunk reaping (2026-10-26)
+- touches:
+  - was-teaching-server: `src/types.ts` (`ChunkListing`), `src/backends/*`
+    (`listChunks`), `src/requests/ChunkRequest.ts` (list handler doc),
+    ARCHITECTURE.md (chunk listing), docs/openapi if the listing is described
+    there
+  - was-client: shipped -- `WasTransport.listChunks` returns `etag` when present
+    and the chunk reap pins each `deleteChunk` on it (`If-Match`)
+  - was-conformance-suite: a listing case asserting each entry's `etag` equals
+    the `ETag` the chunk's own `GET` serves
+- acceptance:
+  - [ ] Each `ChunkListing.chunks` entry carries `etag`: the quoted strong
+        validator the chunk's own `GET` and `HEAD` answer with, so a client can
+        pin a `DELETE` of a listed chunk with `If-Match` without a probe per
+        chunk
+  - [ ] The filesystem backend formats it from the sidecar the listing already
+        reads to judge liveness (no extra read or stat per chunk); the Postgres
+        backend adds the validator columns to the listing's one `SELECT`
+  - [ ] A backend test per backend asserts the listed `etag` equals the one
+        `getChunk` reports for the same chunk, and the chunk request tests cover
+        the member on the wire
+
+A client that replaces a chunked encrypted document deletes the chunks the new
+document does not cover, and wants each delete pinned to the chunk it listed so
+a concurrent writer's freshly stored chunk at the same index is left alone (the
+server answers 412). The listing today reports only `index`, `size` and
+`contentType`, so the client has nothing to pin on and its deletes are
+unconditional. The cost is nil on both backends: the filesystem listing already
+parses every chunk's sidecar (`LiveRepresentation.sidecar`) and the validator is
+`formatEtag(validatorPartsOf(sidecar))`; the Postgres listing already fetches
+the rows. The spec does not define the listing's shape, so this is a server
+convention until it does.
 
 ### WAS-142: [M] (*) Problem documents on every route, and Fastify's own errors typed
 
@@ -1230,6 +1282,323 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
+### WAS-224: [M] (*) Admit a replica Space under a bootstrap did:key, and resolve the auxiliary Space's controller across Spaces
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: replication, registration, webvh, zcap
+- discovered-from: freewallet FW-688 (2026-10-26)
+- touches:
+  - was-teaching-server: `src/sync/registration.ts`
+    (`assertLocalControllerIsPeerKey`, `assertPeerSpaceMatches`,
+    `parseReplicaRegistration`), `src/lib/webvhLogLocation.ts` (the
+    cross-Space lookup), docs/replication.md ("Registration checks"),
+    ARCHITECTURE.md (the `src/sync/` entry)
+  - wallet-attached-storage-spec: decision 0013 amended (the controller
+    check's new branch) and WASS-50's registration-check text; WASS-58's
+    touches gain the `fromSpace` comparison
+  - freewallet: the replica registration ceremony (FW-638, FW-688) creates and
+    registers under the bootstrap did:key
+  - was-conformance-suite: PWSCS-23's registration-check cases
+- acceptance:
+  - [ ] A registration onto a local Space whose controller is a did:key is
+        admitted when the source Space's controller is a did:webvh this server
+        can resolve, the pull capability's chain is `[root, capability]` (one
+        delegated link), and that link's delegation proof is signed by a
+        method the resolved document lists under `capabilityDelegation`. The
+        local did:key need not appear in the document
+  - [ ] The did:webvh resolves either as today (hosted in `fromSpace`, its log
+        read through the pull capability and verified offline) or from a local
+        copy another registration on this server already maps
+        (`locateWebvhLog`). The second form admits the auxiliary Space, whose
+        controller's log lives in the account Space and reaches this server
+        through the account replica's registration
+  - [ ] A re-delegated two-link chain is refused, and so is a ladder-signed
+        capability the source server refuses (the registration's read of the
+        source Space fails first)
+  - [ ] Update Space promotes the auxiliary replica Space to the account
+        did:webvh resolved through the account replica's mapping, and the
+        Delete Replica guard (`controllerUnmappedByRemoval`) refuses removing
+        the account replica's registration while the auxiliary replica Space
+        is controlled by that DID
+  - [ ] The `invocationTarget` comparison against `fromSpace`
+        (`registration.ts:187`) is named in WASS-58's touches, so it also
+        accepts the `*` subtree form once that marker ships. No dependency on
+        WASS-58
+  - [ ] docs/replication.md and ARCHITECTURE.md state the branch, and a
+        two-server test (in the style of
+        `test/replicated-webvh-controller.test.ts`) covers each box above
+
+Context. A wallet copies its account onto a second server by creating a Space
+there, delegating a read-only pull capability to that server's `serverDid`,
+and registering the source Space. The replica server creates a Space only
+under a did:key. Today the controller check admits a local did:key only when
+the source controller's document lists it under `capabilityInvocation`
+(`assertLocalControllerIsPeerKey`, `registration.ts:498-572`, the branch
+WAS-205 added; the listing check is at `:566`). An account anchored in a
+standing credential's ladder has no such key, so it cannot register a replica.
+The wallet uses a bootstrap did:key K derived from a seed on its directory
+entry for the replica server. K creates the replica Space, registers it,
+promotes it to the account did:webvh after the first pull, and controls
+nothing afterwards.
+
+The branch also has to cover the client-annex auxiliary Space. Its controller
+is the account did:webvh, whose log is in the account Space, so today's
+requirement that the log be hosted in `fromSpace` itself
+(`hosted.fromSpace !== record.fromSpace`, `registration.ts:521`) refuses it.
+This is the cross-Space case of WAS-96's open question 5. WAS-206's mapping
+rule (`replicaMappingConflict`) is unchanged.
+
+The squat analysis, from the design. The replica server cannot read the
+wallet's replica pointer (it lives in the annex, which is not copied yet), so
+the gate sits at the source server: the registration reads the source Space
+through the capability, and the source refuses a ladder-signed pull with no
+pointer (WAS-225). A third party holding a re-delegated grant fails the
+one-link condition. One residue stays open, left to this item by the design:
+any reader of the wallet's directory can register the recorded capability
+under its own did:key in a tear between the wallet's mint and its POST, and
+then win `replicaMappingConflict`. Binding the local did:key to a K recorded
+with the capability would close it. That needs a new wire member, so it is a
+question for Dmitri before coding, not an acceptance box. Related: WAS-207
+(a log that declares witnesses still cannot replicate), WAS-210 (one function
+for where a did:webvh resolves from).
+
+---
+
+### WAS-225: [M] (*) Client-annex clause: a ladder-signed replica pull gated on the annex document's replica pointer
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: client-annex, zcap, replication, webvh
+- discovered-from: freewallet FW-688 (2026-10-26)
+- touches:
+  - was-teaching-server: `src/lib/clientAnnexClause.ts`
+    (`ladderDelegationAdmitted` and the module header),
+    `src/config.default.ts` (the `CLIENT_ANNEX_VERSION` comment),
+    docs/client-annex-clause.md (a sixth shape), ARCHITECTURE.md (the clause
+    entry), `decisions/0002` (amended 2026-10-26)
+  - app-connect-spec: decision 0003 (clause A's sixth predicate, the
+    normative text) and decision 0001 (the `ReplicaServer` service entry
+    type in the annex document)
+  - wallet-core: the ladder-signed pull mint, the ladder-clause counterpart
+    fixtures, and the `hostConformance.ts` header's predicate count
+  - wallet-attached-storage-spec: decision 0013 amended (the pull may be
+    ladder-signed under the annex pointer; why that is consistent with 0013's
+    rejection of acting on service entries); WASS-58's touches gain the pull
+    capability's target
+- acceptance:
+  - [ ] A ladder-signed delegation is admitted when its sole `controller`
+        equals the `serviceEndpoint` of a `https://w3id.org/pws#ReplicaServer`
+        service entry in the annex document the delegator's account document
+        names through its `DelegatedClients` entry. The annex document is
+        resolved and verified out of this server's storage
+        (`resolveWebvhController`), with no network fetch
+  - [ ] The controller parses as a did:webvh whose path is `space:server:id`
+  - [ ] The `invocationTarget` is the canonical trailing-slash URL of the
+        account Space (the Space carrying the delegator's log) or of the
+        auxiliary Space the `DelegatedClients` entry names, or the `*` subtree
+        form of either once WASS-58's marker ships
+  - [ ] `allowedAction` is present, non-empty, and within {GET, HEAD}, and the
+        parent is the Space's synthesized root
+  - [ ] Two-server tests: admitted with the pointer present; for the
+        account-Space target, refused when the pointer is absent, names
+        another server, or sits only in a superseded generation; refused for
+        POST, a Resource target, a non-root parent, and two controllers; a
+        re-point to a generation with no pointer refuses the next account-Space
+        pull
+  - [ ] Two-server test, expected result for now: a `['GET']` ladder-signed
+        pull of the auxiliary Space with the pointer removed is still admitted,
+        through predicate 2 branch two. The test names branch two as the
+        admitting path, so the branch's later narrowing (freewallet FW-689)
+        flips it to a refusal
+  - [ ] `CLIENT_ANNEX_VERSION` stays `0.1`; its comment in
+        `src/config.default.ts` (`:433-437`) and the clause's header and
+        `ladderDelegationAdmitted` JSDoc (`clientAnnexClause.ts:12-13`, `:626`)
+        count six predicates
+  - [ ] docs/client-annex-clause.md and ARCHITECTURE.md describe the shape
+
+Context. Clause A bounds what a ladder VM may delegate to five shapes
+(`ladderDelegationAdmitted`, `clientAnnexClause.ts:647-826`), none with a
+server-DID grantee. So a credential-anchored account cannot sign the pull
+capability a replica server needs. The wallet records each replica server as a
+service entry in the annex document before it delegates, so the pull is loud
+at the annex log's grade. The source server is the only reader that acts on
+it. Removing the entry ends that server's ladder-signed pull of the account
+Space; the auxiliary-Space pull survives it until branch two is narrowed (see
+below). The extra
+read is the annex document's local resolution. Predicate 1 (`:671-713`) only
+compares the annex DID string and locates its log; this predicate resolves the
+document through the verified-document cache. Reading a verified log fact as
+an authorization gate is not a locator fetch, so it stays clear of decision
+0013's rejection of acting on service entries.
+
+Overlap with branch two, accepted 2026-10-26. Predicate 2's second branch
+(`:724-736`) already admits a GET of a whole `DelegatedClientsSpace` to any
+grantee, with no pointer gate. Predicates are alternatives, so a ladder-signed
+auxiliary-Space pull to a `serverDid` stays admitted by branch two after the
+pointer is removed. Dmitri accepted this rather than carve branch two in this
+item: until a later design narrows branch two with a grantee bound (freewallet
+FW-689), removing the pointer ends the account-Space pull only, and revocation
+at the auxiliary Space is the auxiliary pull's only stop. That narrowing is
+what makes the auxiliary pull pointer-gated in fact. The account-Space half has
+no such overlap.
+
+Candidate, not acceptance: verify the annex log incrementally from the cached
+head. On a credential-anchored account the pointed generation grows by one
+entry per transient visit, and the cache re-verifies the whole log from genesis
+whenever its ETag moved, so the first pull after each visit pays for the whole
+log, once per replica server.
+
+---
+
+### WAS-227: [M] (*) [blocks 1] Pause a replica registration, and replace its pull capability in place
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: replication, registration, wire-contract
+- discovered-from: freewallet FW-688 (2026-10-26)
+- blocks: WAS-226
+- touches:
+  - was-teaching-server: `src/routes.ts` (a PUT route on the registration),
+    `src/requests/ReplicaRequest.ts` (the PUT handler; `replicaEtag`, whose
+    comment says the record never changes; the Delete Replica refusal text),
+    `src/sync/replication.ts` (a per-registration pause; `status`),
+    `src/sync/registration.ts` (re-validation of a replacement),
+    `src/lib/webvhLogLocation.ts`, `src/types.ts` (a replace method on the
+    backend contract), both backends, `src/config.default.ts` (the
+    `REPLICATION_VERSION` comment), docs/replication.md ("Registrations",
+    "The pull loop", "Stalls and backoff", "Guards on Delete Replica and
+    Update Space"), ARCHITECTURE.md
+  - storage-core: `ReplicaRegistration` gains `pausedAt`;
+    `ReplicaStatus.state` gains `paused`
+  - wallet-attached-storage-spec: decision 0013 amended (against its "no PUT
+    in v1" and "only the removal of its registration stops a loop") and
+    WASS-50's text
+  - was-client: pause, resume, and capability replacement on `Space`
+  - was-conformance-suite: PWSCS-23 gains the PUT cases
+- acceptance:
+  - [ ] The registration record gains `pausedAt`, an ISO 8601 UTC time;
+        absent means not paused. A PUT on the registration URL writes and
+        clears it
+  - [ ] A paused registration's loop does not run, at boot included, and
+        `status.state` reports `paused` while no cycle is in flight. Clearing
+        the member schedules a cycle at once
+  - [ ] A paused registration keeps mapping its did:webvh controller in
+        `webvhLogLocation.ts`, so the DID still resolves and the Delete Replica
+        guard still holds
+  - [ ] A PUT may also replace the pull capability, with the same `fromSpace`.
+        The new capability is validated as a POST's is (grantee this server's
+        DID, chain and actions, and a read of the source Space through it,
+        which also re-reads `pullsChunks`). The registration keeps its id, its
+        loop, and its `.replica.<id>.state.json` checkpoint, and the running
+        loop uses the new capability from its next cycle
+  - [ ] The registration's `ETag` moves on every PUT, and the served
+        `replicas` member on the Space Metadata object is unchanged by a PUT
+  - [ ] Both backends store the replaced record atomically, beside today's
+        create-only `createReplica`
+  - [ ] The Delete Replica refusal no longer advises add-then-remove
+  - [ ] `REPLICATION_VERSION` stays `0.1`; its comment in
+        `src/config.default.ts` (`:452-456`) names the pause and the in-place
+        replacement
+  - [ ] Two-server tests: a paused registration pulls nothing, reports
+        `paused`, and its DID resolves; a resume pulls; a replacement keeps the
+        id and the checkpoint, so the next cycle does not re-read the source
+        from the start
+
+Context. A wallet's Stop keeps the copy as a snapshot. Deregistering would
+leave a promoted Space's controller unresolvable, and the guard refuses it
+(`ReplicaRequest.ts:232-251`, through `controllerUnmappedByRemoval`,
+`webvhLogLocation.ts:570`). Leaving the loop running would back off on 404
+against a source that refuses it, forever. Today the only pause is
+manager-wide (`#paused`, `pause()` and `resume()` in `src/sync/replication.ts`,
+`:265`, `:386-400`, checked in `#schedule` at `:520`), used by tests. A
+renewal or a re-start of a stopped replica also needs a new pull capability.
+Without an in-place replacement that is a new registration id with an empty
+checkpoint, since loop state is per id, and the copy is read again from the
+start.
+
+Wire details to settle with Dmitri before coding. The member name, its format,
+the PUT verb, and the `paused` state are decided. Not decided: the PUT body (the
+full record as a POST carries it, with only `capability` and `pausedAt`
+allowed to differ, is the obvious candidate), who sets the `pausedAt` value
+(the client or this server's clock), whether a PUT takes `If-Match`, and the
+registration `ETag`'s new shape. The CORS defaults already list PUT
+(`src/plugin.ts:554-562`).
+
+### WAS-226: [M] (*) [after WAS-227] Open the replicas route to a root-chained delegated invocation
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: replication, registration, zcap, client-annex
+- discovered-from: freewallet FW-688 (2026-10-26)
+- blocked-by: WAS-227
+- touches:
+  - was-teaching-server: `src/requests/ReplicaRequest.ts` (each handler's
+    `containerRule: 'controller-only'`, `:78`, `:144`, `:180`, `:224`,
+    `:305`, and the module header), `src/routes.ts` (the replicas comment),
+    `src/lib/containerRule.ts`, `src/lib/clientAnnexClause.ts`,
+    docs/replication.md, docs/client-annex-clause.md ("Controller-only
+    operations"), ARCHITECTURE.md (the `src/sync/` entry, "controller-only"),
+    `decisions/0002` (amended 2026-10-26), `decisions/0005` (its Context says
+    the registration record is controller-only)
+  - wallet-attached-storage-spec: decision 0013 ("controller-only, every
+    method included" is amended) and WASS-50; WASS-1 / WAS-59's Authorization
+    column for `replicas`
+  - app-connect-spec: decision 0003 (the replica-server-side predicate)
+  - was-client: the replica methods' "Controller-only" JSDoc
+    (`Space.ts:791-875`); `/paths` exports `spaceReplicas` and
+    `replicaRegistration`
+  - was-conformance-suite: PWSCS-23 ("registration endpoints are
+    controller-only, including GET") revised
+- acceptance:
+  - [ ] Every replicas route (list, register, read, remove, status, and
+        WAS-227's PUT) admits a delegated invocation whose chain roots in the
+        Space's root, in place of `controller-only`. The reads keep demanding
+        the auth headers
+  - [ ] Clause A gains a predicate for it: the `invocationTarget` is the
+        Space's replicas URL `/space/<S>/replicas` exactly (or its `*` subtree
+        form once WASS-58's marker ships), `allowedAction` is within {GET,
+        POST, PUT, DELETE}, the parent is the Space's synthesized root, with no
+        pointer gate and no grantee bound
+  - [ ] A delegated POST is admitted only when its `fromSpace` equals the
+        `fromSpace` of a registration already stored on that Space. A root POST
+        stays unbounded
+  - [ ] The Delete Replica guard still refuses removing the one registration
+        that maps the Space's did:webvh controller, for a delegated caller too
+  - [ ] Two-server tests: a ladder-signed delegated grant lists, reads status,
+        re-registers against an existing `fromSpace`, pauses through PUT, and
+        removes a registration on a promoted replica; a delegated POST naming a
+        new `fromSpace` is refused; a root POST naming one is admitted
+  - [ ] docs, ARCHITECTURE.md, and the Context sentence of `decisions/0005`
+        state the new authorization
+
+Context. Once a replica Space is promoted to the account did:webvh, its
+replicas routes need a root invocation by a key the account document lists
+under `capabilityInvocation`. A credential-anchored account has none, and every
+pull capability dies at its signer's next withdrawal, a passphrase change
+included. So a session of another credential must be able to maintain the
+registration. The wallet mints a short-lived grant on the replicas URL with its
+ladder VM, to its own bare did:key, and invokes it as that did:key.
+
+The predicate carries no pointer gate, since the replica server could read the
+pointer only from its own copy of the annex, which lags by a pull and does not
+exist before the auxiliary Space is copied. What the grant reaches is bounded
+otherwise. The guard keeps the one mapping registration. A listing exposes pull
+capabilities only their `serverDid` can invoke. The POST bound closes the one
+widening: without it a phished credential's holder could register its own
+server as a second source serving the account DID as `controller`
+(`assertPeerSpaceMatches` only string-compares it, `registration.ts:452`), and
+have that source's tombstones applied to the copy. It is shape-gated, like
+predicates 1 to 5. WAS-225 and this item both edit `clientAnnexClause.ts` and
+the clause's predicate count; whichever lands second updates the count.
+Related: WAS-209 (a ladder-signed delegation on a replica, under the clause).
+
+---
+
 ### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 
 - status: todo
@@ -1422,51 +1791,7 @@ policy copy is written. The apply's own in-lock check therefore covers the
 control plane only, and the `replicaId`-optional mode is on the general apply
 contract rather than confined to the loop.
 
-### WAS-222: [L] (*) Chunk replication cleanups: fixed manifest members, one apply verb, cheaper staging
-
-- status: todo
-- priority: low
-- backend: *
-- labels: replication, chunks, backend, performance
-- discovered-from: simplify review of the chunk replication work (2026-10-26)
-- acceptance:
-  - [ ] The staging manifest's `kept` list and `swapped` flag are dropped, with
-        docs/filesystem-layout.md and the chunk replication design doc amended
-        (the loop stages every listed chunk, since a live chunk's validator is
-        this server's own, and the manifest is written only once the swap is
-        decided, so its presence is the flag), or the layout doc names the case
-        that sets either to another value
-  - [ ] `applyResourceWithChunks` becomes a `chunks` option of `applyResource`,
-        or `StorageBackend`'s doc says why the two verbs stay apart, and
-        `reclaimStaging`'s `exceptRun` form goes once staging itself drops the
-        registration's other runs for the Resource
-  - [ ] The quota pre-check of a chunk set runs behind the backend, so
-        `usageCheckIsGross` leaves `StorageBackend`, and `pullsChunks` is read
-        from the source server's service description per cycle rather than
-        stored on the registration, or docs/replication.md states why the stored
-        form stays
-  - [ ] `stageChunk` settles the Resource's staging and drops the registration's
-        other runs on the first chunk of a run only, and credits the one index
-        it stages; the data-backend registration re-check runs once per chunk
-        set; a Collection that cannot hold chunks skips the chunk listing read
-  - [ ] The transfer phase of a chunk set reads a few chunks from the source
-        server at once (a small fixed concurrency, the staging lock and quota
-        headroom kept as they are), or the loop's doc says why it stays serial
-  - [ ] The replica state is persisted after a chunk pull only past a byte or
-        document threshold and at the end of the Collection, rather than after
-        every Resource whose chunks were pulled
-  - [ ] A test in `test/` covers each change kept
-
-The chunk pull shipped with four backend methods, a stored capability flag, a
-backend trait the loop pads its quota arithmetic by, and a manifest whose `kept`
-is always empty and whose `swapped` is always `true`. Each is a special case
-layered on the general apply path. Per chunk, staging re-scans the whole
-Resource (settle, drop other runs, list the live set) and re-reads the
-registration on the control plane, so staging an n-chunk set does O(n^2) work in
-directory entries and 2n control-plane reads; every live Resource of a
-chunk-pulling registration pays a chunk listing round trip, chunked or not; the
-chunks of one set are transferred one at a time; and the replica state is
-rewritten after every Resource whose chunks were pulled.
+---
 
 ## Performance
 
@@ -1872,6 +2197,39 @@ caller-supplied protected-header params"**
 > threading minimal-cipher's per-chunk AAD option (see the companion
 > minimal-cipher issue) through `insert`/`update` closes within-stream chunk
 > reorder/substitution as well.
+
+---
+
+### WAS-228: [M] (*) Export the two-server test helpers from the `/testing` entry
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: tests, replication, testing-entry
+- discovered-from: freewallet FW-688 (2026-10-26)
+- touches:
+  - was-teaching-server: `src/testing.ts`, `test/helpers.ts`,
+    docs/consuming-server-as-library.md ("Testing against the server")
+  - freewallet: the replica ceremony's unit tier boots two real servers from
+    `/testing` (FW-638, FW-688)
+- acceptance:
+  - [ ] `injectPeerFetch` (`test/helpers.ts:1106`) is exported from
+        `src/testing.ts`, and the suites import it from there
+  - [ ] Whatever else a two-server boot needs from outside the package is
+        exported beside it: a server identity whose key may invoke
+        (`provisionServerIdentity`, `test/helpers.ts:844`) and the log fetcher
+        (`peerLogFetcherOf`, `:1154`), or one boot helper in the shape of
+        `bootPeerServer` (`:1179`)
+  - [ ] A test that imports only from the `/testing` entry boots a source and
+        a replica server, registers, and pulls
+  - [ ] docs/consuming-server-as-library.md documents the helpers
+
+Context. The wallet's replica ceremony is tested against two real servers in
+one process rather than a second fake server. The server already takes
+`peerFetch` and `peerLogFetcher` as plugin options (`src/plugin.ts:255-272`),
+but the transport that routes one server's pulls to another through
+`fastify.inject` lives in the test helpers, outside the published entry.
+`injectPeerFetch` routes GET only, which is all a pull sends.
 
 ---
 

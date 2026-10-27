@@ -1,5 +1,6 @@
 import assert from 'node:assert'
 import { createHash, randomBytes } from 'node:crypto'
+import { access } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify'
 import pg from 'pg'
@@ -48,6 +49,7 @@ import type {
   IRootZcap,
   ImportStats,
   ReplicaRegistration,
+  ResourceInput,
   StorageBackend
 } from '../src/types.js'
 
@@ -1132,6 +1134,45 @@ export function injectPeerFetch(
 }
 
 /**
+ * A binary `ResourceInput` over one in-memory body.
+ * @param bytes {Buffer | string}
+ * @param [options] {object}
+ * @param [options.contentType] {string}
+ * @param [options.declaredBytes] {number}
+ * @returns {ResourceInput}
+ */
+export function binaryInput(
+  bytes: Buffer | string,
+  options: { contentType?: string; declaredBytes?: number } = {}
+): ResourceInput {
+  return {
+    kind: 'binary',
+    contentType: options.contentType ?? 'application/octet-stream',
+    stream: Readable.from([Buffer.from(bytes)]),
+    ...(options.declaredBytes !== undefined && {
+      declaredBytes: options.declaredBytes
+    })
+  }
+}
+
+/**
+ * Whether a path exists.
+ * @param target {string}
+ * @returns {Promise<boolean>}
+ */
+export async function pathExists(target: string): Promise<boolean> {
+  try {
+    await access(target)
+    return true
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      return false
+    }
+    throw err
+  }
+}
+
+/**
  * One of the servers a replication suite boots in one process: its app, its
  * filesystem backend, the clock its write stamps read, and its own DID.
  */
@@ -1142,6 +1183,53 @@ export interface PeerServer {
   clock: ReturnType<typeof frozenClock>
   did: string
   didLog: string
+}
+
+/**
+ * Creates a Space on one server of a replication suite, through its backend.
+ * @param options {object}
+ * @param options.server {PeerServer}
+ * @param options.spaceId {string}
+ * @param options.controller {string}   the controller DID
+ * @returns {Promise<void>}
+ */
+export async function createPeerSpace({
+  server,
+  spaceId,
+  controller
+}: {
+  server: PeerServer
+  spaceId: string
+  controller: string
+}): Promise<void> {
+  await server.backend.writeSpace({
+    spaceId,
+    spaceMetadata: {
+      id: spaceId,
+      type: ['Space'],
+      controller: controller as IDID
+    }
+  })
+}
+
+/**
+ * Runs one pull cycle of a registration.
+ * @param options {object}
+ * @param options.server {PeerServer}
+ * @param options.spaceId {string}
+ * @param [options.replicaId] {string}
+ * @returns {Promise<void>}
+ */
+export async function pullOnce({
+  server,
+  spaceId,
+  replicaId = 'peer'
+}: {
+  server: PeerServer
+  spaceId: string
+  replicaId?: string
+}): Promise<void> {
+  await server.fastify.replication.pullNow({ spaceId, replicaId })
 }
 
 /**

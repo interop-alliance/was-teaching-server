@@ -116,6 +116,7 @@ import {
   type ApplyResult,
   type HeldCollection,
   assertReceivableStamps,
+  chunkSetQuotaRefusal,
   chunkSetRefusal,
   decideCollectionApply,
   decideCollectionTombstoneApply,
@@ -275,6 +276,7 @@ import type {
   ReplicaLoopState,
   StoredReplica,
   ChunkStagingRun,
+  StagedChunk,
   SpaceExportEntries
 } from '../types.js'
 
@@ -622,19 +624,17 @@ function stagedChunkSidecarOf(value: unknown): StagedChunkSidecar | undefined {
 /**
  * A staging run's manifest (`.manifest.json`), written under the parent's
  * lock once the swap is decided and before anything live changes: the
- * parent revision the run stages for (`parentEtag`), the live indexes the
- * swap keeps (`kept`) and the staged ones it moves in (`staged`), the
- * `swapped` flag, and the parent's sidecar as the swap writes it, less its
- * feed position, naming the representation file staged under `parent/`.
- * With it a run cut between the directory swap and the parent's sidecar is
- * finished from the run directory alone. A run with no manifest, or one
- * whose `swapped` is not `true`, changed nothing live and is discarded.
+ * parent revision the run stages for (`parentEtag`), the staged indexes the
+ * swap moves in (`staged`), and the parent's sidecar as the swap writes it,
+ * less its feed position, naming the representation file staged under
+ * `parent/`. Its presence is the swap flag: with it a run cut between the
+ * directory swap and the parent's sidecar is finished from the run
+ * directory alone, and a run with no manifest changed nothing live and is
+ * discarded.
  */
 type StagingManifest = {
   parentEtag: string
-  kept: number[]
   staged: number[]
-  swapped: boolean
   parent: MetaSidecar
 }
 
@@ -647,7 +647,7 @@ function stagingManifestOf(value: unknown): StagingManifest | undefined {
   if (!isPlainObject(value)) {
     return undefined
   }
-  const { parentEtag, kept, staged, swapped, parent } = value
+  const { parentEtag, staged, parent } = value
   const isIndexList = (list: unknown): list is number[] =>
     Array.isArray(list) &&
     list.every(
@@ -657,9 +657,7 @@ function stagingManifestOf(value: unknown): StagingManifest | undefined {
     )
   if (
     typeof parentEtag !== 'string' ||
-    !isIndexList(kept) ||
     !isIndexList(staged) ||
-    typeof swapped !== 'boolean' ||
     !isPlainObject(parent) ||
     typeof parent.fileName !== 'string' ||
     path.basename(parent.fileName) !== parent.fileName ||
@@ -671,9 +669,7 @@ function stagingManifestOf(value: unknown): StagingManifest | undefined {
   }
   return {
     parentEtag,
-    kept,
     staged,
-    swapped,
     parent: parent as unknown as MetaSidecar
   }
 }
@@ -733,6 +729,53 @@ function carriedSidecarMembers({
 }
 
 /**
+ * The sidecar of a live Resource content record an apply stored, as the
+ * origin's write set it: its `createdAt` (the stamp's `updatedAt` when the
+ * record carried none), stamp, `createdBy` and generation, the members
+ * carried from the held live record (`carriedSidecarMembers`), and the
+ * file just written with the type its name carries (`sidecarFileMembers`).
+ * The plain apply and the chunk swap's manifest both record it.
+ * @param options {object}
+ * @param options.stamp {WriteStamp}
+ * @param options.generation {string}
+ * @param [options.createdAt] {string}
+ * @param [options.createdBy] {IDID}
+ * @param [options.writerId] {string}
+ * @param [options.epoch] {string}
+ * @param [options.prior] {MetaSidecar}   the held sidecar
+ * @param options.filePath {string}   the representation file written
+ * @returns {MetaSidecar}
+ */
+function appliedLiveSidecar({
+  stamp,
+  generation,
+  createdAt,
+  createdBy,
+  writerId,
+  epoch,
+  prior,
+  filePath
+}: {
+  stamp: WriteStamp
+  generation: string
+  createdAt?: string
+  createdBy?: IDID
+  writerId?: string
+  epoch?: string
+  prior?: MetaSidecar
+  filePath: string
+}): MetaSidecar {
+  return {
+    createdAt: createdAt ?? stamp.updatedAt,
+    ...pickStamp(stamp),
+    ...(createdBy !== undefined && { createdBy }),
+    generation,
+    ...carriedSidecarMembers({ prior, epoch, writerId }),
+    ...sidecarFileMembers(filePath)
+  }
+}
+
+/**
  * Whether the parent's held sidecar is the one a staging manifest writes:
  * live, under the manifest's generation and stamp. Then the swap's commit
  * point was reached.
@@ -769,37 +812,6 @@ async function removeDirIfEmpty(dir: string): Promise<void> {
   } catch (err) {
     const { code } = err as NodeJS.ErrnoException
     if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT') {
-      throw err
-    }
-  }
-}
-
-/**
- * Copies `existingPath` to `newPath`, where `newPath` may already hold the
- * copy (a swap finished again after a crash). A reflink where the
- * filesystem offers one, a full copy elsewhere. Not a hard link: the data
- * dir may sit on a filesystem without them, and a swap that could not be
- * finished would leave the Resource torn for good.
- * @param options {object}
- * @param options.existingPath {string}
- * @param options.newPath {string}
- * @returns {Promise<void>}
- */
-async function copyUnlessPresent({
-  existingPath,
-  newPath
-}: {
-  existingPath: string
-  newPath: string
-}): Promise<void> {
-  try {
-    await fs.promises.copyFile(
-      existingPath,
-      newPath,
-      fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE
-    )
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
       throw err
     }
   }
@@ -851,13 +863,6 @@ export class FileSystemBackend implements StorageBackend {
    * (`Infinity`) to `undefined` (explicitly no cap).
    */
   maxUploadBytes?: number
-  /**
-   * The in-write quota check is gross: a write's bytes are added to a `du`
-   * measurement cached for `QUOTA_USAGE_CACHE_TTL`, with no credit for what
-   * the write replaces, so the chunk pull's pre-check adds one chunk of
-   * headroom here.
-   */
-  usageCheckIsGross = true
   /**
    * Max Spaces a single controller may create (spec "Quotas", a default-on
    * count quota). `undefined` means no cap. Enforced on the Space create path
@@ -1066,6 +1071,36 @@ export class FileSystemBackend implements StorageBackend {
    * read that made it.
    */
   #bothNamesRead = new WeakSet<MetaSidecar>()
+
+  /**
+   * The quota credit of each open chunk staging run, by run directory: the
+   * sizes of the parent's live chunks as `beginChunkStaging` read them, and
+   * the indexes the run has staged since (`#stagingCredit`). In memory
+   * only, as staging is: every run is reclaimed at the next open.
+   */
+  #stagingCredits = new Map<
+    string,
+    { liveSizes: Map<number, number>; credited: Set<number> }
+  >()
+
+  /**
+   * Forgets the quota credit of every staging run under a directory, after
+   * a delete removed the directory: a Resource's staging directory, a
+   * Collection dir or a Space dir. A credit kept past its run would stand
+   * in for live chunks the delete removed, and the map would grow by one
+   * entry per deleted run for the life of the process.
+   * @param options {object}
+   * @param options.under {string}   the removed directory
+   * @returns {void}
+   */
+  #forgetStagingCredits({ under }: { under: string }): void {
+    const prefix = under + path.sep
+    for (const runDir of this.#stagingCredits.keys()) {
+      if (runDir.startsWith(prefix)) {
+        this.#stagingCredits.delete(runDir)
+      }
+    }
+  }
 
   /**
    * Drops a Space's cached usage total (`#usageCache`) after bytes were
@@ -1535,6 +1570,22 @@ export class FileSystemBackend implements StorageBackend {
    *   bytes, the callback that undoes this write's reservation, and the
    *   callback that corrects it to the bytes actually written
    */
+  /**
+   * A Space's usage total from `#usageCache`, measured (`#diskUsage`) when
+   * the cache holds none. The entry is the snapshot a reservation adjusts.
+   * @param spaceId {string}
+   * @returns {Promise<{ used: number }>}
+   */
+  async #cachedUsage(spaceId: string): Promise<{ used: number }> {
+    return this.#usageCache.memoize<{ used: number }>({
+      key: spaceId,
+      fn: () =>
+        this.#diskUsage(this.#spaceDir(spaceId)).then(({ total }) => ({
+          used: total
+        }))
+    })
+  }
+
   async #assertSpaceHeadroom({
     spaceId,
     capacityBytes,
@@ -1550,13 +1601,7 @@ export class FileSystemBackend implements StorageBackend {
     release: () => void
     reconcile: (actualBytes: number) => void
   }> {
-    const cached = await this.#usageCache.memoize<{ used: number }>({
-      key: spaceId,
-      fn: () =>
-        this.#diskUsage(this.#spaceDir(spaceId)).then(({ total }) => ({
-          used: total
-        }))
-    })
+    const cached = await this.#cachedUsage(spaceId)
     const headroom = capacityBytes - cached.used + creditBytes
     if (headroom <= 0 || incomingBytes > headroom) {
       throw new QuotaExceededError({ spaceId, capacityBytes })
@@ -2579,6 +2624,7 @@ export class FileSystemBackend implements StorageBackend {
           // `force: true` keeps delete idempotent (the `StorageBackend` contract):
           // removing an absent Space resolves rather than rejecting with `ENOENT`.
           await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
+          this.#forgetStagingCredits({ under: this.#spaceDir(spaceId) })
         })
     })
   }
@@ -4101,6 +4147,7 @@ export class FileSystemBackend implements StorageBackend {
           })
         )
       )
+      this.#forgetStagingCredits({ under: collectionDir })
     } finally {
       // Freed bytes: drop the cached usage total so the next write
       // re-measures. After the removal, as `deleteResource` does. This
@@ -4194,6 +4241,9 @@ export class FileSystemBackend implements StorageBackend {
               await rm(this.#collectionDir({ spaceId, collectionId }), {
                 recursive: true,
                 force: true
+              })
+              this.#forgetStagingCredits({
+                under: this.#collectionDir({ spaceId, collectionId })
               })
               return 'absent'
             }
@@ -6547,6 +6597,9 @@ export class FileSystemBackend implements StorageBackend {
       await rm(this.#stagingDir({ collectionDir, resourceId }), {
         recursive: true,
         force: true
+      })
+      this.#forgetStagingCredits({
+        under: this.#stagingDir({ collectionDir, resourceId })
       })
       // The Resource's access-control policy dies with it: a live policy is
       // tombstoned here, under the policy's own key nested inside the
@@ -9117,7 +9170,8 @@ export class FileSystemBackend implements StorageBackend {
     createdAt,
     createdBy,
     writerId,
-    resource
+    resource,
+    chunks
   }: {
     spaceId: string
     replicaId?: string
@@ -9131,16 +9185,30 @@ export class FileSystemBackend implements StorageBackend {
     resource:
       | { deleted: false; input: ResourceInput; epoch?: string }
       | { deleted: true; contentType: string }
+    chunks?: { run: ChunkStagingRun; staged: number[] }
   }): Promise<ApplyResult> {
     assertReceivableStamps([stamp])
-    const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    // The content record's members as the origin's write set them.
-    const contentRecord = {
-      createdAt: createdAt ?? stamp.updatedAt,
-      ...pickStamp(stamp),
-      ...(createdBy !== undefined && { createdBy }),
-      generation
+    if (chunks !== undefined) {
+      if (resource.deleted) {
+        throw new StorageError({
+          cause: new Error('A Resource tombstone applies with no chunk set.')
+        })
+      }
+      return this.#applyResourceWithChunks({
+        spaceId,
+        replicaId,
+        collectionId,
+        resourceId,
+        generation,
+        stamp,
+        createdAt,
+        createdBy,
+        writerId,
+        resource,
+        chunks
+      })
     }
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     return this.#runApply({
       spaceId,
       replicaId,
@@ -9150,12 +9218,13 @@ export class FileSystemBackend implements StorageBackend {
         if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
           return { outcome: 'skipped' }
         }
-        // The held sidecar names the live representation, if one stands.
-        const { prior, live } = await this.#readLiveFile({
-          collectionDir,
-          resourceId
-        })
-        const livePath = live?.filePath
+        const { prior, livePath, log, stopped } =
+          await this.#decideReceivedResource({
+            collectionDir,
+            resourceId,
+            stamp,
+            incoming: resource.deleted ? undefined : resource.input
+          })
         // A chunk directory beside a held tombstone is what a delete cut
         // short left, whatever this apply decides: a replay of the tombstone
         // is an equal-stamp skip, and a live record over it holds no chunks.
@@ -9163,23 +9232,6 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId,
           prior
-        })
-        // A live history log is decided by its bytes, so both are read
-        // before the decision.
-        let log: { held?: Buffer; incoming: Buffer } | undefined
-        if (resourceId === WEBVH_LOG_RESOURCE_ID && !resource.deleted) {
-          const incoming = await this.#bufferInput(resource.input)
-          log = {
-            held: livePath === undefined ? undefined : await readFile(livePath),
-            incoming
-          }
-        }
-        const stopped = decideResourceApply({
-          resourceId,
-          deleted: resource.deleted,
-          stamp,
-          held: stampOf(prior),
-          log
         })
         if (stopped) {
           return stopped
@@ -9197,7 +9249,10 @@ export class FileSystemBackend implements StorageBackend {
             resourceId,
             prior,
             sidecar: {
-              ...contentRecord,
+              createdAt: createdAt ?? stamp.updatedAt,
+              ...pickStamp(stamp),
+              ...(createdBy !== undefined && { createdBy }),
+              generation,
               deleted: true,
               contentType: resource.contentType,
               ...(writerId !== undefined && { writerId })
@@ -9219,6 +9274,9 @@ export class FileSystemBackend implements StorageBackend {
             recursive: true,
             force: true
           })
+          this.#forgetStagingCredits({
+            under: this.#stagingDir({ collectionDir, resourceId })
+          })
           this.#dropUsageCache({ spaceId })
           return { outcome: 'applied' }
         }
@@ -9238,17 +9296,16 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId,
           prior,
-          sidecar: {
-            ...contentRecord,
-            ...carriedSidecarMembers({
-              prior,
-              epoch: resource.epoch,
-              writerId
-            }),
-            // The file just written and the type its name carries, as on a
-            // content write.
-            ...sidecarFileMembers(filePath)
-          }
+          sidecar: appliedLiveSidecar({
+            stamp,
+            generation,
+            createdAt,
+            createdBy,
+            writerId,
+            epoch: resource.epoch,
+            prior,
+            filePath
+          })
         })
         await this.#removeReplacedFile({
           priorPath: livePath,
@@ -9263,6 +9320,64 @@ export class FileSystemBackend implements StorageBackend {
         return { outcome: 'applied' }
       }
     })
+  }
+
+  /**
+   * The last-writer-wins decision of a received Resource content record
+   * against the held one, under the Resource's lock: reads the held
+   * sidecar and the live file it names, buffers both a history log's held
+   * and incoming bytes (which decide it), and decides (`decideResourceApply`).
+   * The plain apply and the chunk swap decide alike.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @param options.stamp {WriteStamp}   the received record's stamp
+   * @param [options.incoming] {ResourceInput}   the received content; a
+   *   tombstone has none
+   * @returns {Promise<{ prior?: MetaSidecar, livePath?: string,
+   *   log?: { held?: Buffer, incoming: Buffer }, stopped?: ApplyResult }>}
+   *   the held sidecar, the live file's path, the buffered log, and the
+   *   outcome when the apply stores nothing
+   */
+  async #decideReceivedResource({
+    collectionDir,
+    resourceId,
+    stamp,
+    incoming
+  }: {
+    collectionDir: string
+    resourceId: string
+    stamp: WriteStamp
+    incoming?: ResourceInput
+  }): Promise<{
+    prior?: MetaSidecar
+    livePath?: string
+    log?: { held?: Buffer; incoming: Buffer }
+    stopped?: ApplyResult
+  }> {
+    // The held sidecar names the live representation, if one stands.
+    const { prior, live } = await this.#readLiveFile({
+      collectionDir,
+      resourceId
+    })
+    const livePath = live?.filePath
+    // A live history log is decided by its bytes, so both are read before
+    // the decision.
+    let log: { held?: Buffer; incoming: Buffer } | undefined
+    if (resourceId === WEBVH_LOG_RESOURCE_ID && incoming !== undefined) {
+      log = {
+        held: livePath === undefined ? undefined : await readFile(livePath),
+        incoming: await this.#bufferInput(incoming)
+      }
+    }
+    const stopped = decideResourceApply({
+      resourceId,
+      deleted: incoming === undefined,
+      stamp,
+      held: stampOf(prior),
+      log
+    })
+    return { prior, livePath, log, stopped }
   }
 
   /**
@@ -9533,22 +9648,144 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Opens the staging of `run` for one chunk pull, under the parent's lock,
+   * after the checks every apply makes (`#runApply`, with no stamp to
+   * observe) and the Collection check: finishes any swap of the Resource a
+   * fault left torn (`#settleStaging`), drops the registration's runs for
+   * other revisions of the parent (`#dropOtherRuns`), reads the chunk set
+   * the swap will free and what the run already holds, makes the quota
+   * pre-check of the set (`chunkSetQuotaRefusal`, with one listed chunk of
+   * headroom, since the in-write check here is gross against a `du`
+   * measurement cached for `QUOTA_USAGE_CACHE_TTL`), keeps the chunk sizes
+   * for the credit each `stageChunk` of the run takes (`#stagingCredit`),
+   * and creates the run directory. Nothing of `run` is staged here, but a
+   * torn swap of an earlier run that is finished first does change the
+   * live set, and takes a feed position, before the pre-check answers.
+   *
+   * The usage is measured before the lock is taken, so a cold `du` of the
+   * Space holds no Resource lock. The registration's other runs, dropped
+   * under the lock, still count in that measurement; a set they alone push
+   * over the quota is refused this cycle and fits the next.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.replicaId] {string}   the registration to check; absent
+   *   for a server backend other than the control plane
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}   the parent Resource
+   * @param options.run {ChunkStagingRun}   the staging key
+   * @param options.listed {Array<{ index: number, size: number }>}   the
+   *   source server's listing, checked
+   * @returns {Promise<{ staged: Array<{ index: number, size: number,
+   *   peerEtag: string }> } | ApplyResult>}   what the run holds, or the
+   *   outcome that ends the chunk pull
+   */
+  async beginChunkStaging({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    run,
+    listed
+  }: {
+    spaceId: string
+    replicaId?: string
+    collectionId: string
+    resourceId: string
+    run: ChunkStagingRun
+    listed: Array<{ index: number; size: number }>
+  }): Promise<
+    { staged: StagedChunk[] } | Exclude<ApplyResult, { outcome: 'applied' }>
+  > {
+    for (const { index } of listed) {
+      this.#assertChunkIndex(index)
+    }
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const runDir = this.#stagingRunDir({ collectionDir, resourceId, run })
+    let opened: { staged: StagedChunk[] } | undefined
+    // The pre-check reads the cached usage total the in-write check reads
+    // (`#assertSpaceHeadroom`), and nothing at all under no quota.
+    const { capacityBytes } = this
+    const usageBytes =
+      capacityBytes === undefined ? 0 : (await this.#cachedUsage(spaceId)).used
+    const result = await this.#runApply({
+      spaceId,
+      replicaId,
+      stamps: [],
+      lockKeys: [this.#resourceLockKey({ spaceId, collectionId, resourceId })],
+      run: async () => {
+        if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
+          return { outcome: 'skipped' }
+        }
+        await this.#settleStaging({
+          spaceId,
+          collectionId,
+          collectionDir,
+          resourceId,
+          discardUnswapped: false
+        })
+        // The registration's staging for any other revision of the parent
+        // is stale: the loop has moved past that revision. Its bytes still
+        // count toward usage until it is gone, so it goes before the check.
+        await this.#dropOtherRuns({ spaceId, runDir })
+        const staged = await this.#listStagedChunksIn(runDir)
+        // The swap frees the chunk directory whether or not the parent is
+        // live: a set beside a tombstone goes with the swap too
+        // (`#clearChunksBesideTombstone`), as the Postgres swap removes
+        // every chunk row the set does not keep.
+        const { chunks: live } = await this.listChunks({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        const refused = chunkSetQuotaRefusal({
+          listed,
+          staged,
+          liveBytes: live.reduce((total, { size }) => total + size, 0),
+          // A listing can run to many entries, so no argument spread here.
+          headroomBytes: listed.reduce(
+            (largest, { size }) => Math.max(largest, size),
+            0
+          ),
+          usageBytes,
+          ...(capacityBytes !== undefined && { capacityBytes }),
+          maxUploadBytes: this.maxUploadBytes
+        })
+        if (refused !== undefined) {
+          return refused
+        }
+        this.#stagingCredits.set(runDir, {
+          liveSizes: new Map(live.map(({ index, size }) => [index, size])),
+          credited: new Set()
+        })
+        // Created under the lock and the Space gate, after the Collection
+        // check, so no transfer creates a directory a delete removed.
+        await mkdir(runDir, { recursive: true })
+        opened = { staged }
+        return { outcome: 'applied' }
+      }
+    })
+    if (result.outcome !== 'applied') {
+      return result
+    }
+    return opened!
+  }
+
+  /**
    * Stages one chunk a pull loop read from the source server, in the run
-   * directory of `run` (`#stagingRunDir`). Two short critical sections
-   * under the parent's lock bracket the transfer, which runs outside it.
-   * The first checks the registration (`#runApply`, with no stamp to
-   * observe) and that the Collection is live, finishes any swap of the
-   * Resource a fault left torn (`#settleStaging`), drops the registration's
-   * runs for other revisions of the parent (`#dropOtherRuns`), removes a
-   * chunk staged at this index by an earlier read, reads the quota credit
-   * (`#stagingCredit`), and creates the run directory. The transfer writes
-   * the bytes under the upload cap and the Space headroom, with that credit.
-   * The second checks again and writes the staged sidecar, which records
-   * the chunk as staged. A staging directory removed during the transfer
-   * stages nothing: the answer is `skipped` when the Collection is gone, and
-   * `retry` when it stands (a local Delete Resource or a reclaim removed the
-   * run, and its bytes with it). The credit is taken over the whole run,
-   * under the lock.
+   * directory of `run` (`#stagingRunDir`), which `beginChunkStaging` opened.
+   * Two short critical sections under the parent's lock bracket the
+   * transfer, which runs outside it, so several chunks of one run may be
+   * staged at once. The first checks the registration (`#runApply`, with no
+   * stamp to observe) and that the Collection is live, removes a chunk
+   * staged at this index by an earlier read, reads the quota credit
+   * (`#stagingCredit`), and creates the run directory when the run was not
+   * opened. The transfer writes the bytes under the upload cap and the
+   * Space headroom, with that credit. The second checks again and writes
+   * the staged sidecar, which records the chunk as staged. A staging
+   * directory removed during the transfer stages nothing: the answer is
+   * `skipped` when the Collection is gone, and `retry` when it stands (a
+   * local Delete Resource or a reclaim removed the run, and its bytes with
+   * it).
    *
    * The parent Resource need not be held: a chunk pull stages the set of a
    * Resource this server does not hold yet, or holds as a tombstone, before
@@ -9608,16 +9845,6 @@ export class FileSystemBackend implements StorageBackend {
 
     let creditBytes = 0
     const opened = await underLock(async () => {
-      await this.#settleStaging({
-        spaceId,
-        collectionId,
-        collectionDir,
-        resourceId,
-        discardUnswapped: false
-      })
-      // The registration's staging for any other revision of the parent is
-      // stale: the loop has moved past that revision.
-      await this.#dropOtherRuns({ spaceId, runDir })
       // A chunk an earlier read staged at this index goes first, sidecar
       // before file, so a crash during the transfer leaves no sidecar
       // describing bytes it did not record.
@@ -9625,7 +9852,6 @@ export class FileSystemBackend implements StorageBackend {
       creditBytes = await this.#stagingCredit({
         spaceId,
         collectionId,
-        collectionDir,
         resourceId,
         runDir,
         chunkIndex
@@ -9695,7 +9921,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.run {ChunkStagingRun}
-   * @returns {Promise<Array<{ index: number, size: number, peerEtag: string }>>}
+   * @returns {Promise<StagedChunk[]>}
    */
   async listStagedChunks({
     spaceId,
@@ -9707,9 +9933,20 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     resourceId: string
     run: ChunkStagingRun
-  }): Promise<Array<{ index: number; size: number; peerEtag: string }>> {
+  }): Promise<StagedChunk[]> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const runDir = this.#stagingRunDir({ collectionDir, resourceId, run })
+    return this.#listStagedChunksIn(
+      this.#stagingRunDir({ collectionDir, resourceId, run })
+    )
+  }
+
+  /**
+   * The chunks staged in a run directory: each staged sidecar whose file
+   * stands, by ascending index.
+   * @param runDir {string}
+   * @returns {Promise<StagedChunk[]>}
+   */
+  async #listStagedChunksIn(runDir: string): Promise<StagedChunk[]> {
     const staged = await mapInBatches({
       items: await this.#stagedChunkIndexes(runDir),
       map: async index => {
@@ -9728,15 +9965,17 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Applies a live Resource content record with its chunk set, under the
-   * per-Resource lock a content write takes, in one critical section. After
-   * the checks every apply makes (`#runApply`), the Collection check, and
-   * finishing any swap of the Resource a fault left torn, the comparison is
-   * `applyResource`'s. On a win the registration's runs for other revisions
-   * of the parent are dropped (`#dropOtherRuns`). A loss or an equal stamp releases the run's staging
-   * and answers `skipped`. A `kept` index the live set does not hold, a
-   * `staged` index the run does not hold, or an index in both, is refused as
-   * `container-refused`, with nothing changed.
+   * The `chunks` form of `applyResource`: a live Resource content record
+   * with its chunk set, under the per-Resource lock a content write takes,
+   * in one critical section. After the checks every apply makes
+   * (`#runApply`), the Collection check, and finishing any swap of the
+   * Resource a fault left torn, the comparison is `applyResource`'s. On a
+   * win the registration's runs for other revisions of the parent are
+   * dropped (`#dropOtherRuns`). A loss or an equal stamp releases the run's
+   * staging and answers `skipped`. A `staged` index the run does not hold,
+   * or one named twice, is refused as `container-refused`, with nothing
+   * live changed and the run's staging released, so its bytes do not count
+   * toward usage while the Collection stalls.
    *
    * On a win, in this order:
    *
@@ -9745,8 +9984,8 @@ export class FileSystemBackend implements StorageBackend {
    * 2. The parent's representation is written into the run directory
    *    (`parent/`), under the upload cap and the quota.
    * 3. An empty `next/` directory is created, and the run's manifest is
-   *    written with `swapped: true` and the parent's sidecar as it will be
-   *    written. From here the swap is finished rather than discarded.
+   *    written, with the parent's sidecar as it will be written. From here
+   *    the swap is finished rather than discarded.
    * 4. `#completeSwap` builds the new chunk directory in `next/`, swaps it in
    *    for the live one with two renames, moves the parent's file into the
    *    Collection dir, and writes the parent's sidecar, which takes the
@@ -9765,11 +10004,10 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.createdBy] {string}
    * @param [options.writerId] {string}
    * @param options.resource {object}   the received representation
-   * @param options.chunks {object}   the run, and the indexes it keeps and
-   *   moves in
+   * @param options.chunks {object}   the run, and the indexes it moves in
    * @returns {Promise<ApplyResult>}
    */
-  async applyResourceWithChunks({
+  async #applyResourceWithChunks({
     spaceId,
     replicaId,
     collectionId,
@@ -9792,10 +10030,9 @@ export class FileSystemBackend implements StorageBackend {
     createdBy?: IDID
     writerId?: string
     resource: { input: ResourceInput; epoch?: string }
-    chunks: { run: ChunkStagingRun; kept: number[]; staged: number[] }
+    chunks: { run: ChunkStagingRun; staged: number[] }
   }): Promise<ApplyResult> {
-    assertReceivableStamps([stamp])
-    for (const index of [...chunks.kept, ...chunks.staged]) {
+    for (const index of chunks.staged) {
       this.#assertChunkIndex(index)
     }
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
@@ -9821,25 +10058,11 @@ export class FileSystemBackend implements StorageBackend {
           resourceId,
           discardUnswapped: false
         })
-        const { prior, live } = await this.#readLiveFile({
+        const { prior, log, stopped } = await this.#decideReceivedResource({
           collectionDir,
-          resourceId
-        })
-        // A history log is decided by its bytes, as on `applyResource`.
-        let log: { held?: Buffer; incoming: Buffer } | undefined
-        if (resourceId === WEBVH_LOG_RESOURCE_ID) {
-          log = {
-            held:
-              live === undefined ? undefined : await readFile(live.filePath),
-            incoming: await this.#bufferInput(resource.input)
-          }
-        }
-        const stopped = decideResourceApply({
           resourceId,
-          deleted: false,
           stamp,
-          held: stampOf(prior),
-          log
+          incoming: resource.input
         })
         if (stopped) {
           await this.#releaseStagingRun({ spaceId, runDir })
@@ -9848,13 +10071,11 @@ export class FileSystemBackend implements StorageBackend {
         await this.#dropOtherRuns({ spaceId, runDir })
         const refused = await this.#refusedChunkSet({
           resourceId,
-          chunkDir: this.#chunkDir({ collectionDir, resourceId }),
           runDir,
-          parentLive: live !== undefined,
-          kept: chunks.kept,
           staged: chunks.staged
         })
         if (refused) {
+          await this.#releaseStagingRun({ spaceId, runDir })
           return refused
         }
 
@@ -9878,21 +10099,17 @@ export class FileSystemBackend implements StorageBackend {
         // The parent's sidecar as `applyResource` writes it.
         const manifest: StagingManifest = {
           parentEtag: chunks.run.parentEtag,
-          kept: [...chunks.kept],
           staged: [...chunks.staged],
-          swapped: true,
-          parent: {
-            createdAt: createdAt ?? stamp.updatedAt,
-            ...pickStamp(stamp),
-            ...(createdBy !== undefined && { createdBy }),
+          parent: appliedLiveSidecar({
+            stamp,
             generation,
-            ...carriedSidecarMembers({
-              prior,
-              epoch: resource.epoch,
-              writerId
-            }),
-            ...sidecarFileMembers(parentFileName)
-          }
+            createdAt,
+            createdBy,
+            writerId,
+            epoch: resource.epoch,
+            prior,
+            filePath: parentFileName
+          })
         }
         // `next/` stands from here until the directory swap, which is how a
         // finish tells a swap still to do from one done. One an earlier
@@ -9920,30 +10137,26 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Removes the chunk staging in the scope the ids select, finishing every
-   * run whose manifest says `swapped` (`#finishSwappedRun`) and discarding
-   * every other, less `exceptRun`, which is left as it stands. Each
-   * Resource's staging is reclaimed under its lock. A scope that holds no
-   * staging creates no directory.
+   * run whose manifest stands (`#finishSwappedRun`) and discarding every
+   * other. Each Resource's staging is reclaimed under its lock. A scope
+   * that holds no staging creates no directory.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param [options.replicaId] {string}
-   * @param [options.exceptRun] {ChunkStagingRun}   the run to leave
    * @returns {Promise<number>}   how many runs were finished or removed
    */
   async reclaimStaging({
     spaceId,
     collectionId,
     resourceId,
-    replicaId,
-    exceptRun
+    replicaId
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     replicaId?: string
-    exceptRun?: ChunkStagingRun
   }): Promise<number> {
     if (replicaId !== undefined) {
       this.#assertReplicaId(replicaId)
@@ -9952,8 +10165,7 @@ export class FileSystemBackend implements StorageBackend {
       spaceId,
       collectionId,
       resourceId,
-      replicaId,
-      exceptRun
+      replicaId
     })
     return finished + removed
   }
@@ -9967,21 +10179,18 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param [options.replicaId] {string}
-   * @param [options.exceptRun] {ChunkStagingRun}   the run to leave
    * @returns {Promise<{ finished: number, removed: number }>}
    */
   async #reclaimStagingIn({
     spaceId,
     collectionId,
     resourceId,
-    replicaId,
-    exceptRun
+    replicaId
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     replicaId?: string
-    exceptRun?: ChunkStagingRun
   }): Promise<{ finished: number; removed: number }> {
     const totals = { finished: 0, removed: 0 }
     const collectionIds =
@@ -10014,7 +10223,6 @@ export class FileSystemBackend implements StorageBackend {
                   collectionDir,
                   resourceId: stagedResourceId,
                   replicaId,
-                  exceptRun,
                   discardUnswapped: true
                 })
             )
@@ -10061,18 +10269,16 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Settles one Resource's chunk staging: finishes each run whose manifest
-   * says `swapped`, and with `discardUnswapped` removes every other run,
-   * then removes the registration and staging directories left empty. With
-   * `replicaId`, only that registration's runs. `exceptRun` is left as it
-   * stands. The caller holds the Resource's lock, or is the boot reclaim,
-   * before any request.
+   * stands (a decided swap), and with `discardUnswapped` removes every
+   * other run, then removes the registration and staging directories left
+   * empty. With `replicaId`, only that registration's runs. The caller
+   * holds the Resource's lock, or is the boot reclaim, before any request.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDir {string}
    * @param options.resourceId {string}
    * @param [options.replicaId] {string}
-   * @param [options.exceptRun] {ChunkStagingRun}   the run to leave
    * @param options.discardUnswapped {boolean}
    * @returns {Promise<{ finished: number, removed: number }>}
    */
@@ -10082,7 +10288,6 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir,
     resourceId,
     replicaId,
-    exceptRun,
     discardUnswapped
   }: {
     spaceId: string
@@ -10090,7 +10295,6 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir: string
     resourceId: string
     replicaId?: string
-    exceptRun?: ChunkStagingRun
     discardUnswapped: boolean
   }): Promise<{ finished: number; removed: number }> {
     const totals = { finished: 0, removed: 0 }
@@ -10099,22 +10303,12 @@ export class FileSystemBackend implements StorageBackend {
       replicaId !== undefined
         ? [replicaId]
         : await subdirectoryNames(stagingDir)
-    const keptRunName =
-      exceptRun === undefined
-        ? undefined
-        : stagingRunDirName(exceptRun.parentEtag)
     for (const stagedReplicaId of replicaIds) {
       const replicaDir = this.#containedJoin(stagingDir, stagedReplicaId)
       for (const runName of await subdirectoryNames(replicaDir)) {
-        if (
-          stagedReplicaId === exceptRun?.replicaId &&
-          runName === keptRunName
-        ) {
-          continue
-        }
         const runDir = this.#containedJoin(replicaDir, runName)
         const manifest = await this.#readStagingManifest(runDir)
-        if (manifest?.swapped === true) {
+        if (manifest !== undefined) {
           const finished = await this.#finishSwappedRun({
             spaceId,
             collectionId,
@@ -10140,8 +10334,8 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Finishes a run whose manifest says `swapped`: a swap a crash or a fault
-   * cut short between the manifest and the run's removal. When the parent
+   * Finishes a run whose manifest stands: a swap a crash or a fault cut
+   * short between the manifest and the run's removal. When the parent
    * holds the manifest's revision, or one it wins over, the swap is
    * completed (`#completeSwap`). When the Collection is gone, the run is
    * removed.
@@ -10222,12 +10416,11 @@ export class FileSystemBackend implements StorageBackend {
    * can be run again over what an earlier, cut-short run of it left, so the
    * same code serves the apply and the finish of a torn swap.
    *
-   * While `next/` stands the directory swap is still to do. Each kept chunk
-   * is copied into it from the live chunk directory, file and sidecar, so
-   * the live set stays whole for readers until the rename. Each staged
-   * chunk's file is moved in, and its sidecar written there with a stamp
-   * minted from this store's clock (raised to the live chunk's stamp at that
-   * index) and a fresh generation, as a client's chunk write mints them.
+   * While `next/` stands the directory swap is still to do. Each staged
+   * chunk's file is moved into it, and its sidecar written there with a
+   * stamp minted from this store's clock (raised to the live chunk's stamp
+   * at that index) and a fresh generation, as a client's chunk write mints
+   * them; the live set stays whole for readers until the rename.
    * Whether `next/` holds anything is read before any rename, so no fault
    * between the two renames turns on that read. Then the live chunk
    * directory is renamed aside to `prior/`, unless an earlier run of this
@@ -10274,79 +10467,55 @@ export class FileSystemBackend implements StorageBackend {
     const priorDir = this.#containedJoin(runDir, STAGING_PRIOR_DIR_NAME)
     if (await fileExists(nextDir)) {
       // Absent when the set was empty, or when an earlier run of this step
-      // renamed it aside already, after the links were made.
+      // renamed it aside already.
       const liveSetStands =
         !(await fileExists(priorDir)) && (await fileExists(chunkDir))
-      if (liveSetStands) {
-        for (const index of manifest.kept) {
+      // What an earlier run of this step moved into `next/` already.
+      const moved = new Set(
+        (await readDirEntries(nextDir)).map(entry => entry.name)
+      )
+      await mapInBatches({
+        items: manifest.staged.filter(
+          index => !moved.has(metaSidecarFileName(String(index)))
+        ),
+        map: async index => {
           const chunkId = String(index)
-          const sidecarPath = this.#metaSidecarPath({
-            collectionDir: chunkDir,
-            resourceId: chunkId
-          })
-          const sidecar = await this.#readJsonFile<MetaSidecar>(sidecarPath)
-          if (sidecar === undefined) {
+          const staged = await this.#readStagedSidecar({ runDir, chunkId })
+          if (staged === undefined) {
             throw new StorageError({
               cause: new Error(
-                `The kept chunk ${index} of "${resourceId}" has no sidecar.`
+                `The staged chunk ${index} of "${resourceId}" has no staged sidecar.`
               )
             })
           }
-          const filePath = this.#namedFilePath({
-            collectionDir: chunkDir,
-            resourceId: chunkId,
-            sidecar
-          })
-          await copyUnlessPresent({
-            existingPath: filePath,
-            newPath: path.join(nextDir, path.basename(filePath))
-          })
-          await copyUnlessPresent({
-            existingPath: sidecarPath,
-            newPath: path.join(nextDir, metaSidecarFileName(chunkId))
-          })
-        }
-      }
-      for (const index of manifest.staged) {
-        const chunkId = String(index)
-        if (
-          await fileExists(path.join(nextDir, metaSidecarFileName(chunkId)))
-        ) {
-          continue
-        }
-        const staged = await this.#readStagedSidecar({ runDir, chunkId })
-        if (staged === undefined) {
-          throw new StorageError({
-            cause: new Error(
-              `The staged chunk ${index} of "${resourceId}" has no staged sidecar.`
-            )
-          })
-        }
-        const stagedPath = this.#containedJoin(runDir, staged.fileName)
-        const movedPath = path.join(nextDir, staged.fileName)
-        if (await fileExists(stagedPath)) {
-          await fs.promises.rename(stagedPath, movedPath)
-        }
-        const heldChunk = liveSetStands
-          ? await this.#readJsonFile<MetaSidecar>(
-              this.#metaSidecarPath({
-                collectionDir: chunkDir,
-                resourceId: chunkId
-              })
-            ).catch(() => undefined)
-          : undefined
-        const chunkStamp = await this.#clock.mint({ held: stampOf(heldChunk) })
-        await this.#writeMetaSidecar({
-          collectionDir: nextDir,
-          resourceId: chunkId,
-          sidecar: {
-            createdAt: chunkStamp.updatedAt,
-            ...chunkStamp,
-            generation: newGeneration(),
-            ...sidecarFileMembers(movedPath)
+          const stagedPath = this.#containedJoin(runDir, staged.fileName)
+          const movedPath = path.join(nextDir, staged.fileName)
+          if (await fileExists(stagedPath)) {
+            await fs.promises.rename(stagedPath, movedPath)
           }
-        })
-      }
+          const heldChunk = liveSetStands
+            ? await this.#readJsonFile<MetaSidecar>(
+                this.#metaSidecarPath({
+                  collectionDir: chunkDir,
+                  resourceId: chunkId
+                })
+              ).catch(() => undefined)
+            : undefined
+          const chunkStamp = await this.#clock.mint({
+            held: stampOf(heldChunk)
+          })
+          await this.#writeMetaSidecar({
+            collectionDir: nextDir,
+            resourceId: chunkId,
+            sidecar: {
+              createdAt: chunkStamp.updatedAt,
+              ...chunkStamp,
+              generation: newGeneration(),
+              ...sidecarFileMembers(movedPath)
+            }
+          })
+        }
+      })
       await fsyncDirectory(nextDir)
       const nextHolds = (await readDirEntries(nextDir)).length > 0
       if (liveSetStands) {
@@ -10409,13 +10578,15 @@ export class FileSystemBackend implements StorageBackend {
    * since the swap replaces each of them. Taken over the whole run rather
    * than per chunk, because the staged bytes of the run's earlier chunks
    * already count toward usage, and a per-chunk credit would refuse the
-   * second chunk of a same-size rewrite under a quota the set fits. No
-   * credit under a parent that is not live, which holds no live set. Read
-   * under the parent's lock.
+   * second chunk of a same-size rewrite under a quota the set fits. A chunk
+   * directory beside a tombstone is credited too, since the swap removes it.
+   * Read under the parent's lock. A run `beginChunkStaging` opened has its
+   * live sizes in memory (`#stagingCredits`) and the indexes credited so
+   * far, so the credit costs no directory read per chunk; a run staged
+   * without an open reads the live set and the run directory.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionDir {string}
    * @param options.resourceId {string}
    * @param options.runDir {string}
    * @param options.chunkIndex {number}   the index being staged
@@ -10424,21 +10595,24 @@ export class FileSystemBackend implements StorageBackend {
   async #stagingCredit({
     spaceId,
     collectionId,
-    collectionDir,
     resourceId,
     runDir,
     chunkIndex
   }: {
     spaceId: string
     collectionId: string
-    collectionDir: string
     resourceId: string
     runDir: string
     chunkIndex: number
   }): Promise<number> {
-    const parent = await this.readMetaSidecar({ collectionDir, resourceId })
-    if (parent === undefined || parent.deleted === true) {
-      return 0
+    const opened = this.#stagingCredits.get(runDir)
+    if (opened !== undefined) {
+      opened.credited.add(chunkIndex)
+      let credit = 0
+      for (const index of opened.credited) {
+        credit += opened.liveSizes.get(index) ?? 0
+      }
+      return credit
     }
     const stagedIndexes = new Set(await this.#stagedChunkIndexes(runDir))
     stagedIndexes.add(chunkIndex)
@@ -10475,10 +10649,9 @@ export class FileSystemBackend implements StorageBackend {
       name => name !== path.basename(runDir)
     )
     for (const name of others) {
-      await rm(this.#containedJoin(replicaDir, name), {
-        recursive: true,
-        force: true
-      })
+      const otherRunDir = this.#containedJoin(replicaDir, name)
+      await rm(otherRunDir, { recursive: true, force: true })
+      this.#stagingCredits.delete(otherRunDir)
     }
     if (others.length > 0) {
       this.#dropUsageCache({ spaceId })
@@ -10517,42 +10690,23 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Refuses a swap whose chunk set does not match what is held
-   * (`chunkSetRefusal`), from the live set (none stands under a parent that
-   * is not live) and the run's staged sidecars.
+   * Refuses a swap whose chunk set does not match the staging
+   * (`chunkSetRefusal`), from the run's staged sidecars.
    * @param options {object}
    * @param options.resourceId {string}
-   * @param options.chunkDir {string}
    * @param options.runDir {string}
-   * @param options.parentLive {boolean}
-   * @param options.kept {number[]}
    * @param options.staged {number[]}
    * @returns {Promise<ApplyResult | undefined>}   the refusal, or `undefined`
    */
   async #refusedChunkSet({
     resourceId,
-    chunkDir,
     runDir,
-    parentLive,
-    kept,
     staged
   }: {
     resourceId: string
-    chunkDir: string
     runDir: string
-    parentLive: boolean
-    kept: number[]
     staged: number[]
   }): Promise<ApplyResult | undefined> {
-    const live = new Set<number>()
-    if (parentLive) {
-      const entries = await readDirEntries(chunkDir)
-      for (const {
-        resourceId: chunkId
-      } of await this.#liveRepresentationEntries({ dir: chunkDir, entries })) {
-        live.add(Number(chunkId))
-      }
-    }
     const stagedHeld = new Set(
       (
         await mapInBatches({
@@ -10565,7 +10719,7 @@ export class FileSystemBackend implements StorageBackend {
         })
       ).filter(index => index !== undefined)
     )
-    return chunkSetRefusal({ resourceId, kept, staged, live, stagedHeld })
+    return chunkSetRefusal({ resourceId, staged, stagedHeld })
   }
 
   /**
@@ -10693,6 +10847,7 @@ export class FileSystemBackend implements StorageBackend {
     runDir: string
   }): Promise<void> {
     await rm(runDir, { recursive: true, force: true })
+    this.#stagingCredits.delete(runDir)
     const replicaDir = path.dirname(runDir)
     await removeDirIfEmpty(replicaDir)
     await removeDirIfEmpty(path.dirname(replicaDir))
@@ -10758,16 +10913,26 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<number> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     let cleared = 0
-    for (const entry of await readDirEntries(collectionDir)) {
+    const entries = await readDirEntries(collectionDir)
+    // Only a chunk directory beside a tombstone's name is read further, so
+    // a Collection with no tombstone opens no sidecar.
+    const tombstoned = new Set(
+      entries
+        .filter(entry => entry.isFile())
+        .map(entry => tombstoneSidecarFileId(entry.name))
+        .filter(resourceId => resourceId !== undefined)
+    )
+    for (const entry of entries) {
       const resourceId = entry.isDirectory()
         ? parseChunkDirName(entry.name)
         : undefined
-      if (resourceId === undefined) {
+      if (resourceId === undefined || !tombstoned.has(resourceId)) {
         continue
       }
       const prior = await this.#readListedSidecar({
         dir: collectionDir,
-        resourceId
+        resourceId,
+        names: { live: false, tombstone: true }
       })
       if (prior?.deleted === true) {
         await this.#clearChunksBesideTombstone({
