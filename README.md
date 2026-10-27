@@ -560,22 +560,47 @@ exits at once and skips that cleanup; the identity's key is never saved, so
 Spaces left that way can only be removed on the server itself. The server must
 allow Space creation (no `WAS_ONBOARDING_TOKEN`).
 
+A server running both backends serves each Collection from the one it selects,
+so one run measures both side by side, over the same network path at the same
+time. `--split` (default `postgres=50,fs=50`) shares each test's Collections
+among the backends by percent. Each test spreads its load round-robin over a
+pool of Collections, the smallest that realizes the split (2 for `50/50`, 10 for
+`30/70`; at most 20, so percents go in steps of 5), each created with its
+backend's fixed id rather than `default`, so the host's `WAS_DEFAULT_BACKEND`
+does not decide where it lands. The report keeps the combined tables and adds
+one per backend under each. A backend's rates count the requests its Collections
+answered over the whole test, so they add up to the combined rate. Every pool
+member is filled to each size, so a `50/50` run seeds twice what a pool of one
+does; the run prints the pool and the Resources it fills before it starts.
+Before seeding anything, it reads the host's backends listing
+(`GET /space/:spaceId/backends`) and stops if the split names a backend the host
+does not list. `--split fs=100` measures one backend alone.
+
 ```bash
-# Compare two deployed backends from the same machine, one after the other.
+# Measure both backends side by side, half the Collections on each.
 # `--payloads json,small` leaves out the 10 MiB file, which an uplink slower
 # than about 1 MB/s can't send within was-client's 10 s request timeout:
-pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem" --payloads json,small
-pnpm perf:remote --url https://postgres.staging.freewallet.me --label "Postgres" --payloads json,small
+pnpm perf:remote --url https://staging.freewallet.me --payloads json,small
+# Weight the run toward one backend, here 30% of the Collections on Postgres:
+pnpm perf:remote --url https://staging.freewallet.me --split postgres=30,fs=70
+# Measure one backend alone:
+pnpm perf:remote --url https://staging.freewallet.me --split fs=100 --label "Filesystem"
 # From a fast uplink, leave `--payloads` out to run all three payloads, the
 # same matrix as `pnpm perf:fs` and `pnpm perf:pg`:
-pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem"
+pnpm perf:remote --url https://staging.freewallet.me
 # From far away, use more clients so the round trip doesn't cap every rate
 # (5 clients / 185 ms is about 27 req/s):
 pnpm perf:remote --url https://staging.freewallet.me --clients 25 --payloads json,small
 # From a machine with little memory (512 MB), cap the clients of the 10 MiB
 # tests: five clients each sending a 10 MiB file run Node out of memory there:
-pnpm perf:remote --url https://staging.freewallet.me --label "Filesystem" --large-file-clients 2
+pnpm perf:remote --url https://staging.freewallet.me --large-file-clients 2
 ```
+
+On a host whose metadata lives in Postgres (`WAS_CONTROL_PLANE_BACKEND`, which
+is Postgres whenever both backends are configured), a request to a filesystem
+Collection still reads its Space and Collection metadata from Postgres, so the
+filesystem numbers include that work. A client cannot change it; it is what a
+wallet on that host gets.
 
 Every number includes the round trip from the machine running it, so compare
 runs made from the same machine against hosts in the same region.
@@ -584,8 +609,8 @@ take it; it defaults to `--clients`) runs only the payload matrix's 10 MiB tests
 with fewer clients, and the report header names the cap, so compare a capped run
 only with one capped the same way. Without `--payloads json,small`, a run from a
 slow uplink stops while filling, with
-`Request to ".../space/perf-matrix-read/public/large" timed out.`, and deletes
-the Spaces it created so far.
+`Request to ".../space/perf-matrix-read/public-postgres-0/large" timed out.`,
+and deletes the Spaces it created so far.
 
 The ballast, seeded by `pnpm perf:pg:seed` only, is extra 10 MiB files in a
 `perf-ballast` Space that no test reads. It grows the database past what

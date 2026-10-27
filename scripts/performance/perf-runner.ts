@@ -21,7 +21,10 @@ import { spacesUrl } from '@interop/was-client/paths'
 import type { Collection } from '@interop/was-client'
 
 import {
+  backendCell,
+  backendPool,
   deleteLoad,
+  describePool,
   edgeSpaceLabels,
   estimateMinutes,
   formatMachine,
@@ -30,14 +33,21 @@ import {
   formatPivotedTable,
   formatProgressLine,
   formatScalingSummary,
+  k6Measurement,
   load,
   pivotRows,
+  poolBackends,
+  seedResourceCount,
   serialWriteLoad,
   type EncryptedReadIds,
   type LoadSettings,
   type MatrixRow,
+  type BackendShare,
   type Measurement,
-  type Row
+  type PoolMember,
+  type PoolTarget,
+  type Row,
+  type ServerBackendId
 } from './perf-lib.js'
 import { runMatrix } from './perf-matrix-run.js'
 
@@ -285,7 +295,9 @@ export function reportHeader({
 }
 
 /**
- * Prints how long the run will take, from `estimateMinutes`.
+ * Prints how long the run will take, from `estimateMinutes`, and for a run
+ * whose tests spread over a pool of Collections, the pool and how many
+ * Resources filling it writes.
  * @param options {object}
  * @param options.sizes {number[]}
  * @param options.edgeSizes {number[]}
@@ -293,6 +305,8 @@ export function reportHeader({
  * @param options.k6Version {string | undefined}
  * @param options.filling {boolean}
  * @param [options.matrix] {boolean}
+ * @param [options.split] {BackendShare[]}   the split whose pool each test
+ *   spreads its load over; a pool of one by default
  * @returns {void}
  */
 export function printEstimate({
@@ -301,7 +315,8 @@ export function printEstimate({
   settings,
   k6Version,
   filling,
-  matrix
+  matrix,
+  split
 }: {
   sizes: number[]
   edgeSizes: number[]
@@ -309,7 +324,9 @@ export function printEstimate({
   k6Version: string | undefined
   filling: boolean
   matrix?: boolean
+  split?: BackendShare[]
 }): void {
+  const poolSize = backendPool(split).length
   const minutes = estimateMinutes({
     sizes,
     edgeSizes,
@@ -319,8 +336,16 @@ export function printEstimate({
     pauseMs,
     withK6: k6Version !== undefined,
     filling,
-    matrix
+    matrix,
+    poolSize
   })
+  if (split !== undefined) {
+    const resources = seedResourceCount({ sizes, edgeSizes, poolSize })
+    console.log(
+      `Pool: ${describePool(split)}; filling writes ` +
+        `${resources.toLocaleString('en-US')} Resources before the matrix.`
+    )
+  }
   console.log(`Note: this run takes about ${minutes} minutes (an estimate).\n`)
 }
 
@@ -504,22 +529,22 @@ export async function connect({
 }
 
 /**
- * Runs k6 against one public URL and reads its summary.
+ * Runs k6 against public URLs, round-robin, and reads its summary.
  * @param options {object}
  * @param options.serverUrl {string}   the server's base URL
- * @param options.path {string}
+ * @param options.targets {PoolTarget[]}
  * @param options.summaryPath {string}
  * @param options.settings {LoadSettings}
  * @returns {Promise<Measurement>}
  */
 async function k6Get({
   serverUrl,
-  path,
+  targets,
   summaryPath,
   settings
 }: {
   serverUrl: string
-  path: string
+  targets: PoolTarget[]
   summaryPath: string
   settings: LoadSettings
 }): Promise<Measurement> {
@@ -535,7 +560,7 @@ async function k6Get({
       '-e',
       `BASE_URL=${serverUrl}`,
       '-e',
-      `TARGET_PATH=${path}`,
+      `TARGETS=${JSON.stringify(targets)}`,
       '-e',
       `VUS=${settings.clients}`,
       '-e',
@@ -563,15 +588,11 @@ async function k6Get({
     throw new Error(`k6 exited with code ${exitCode}:\n${output.join('')}`)
   }
   const { metrics } = JSON.parse(await readFile(summaryPath, 'utf8'))
-  return {
-    rate: metrics.http_reqs.values.rate,
-    avgMs: metrics.http_req_duration.values.avg,
-    failed: metrics.checks.values.fails
-  }
+  return k6Measurement({ metrics, backends: poolBackends(targets) })
 }
 
 /**
- * The unsigned public read every test of a public URL goes through: k6 when
+ * The unsigned public read every test of public URLs goes through: k6 when
  * it is installed, each run keeping its summary in `outDir`, or else the skip
  * string.
  * @param options {object}
@@ -579,7 +600,7 @@ async function k6Get({
  * @param options.outDir {string}
  * @param options.k6Version {string | undefined}
  * @param options.settings {LoadSettings}
- * @returns {(path: string) => Promise<Measurement | string>}
+ * @returns {(targets: PoolTarget[], clients?: number) => Promise<Measurement | string>}
  */
 export function unsignedReader({
   serverUrl,
@@ -591,16 +612,16 @@ export function unsignedReader({
   outDir: string
   k6Version: string | undefined
   settings: LoadSettings
-}): (path: string, clients?: number) => Promise<Measurement | string> {
+}): (targets: PoolTarget[], clients?: number) => Promise<Measurement | string> {
   let runs = 0
-  return async (path, clients = settings.clients) => {
+  return async (targets, clients = settings.clients) => {
     if (!k6Version) {
       return 'skipped (no k6)'
     }
     const summaryPath = join(outDir, `k6-${runs++}.json`)
     return k6Get({
       serverUrl,
-      path,
+      targets,
       summaryPath,
       settings: { ...settings, clients }
     })
@@ -633,32 +654,35 @@ async function record({ rows, row }: { rows: Row[]; row: Row }): Promise<void> {
 }
 
 /**
- * A Collection a test writes to: its path, with no trailing slash, and its
- * handle.
+ * A Collection a test writes to: its path, with no trailing slash, its
+ * backend, and its handle.
  */
-interface EdgeTarget {
-  path: string
+export interface EdgeTarget extends PoolTarget {
   collection: Collection
 }
 
 /**
- * The Spaces every measured test needs.
+ * The Spaces every measured test needs. The size Collections are
+ * `c-<size><suffix>` in the public and the private Space, one per `pool`
+ * member, and each edge test has one Collection per member.
  */
 export interface TestTargets {
   publicSpaceId: string
   privateSpaceId: string
+  pool: PoolMember[]
   edgeSpaces: Array<{
     size: number
-    write: EdgeTarget
-    remove: EdgeTarget
-    serial: EdgeTarget
+    write: EdgeTarget[]
+    remove: EdgeTarget[]
+    serial: EdgeTarget[]
   }>
 }
 
 /**
  * Builds handles for the Spaces a seed script already wrote, under the fixed
  * ids `seedSizeSpaces` (in `perf-lib.ts`) uses: `perf-public`,
- * `perf-private`, and `edgeSpaceLabels`' three per edge size. No I/O:
+ * `perf-private`, and `edgeSpaceLabels`' three per edge size, each with a
+ * pool of one Collection on the server's default backend. No I/O:
  * `WasClient`'s Space/Collection handles are lazy.
  * @param options {object}
  * @param options.was {WasClient}
@@ -673,10 +697,12 @@ export function seededTargets({
   edgeSizes: number[]
 }): TestTargets {
   const edgeSpaces = edgeSizes.map(size => {
-    const target = (label: string): EdgeTarget => ({
-      path: `/space/${label}-${size}/items`,
-      collection: was.space(`${label}-${size}`).collection('items')
-    })
+    const target = (label: string): EdgeTarget[] => [
+      {
+        path: `/space/${label}-${size}/items`,
+        collection: was.space(`${label}-${size}`).collection('items')
+      }
+    ]
     return {
       size,
       write: target(edgeSpaceLabels.write),
@@ -687,18 +713,20 @@ export function seededTargets({
   return {
     publicSpaceId: 'perf-public',
     privateSpaceId: 'perf-private',
+    pool: backendPool(),
     edgeSpaces
   }
 }
 
 /**
- * Runs every Collection-size test in order against already-seeded Spaces.
+ * Runs every Collection-size test in order against already-seeded Spaces,
+ * each one spread over its pool of Collections.
  * @param options {object}
  * @param options.was {WasClient}
  * @param options.sizes {number[]}
  * @param options.targets {TestTargets}
  * @param options.settings {LoadSettings}
- * @param options.publicRead {(path: string, clients?: number) => Promise<Measurement | string>}
+ * @param options.publicRead {(targets: PoolTarget[], clients?: number) => Promise<Measurement | string>}
  *   see `unsignedReader`
  * @returns {Promise<Row[]>}
  */
@@ -713,30 +741,47 @@ export async function runTests({
   sizes: number[]
   targets: TestTargets
   settings: LoadSettings
-  publicRead: (path: string, clients?: number) => Promise<Measurement | string>
+  publicRead: (
+    targets: PoolTarget[],
+    clients?: number
+  ) => Promise<Measurement | string>
 }): Promise<Row[]> {
-  const { publicSpaceId, privateSpaceId, edgeSpaces } = targets
+  const { publicSpaceId, privateSpaceId, pool, edgeSpaces } = targets
   const { clients, durationSeconds, serialWrites } = settings
+  // The same path in each pool member's size Collection.
+  const sizeTargets = ({
+    spaceId,
+    size,
+    path
+  }: {
+    spaceId: string
+    size: number
+    path: string
+  }): PoolTarget[] =>
+    pool.map(({ backend, suffix }) => ({
+      path: `/space/${spaceId}/c-${size}${suffix}/${path}`,
+      backend
+    }))
   await sleep(pauseMs)
 
   const rows: Row[] = []
-  for (const [test, suffix] of [
+  for (const [test, path] of [
     ['Public read', 'vc-1'],
     ['Public list', '']
   ] as const) {
     for (const size of sizes) {
       const result = await publicRead(
-        `/space/${publicSpaceId}/c-${size}/${suffix}`
+        sizeTargets({ spaceId: publicSpaceId, size, path })
       )
       await record({ rows, row: { test, size, result } })
     }
   }
   for (const size of sizes) {
-    const path = `/space/${privateSpaceId}/c-${size}/vc-1`
     const result = await load({
       clients,
       durationSeconds,
-      op: () => was.request({ path })
+      pool: sizeTargets({ spaceId: privateSpaceId, size, path: 'vc-1' }),
+      op: ({ path }) => was.request({ path })
     })
     await record({ rows, row: { test: 'Signed read', size, result } })
   }
@@ -744,9 +789,10 @@ export async function runTests({
     const result = await load({
       clients,
       durationSeconds,
-      op: (worker, count) =>
+      pool: write,
+      op: ({ path }, worker, count) =>
         was.request({
-          path: `${write.path}/w-${worker}-${count}`,
+          path: `${path}/w-${worker}-${count}`,
           method: 'PUT',
           json: { worker, count }
         })
@@ -759,14 +805,14 @@ export async function runTests({
       durationSeconds,
       deleteRoundSize,
       was,
-      ...remove
+      pool: remove
     })
     await record({ rows, row: { test: 'Signed delete', size, result } })
   }
   for (const { size, serial } of edgeSpaces) {
     const result = await serialWriteLoad({
       was,
-      path: serial.path,
+      pool: serial,
       warmUpWrites,
       serialWrites
     })
@@ -779,23 +825,70 @@ export async function runTests({
 }
 
 /**
- * The Collection-size results as report lines: the pivoted table, then the
- * scaling summary.
+ * One table per backend, each under its own heading, after a line saying how
+ * they relate to the combined table above them. Nothing when `backends` is
+ * empty.
+ * @param options {object}
+ * @param options.backends {ServerBackendId[]}
+ * @param options.table {(backend: ServerBackendId) => string}
+ * @returns {string[]}
+ */
+function backendTables({
+  backends,
+  table
+}: {
+  backends: ServerBackendId[]
+  table: (backend: ServerBackendId) => string
+}): string[] {
+  if (backends.length === 0) {
+    return []
+  }
+  return [
+    '',
+    "Each backend's table counts the requests its Collections answered over " +
+      "the whole test, so a test's rates add up to the combined one above.",
+    ...backends.flatMap(backend => [
+      '',
+      `### Collections on ${backend}`,
+      '',
+      table(backend)
+    ])
+  ]
+}
+
+/**
+ * The Collection-size results as report lines: the pivoted table, one per
+ * backend under it, then the scaling summary.
  * @param options {object}
  * @param options.sizes {number[]}
  * @param options.rows {Row[]}
+ * @param [options.backends] {ServerBackendId[]}   the backends to give a
+ *   table of their own; none by default
  * @returns {string[]}
  */
 export function sizeReport({
   sizes,
-  rows
+  rows,
+  backends = []
 }: {
   sizes: number[]
   rows: Row[]
+  backends?: ServerBackendId[]
 }): string[] {
   const pivoted = pivotRows({ sizes, rows })
   return [
     formatPivotedTable({ sizes, pivoted }),
+    ...backendTables({
+      backends,
+      table: backend =>
+        formatPivotedTable({
+          sizes,
+          pivoted: pivoted.map(({ test, cells }) => ({
+            test,
+            cells: cells.map(cell => backendCell(cell, backend))
+          }))
+        })
+    }),
     '',
     '## Summary',
     '',
@@ -811,20 +904,27 @@ export function sizeReport({
  * @param options.was {WasClient}
  * @param options.settings {LoadSettings}
  * @param options.encryptedIds {EncryptedReadIds}
- * @param options.publicRead {(path: string, clients?: number) => Promise<Measurement | string>}
+ * @param options.publicRead {(targets: PoolTarget[], clients?: number) => Promise<Measurement | string>}
  *   see `unsignedReader`
+ * @param [options.pool] {PoolMember[]}   the Collections each test spreads
+ *   its load over, as `seedMatrix` was given; one by default
  * @returns {Promise<MatrixRow[]>}
  */
 export async function runPayloadMatrix({
   was,
   settings,
   encryptedIds,
-  publicRead
+  publicRead,
+  pool
 }: {
   was: WasClient
   settings: LoadSettings
   encryptedIds: EncryptedReadIds
-  publicRead: (path: string, clients?: number) => Promise<Measurement | string>
+  publicRead: (
+    targets: PoolTarget[],
+    clients?: number
+  ) => Promise<Measurement | string>
+  pool?: PoolMember[]
 }): Promise<MatrixRow[]> {
   console.log('\nRunning the payload matrix...')
   return runMatrix({
@@ -832,6 +932,7 @@ export async function runPayloadMatrix({
     settings,
     encryptedIds,
     publicRead,
+    pool,
     report: async result => {
       console.log(formatMatrixProgressLine(result))
       await settleAfter(result.result)
@@ -840,18 +941,39 @@ export async function runPayloadMatrix({
 }
 
 /**
- * The payload-matrix results as report lines, under their own heading.
- * @param matrixRows {MatrixRow[]}
+ * The payload-matrix results as report lines, under their own heading: the
+ * table, then one per backend.
+ * @param options {object}
+ * @param options.rows {MatrixRow[]}
+ * @param [options.backends] {ServerBackendId[]}   the backends to give a
+ *   table of their own; none by default
  * @returns {string[]}
  */
-export function matrixReport(matrixRows: MatrixRow[]): string[] {
+export function matrixReport({
+  rows,
+  backends = []
+}: {
+  rows: MatrixRow[]
+  backends?: ServerBackendId[]
+}): string[] {
   return [
     '## Payload matrix',
     '',
     'Each cell counts whole files: an encrypted 10 MiB file is one document ' +
       'plus 10 chunks, written in 12 requests and read in 11.',
     '',
-    formatMatrixTable(matrixRows)
+    formatMatrixTable(rows),
+    ...backendTables({
+      backends,
+      table: backend =>
+        formatMatrixTable(
+          rows.map(row => ({
+            ...row,
+            read: backendCell(row.read, backend),
+            write: backendCell(row.write, backend)
+          }))
+        )
+    })
   ]
 }
 

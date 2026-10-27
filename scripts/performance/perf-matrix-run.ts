@@ -7,14 +7,16 @@
  * Encrypted writes reuse the read targets' stored envelopes and chunks at
  * fresh ids, so no encryption happens in the timed part, and no read
  * decrypts. Public reads go through the caller's unsigned reader (k6);
- * everything else is signed. Needs only a running server, so it works over
- * any backend.
+ * everything else is signed. Each test spreads its load over the pool of
+ * Collections the seed made per category. Needs only a running server, so it
+ * works over any backend.
  */
 import { randomBytes } from 'node:crypto'
 
 import type { JsonObject, WasClient } from '@interop/was-client'
 
 import {
+  backendPool,
   createDeleteLoad,
   credential,
   largeFileBytes,
@@ -22,13 +24,16 @@ import {
   matrixCategories,
   matrixPayloads,
   matrixSpaceIds,
+  retryOnNetworkFault,
   smallFileBytes,
   type EncryptedReadIds,
   type LoadSettings,
   type MatrixCategory,
   type MatrixPayload,
   type MatrixRow,
-  type Measurement
+  type Measurement,
+  type PoolMember,
+  type PoolTarget
 } from './perf-lib.js'
 
 const octetStream = { 'content-type': 'application/octet-stream' }
@@ -56,24 +61,27 @@ interface MatrixFile {
 }
 
 /**
- * A matrix Resource's path: `id` in the `category` Collection of the read or
- * the write Space.
+ * A matrix Resource's path: `id` in one pool member's `category` Collection
+ * (`<category><suffix>`) of the read or the write Space.
  * @param options {object}
  * @param options.space {'read' | 'write'}
  * @param options.category {MatrixCategory}
+ * @param options.suffix {string}   the pool member's
  * @param options.id {string}
  * @returns {string}
  */
 function matrixPath({
   space,
   category,
+  suffix,
   id
 }: {
   space: 'read' | 'write'
   category: MatrixCategory
+  suffix: string
   id: string
 }): string {
-  return `/space/${matrixSpaceIds[space]}/${category}/${id}`
+  return `/space/${matrixSpaceIds[space]}/${category}${suffix}/${id}`
 }
 
 /**
@@ -127,19 +135,23 @@ async function readFile({
 /**
  * Reads the encrypted read targets' stored envelopes and chunks, untimed,
  * for the encrypted write tests to copy. A chunked envelope names its chunk
- * count in its cleartext `stream`; an inline one has no `stream`.
+ * count in its cleartext `stream`; an inline one has no `stream`. Every pool
+ * member holds each target at the same id, so one member's copy is read.
  * @param options {object}
  * @param options.was {WasClient}
  * @param options.encryptedIds {EncryptedReadIds}
+ * @param options.suffix {string}   the pool member to read from
  * @returns {Promise<Map<MatrixPayload, EncryptedTarget>>} a target for each
  *   payload `encryptedIds` names, in the matrix's payload order
  */
 async function loadEncryptedTargets({
   was,
-  encryptedIds
+  encryptedIds,
+  suffix
 }: {
   was: WasClient
   encryptedIds: EncryptedReadIds
+  suffix: string
 }): Promise<Map<MatrixPayload, EncryptedTarget>> {
   const targets = new Map<MatrixPayload, EncryptedTarget>()
   for (const payload of matrixPayloads) {
@@ -147,13 +159,18 @@ async function loadEncryptedTargets({
     if (id === undefined) {
       continue
     }
-    const path = matrixPath({ space: 'read', category: 'encrypted', id })
-    const envelope = (await readBody({ was, path })) as JsonObject
+    const path = matrixPath({
+      space: 'read',
+      category: 'encrypted',
+      suffix,
+      id
+    })
+    const envelope = (await retryOnNetworkFault({
+      op: () => readBody({ was, path })
+    })) as JsonObject
     const stream = envelope.stream as { chunks: number } | undefined
-    const [, ...chunks] = await readFile({
-      was,
-      path,
-      chunkCount: stream?.chunks ?? 0
+    const [, ...chunks] = await retryOnNetworkFault({
+      op: () => readFile({ was, path, chunkCount: stream?.chunks ?? 0 })
     })
     targets.set(payload, { id, envelope, chunks: chunks as Uint8Array[] })
   }
@@ -250,11 +267,13 @@ function encryptedFile({
  * @param options.was {WasClient}
  * @param options.settings {LoadSettings}
  * @param options.encryptedIds {EncryptedReadIds}
- * @param options.publicRead {(path: string, clients?: number) => Promise<Measurement | string>}
- *   the unsigned read of a public read target (k6) by that many clients, or a
- *   skip string
+ * @param options.publicRead {(targets: PoolTarget[], clients?: number) => Promise<Measurement | string>}
+ *   the unsigned read of a public read target in each pool member (k6) by
+ *   that many clients, or a skip string
  * @param options.report {(result: object) => Promise<void>}   called with each
  *   `{ category, payload, operation, result }` as it completes
+ * @param [options.pool] {PoolMember[]}   the Collections per category the
+ *   seed made; one by default
  * @returns {Promise<MatrixRow[]>}
  */
 export async function runMatrix({
@@ -262,25 +281,34 @@ export async function runMatrix({
   settings,
   encryptedIds,
   publicRead,
-  report
+  report,
+  pool = backendPool()
 }: {
   was: WasClient
   settings: LoadSettings
   encryptedIds: EncryptedReadIds
-  publicRead: (path: string, clients?: number) => Promise<Measurement | string>
+  publicRead: (
+    targets: PoolTarget[],
+    clients?: number
+  ) => Promise<Measurement | string>
   report: (result: {
     category: MatrixCategory
     payload: MatrixPayload
     operation: 'read' | 'write'
     result: Measurement | string
   }) => Promise<void>
+  pool?: PoolMember[]
 }): Promise<MatrixRow[]> {
   const { durationSeconds } = settings
   // Fresh ids each run: the seeded schema persists across runs, and a write
   // test measures creating a file, not replacing one.
   const runTag = randomBytes(4).toString('hex')
   const plaintext = plaintextFiles({ was })
-  const encryptedTargets = await loadEncryptedTargets({ was, encryptedIds })
+  const encryptedTargets = await loadEncryptedTargets({
+    was,
+    encryptedIds,
+    suffix: pool[0]!.suffix
+  })
   const rows: MatrixRow[] = []
   for (const category of matrixCategories) {
     for (const [payload, target] of encryptedTargets) {
@@ -290,35 +318,40 @@ export async function runMatrix({
           : plaintext[payload]
       const clients =
         payload === 'large' ? settings.largeFileClients : settings.clients
-      const readPath = matrixPath({ space: 'read', category, id: readId })
+      const readTargets = pool.map(({ backend, suffix }) => ({
+        path: matrixPath({ space: 'read', category, suffix, id: readId }),
+        backend
+      }))
       const read =
         category === 'public'
-          ? await publicRead(readPath, clients)
+          ? await publicRead(readTargets, clients)
           : await load({
               clients,
               durationSeconds,
-              op: () => readFile({ was, path: readPath, chunkCount })
+              pool: readTargets,
+              op: ({ path }) => readFile({ was, path, chunkCount })
             })
       await report({ category, payload, operation: 'read', result: read })
 
       const idFor = (worker: number, count: number) =>
         `${runTag}-${payload}-${worker}-${count}`
-      const pathFor = (id: string) =>
-        matrixPath({ space: 'write', category, id })
-      const createAt = (worker: number, count: number) => {
+      const pathFor = ({ suffix }: PoolMember, id: string) =>
+        matrixPath({ space: 'write', category, suffix, id })
+      const createAt = (member: PoolMember, worker: number, count: number) => {
         const id = idFor(worker, count)
-        return create({ path: pathFor(id), id })
+        return create({ path: pathFor(member, id), id })
       }
       const write =
         payload === 'json'
-          ? await load({ clients, durationSeconds, op: createAt })
+          ? await load({ clients, durationSeconds, pool, op: createAt })
           : await createDeleteLoad({
               clients,
               durationSeconds,
+              pool,
               create: createAt,
-              remove: (worker, round) =>
+              remove: (member, worker, round) =>
                 was.request({
-                  path: pathFor(idFor(worker, round)),
+                  path: pathFor(member, idFor(worker, round)),
                   method: 'DELETE'
                 })
             })

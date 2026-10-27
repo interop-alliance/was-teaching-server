@@ -1,25 +1,39 @@
 /**
- * Tests for the pure/injectable-dependency logic behind `pnpm perf:fs` and
- * `pnpm perf:pg` (`scripts/performance/perf-lib.ts`): CLI argument parsing,
- * the run-length estimate, the Markdown table formatting, and the
- * load-aggregation harnesses. The subprocess/k6/WasClient wiring itself is
+ * Tests for the pure/injectable-dependency logic behind `pnpm perf:fs`,
+ * `pnpm perf:pg` and `pnpm perf:remote` (`scripts/performance/perf-lib.ts`):
+ * CLI argument parsing, the backend split and its Collection pool, the
+ * run-length estimate, the Markdown table formatting, the load-aggregation
+ * harnesses, and the network-fault retry and error description. The subprocess/k6/WasClient wiring itself is
  * verified by running `pnpm perf:fs` once end to end, not by unit tests.
  */
 import { describe, it } from 'vitest'
 import assert from 'node:assert'
 import {
+  backendCell,
+  backendPool,
+  collectionBackend,
+  createDeleteLoad,
   deleteLoad,
+  describeError,
+  describePool,
   estimateMinutes,
   formatMachine,
+  formatMatrixTable,
   formatPivotedTable,
   formatProgressLine,
+  formatRetries,
   formatScalingSummary,
+  k6Measurement,
   load,
+  missingBackends,
   parseLoadSettings,
   parseSizes,
+  parseSplit,
   pivotRows,
   positiveInteger,
-  retryOnTimeout,
+  retriedFaultCounts,
+  retryOnNetworkFault,
+  seedResourceCount,
   serialWriteLoad
 } from '../scripts/performance/perf-lib.js'
 
@@ -104,6 +118,7 @@ describe('load', () => {
     const result = await load({
       clients: 2,
       durationSeconds: 0.05,
+      pool: [{}],
       op: async () => {}
     })
     assert.ok(result.rate > 0, `expected a positive rate, got ${result.rate}`)
@@ -115,6 +130,7 @@ describe('load', () => {
     const result = await load({
       clients: 1,
       durationSeconds: 0.02,
+      pool: [{}],
       op: async () => {
         throw new Error('simulated failure')
       }
@@ -125,6 +141,41 @@ describe('load', () => {
     )
     assert.equal(result.rate, 0)
     assert.equal(result.avgMs, undefined)
+  })
+
+  it('sends successive requests to successive pool members, and measures each backend', async () => {
+    const sent: string[] = []
+    const result = await load({
+      clients: 2,
+      durationSeconds: 0.05,
+      pool: [
+        { name: 'a', backend: 'postgres' as const },
+        { name: 'b', backend: 'fs' as const }
+      ],
+      op: async ({ name }) => {
+        sent.push(name)
+      }
+    })
+    assert.ok(sent.length > 2, `expected several requests, got ${sent.length}`)
+    sent.forEach((name, index) =>
+      assert.equal(name, index % 2 === 0 ? 'a' : 'b', `request ${index}`)
+    )
+    const { postgres, fs } = result.byBackend ?? {}
+    assert.ok(postgres && fs, 'expected a part for each backend')
+    assert.ok(
+      Math.abs(postgres.rate + fs.rate - result.rate) < 1e-9 * result.rate,
+      "expected the backends' rates to add up to the combined rate"
+    )
+  })
+
+  it('reports no backend parts when no pool member names a backend', async () => {
+    const result = await load({
+      clients: 1,
+      durationSeconds: 0.01,
+      pool: [{}, {}],
+      op: async () => {}
+    })
+    assert.equal(result.byBackend, undefined)
   })
 })
 
@@ -204,6 +255,12 @@ describe('estimateMinutes', () => {
       `expected k6 to not lower the estimate, got ${withoutK6} then ${withK6}`
     )
   })
+
+  it('grows with the pool, since every pool member is filled', () => {
+    const one = estimateMinutes({ ...base, withK6: true })
+    const two = estimateMinutes({ ...base, withK6: true, poolSize: 2 })
+    assert.ok(two > one, `expected ${two} > ${one}`)
+  })
 })
 
 describe('deleteLoad', () => {
@@ -213,12 +270,16 @@ describe('deleteLoad', () => {
       clients: 1,
       durationSeconds: 0.02,
       deleteRoundSize: 2,
-      path: '/space/s/c',
-      collection: {
-        put: async () => {
-          calls.push('put')
+      pool: [
+        {
+          path: '/space/s/c',
+          collection: {
+            put: async () => {
+              calls.push('put')
+            }
+          }
         }
-      },
+      ],
       was: {
         request: async () => {
           calls.push('request')
@@ -244,8 +305,7 @@ describe('deleteLoad', () => {
       clients: 1,
       durationSeconds: 0.02,
       deleteRoundSize: 1,
-      path: '/space/s/c',
-      collection: { put: async () => {} },
+      pool: [{ path: '/space/s/c', collection: { put: async () => {} } }],
       was: {
         request: async () => {
           throw new Error('simulated failure')
@@ -259,13 +319,42 @@ describe('deleteLoad', () => {
     assert.equal(result.rate, 0)
     assert.equal(result.avgMs, undefined)
   })
+
+  it('refills each Resource in the pool member its delete goes to', async () => {
+    const puts: string[] = []
+    const deletes: string[] = []
+    const member = (path: string, backend: 'fs' | 'postgres') => ({
+      path,
+      backend,
+      collection: {
+        put: async (id: string) => {
+          puts.push(`${path}/${id}`)
+        }
+      }
+    })
+    const result = await deleteLoad({
+      clients: 1,
+      durationSeconds: 0.02,
+      deleteRoundSize: 4,
+      pool: [member('/a', 'postgres'), member('/b', 'fs')],
+      was: {
+        request: async ({ path }) => {
+          deletes.push(path)
+        }
+      }
+    })
+    const firstRound = ['/a/del-0-0', '/b/del-0-1', '/a/del-0-2', '/b/del-0-3']
+    assert.deepEqual(puts.slice(0, 4), firstRound)
+    assert.deepEqual(deletes.slice(0, 4), firstRound)
+    assert.ok(result.byBackend?.postgres && result.byBackend.fs)
+  })
 })
 
 describe('serialWriteLoad', () => {
   it('runs warm-up writes before the timed writes, untimed', async () => {
     const paths: string[] = []
     const result = await serialWriteLoad({
-      path: '/space/s/c',
+      pool: [{ path: '/space/s/c' }],
       warmUpWrites: 2,
       serialWrites: 3,
       was: {
@@ -288,7 +377,7 @@ describe('serialWriteLoad', () => {
   it('counts a failed write and keeps writing the remaining ones', async () => {
     let timedCalls = 0
     const result = await serialWriteLoad({
-      path: '/space/s/c',
+      pool: [{ path: '/space/s/c' }],
       warmUpWrites: 0,
       serialWrites: 3,
       was: {
@@ -302,6 +391,31 @@ describe('serialWriteLoad', () => {
     })
     assert.equal(timedCalls, 3, 'expected all 3 writes to be attempted')
     assert.equal(result.failed, 1)
+  })
+
+  it('rotates writes over the pool, the warm-up writes too', async () => {
+    const paths: string[] = []
+    const result = await serialWriteLoad({
+      pool: [
+        { path: '/a', backend: 'postgres' },
+        { path: '/b', backend: 'fs' }
+      ],
+      warmUpWrites: 2,
+      serialWrites: 3,
+      was: {
+        request: async ({ path }) => {
+          paths.push(path)
+        }
+      }
+    })
+    assert.deepEqual(paths, [
+      '/a/warm-0',
+      '/b/warm-1',
+      '/a/s-0',
+      '/b/s-1',
+      '/a/s-2'
+    ])
+    assert.ok(result.byBackend?.postgres && result.byBackend.fs)
   })
 })
 
@@ -502,9 +616,9 @@ describe('formatScalingSummary', () => {
   })
 })
 
-describe('retryOnTimeout', () => {
+describe('retryOnNetworkFault', () => {
   /**
-   * An error shaped like ky's `TimeoutError`, which was-client rethrows.
+   * An error shaped like ky's `TimeoutError`.
    * @returns {Error}
    */
   function timeoutError(): Error {
@@ -515,7 +629,7 @@ describe('retryOnTimeout', () => {
 
   it('runs the write again after a timeout, and returns its result', async () => {
     let calls = 0
-    const result = await retryOnTimeout({
+    const result = await retryOnNetworkFault({
       op: async () => {
         calls++
         if (calls === 1) {
@@ -531,7 +645,7 @@ describe('retryOnTimeout', () => {
   it('throws the timeout once every attempt timed out', async () => {
     let calls = 0
     await assert.rejects(
-      retryOnTimeout({
+      retryOnNetworkFault({
         attempts: 3,
         op: async () => {
           calls++
@@ -546,7 +660,7 @@ describe('retryOnTimeout', () => {
   it('does not retry any other error', async () => {
     let calls = 0
     await assert.rejects(
-      retryOnTimeout({
+      retryOnNetworkFault({
         op: async () => {
           calls++
           throw new Error('403 Forbidden')
@@ -555,6 +669,176 @@ describe('retryOnTimeout', () => {
       /403/
     )
     assert.equal(calls, 1)
+  })
+  /**
+   * The error was-client throws for a connection that never opened: its own
+   * `WasError`, wrapping undici's `fetch failed`, wrapping the connect timeout.
+   * @returns {Error}
+   */
+  function unopenedError(): Error {
+    const connectTimeout = Object.assign(new Error('Connect Timeout Error'), {
+      name: 'ConnectTimeoutError',
+      code: 'UND_ERR_CONNECT_TIMEOUT'
+    })
+    const fetchFailed = new TypeError('fetch failed', { cause: connectTimeout })
+    return Object.assign(new Error('fetch failed', { cause: fetchFailed }), {
+      name: 'WasError'
+    })
+  }
+
+  it("finds a timeout along the cause chain of was-client's WasError", async () => {
+    let calls = 0
+    const result = await retryOnNetworkFault({
+      op: async () => {
+        calls++
+        if (calls === 1) {
+          throw Object.assign(
+            new Error('Request timed out.', { cause: timeoutError() }),
+            { name: 'WasError' }
+          )
+        }
+        return 'stored'
+      }
+    })
+    assert.equal(result, 'stored')
+    assert.equal(calls, 2)
+  })
+
+  it('runs a request whose connection never opened again, up to 8 times in all', async () => {
+    let calls = 0
+    const result = await retryOnNetworkFault({
+      op: async () => {
+        calls++
+        if (calls < 8) {
+          throw unopenedError()
+        }
+        return 'stored'
+      }
+    })
+    assert.equal(result, 'stored')
+    assert.equal(calls, 8)
+  })
+
+  it('throws once a connection failed to open 8 times', async () => {
+    let calls = 0
+    await assert.rejects(
+      retryOnNetworkFault({
+        op: async () => {
+          calls++
+          throw unopenedError()
+        }
+      }),
+      { name: 'WasError' }
+    )
+    assert.equal(calls, 8)
+  })
+
+  it('runs a request whose connection closed partway through the response again', async () => {
+    let calls = 0
+    const result = await retryOnNetworkFault({
+      op: async () => {
+        calls++
+        if (calls === 1) {
+          throw terminatedError()
+        }
+        if (calls === 2) {
+          throw Object.assign(new Error('read ECONNRESET'), {
+            code: 'ECONNRESET'
+          })
+        }
+        return 'stored'
+      }
+    })
+    assert.equal(result, 'stored')
+    assert.equal(calls, 3)
+  })
+
+  it('counts each retry by its fault, and nothing for an error it throws', async () => {
+    const before = retriedFaultCounts()
+    const faults = [timeoutError(), unopenedError(), terminatedError()]
+    await retryOnNetworkFault({
+      op: async () => {
+        const fault = faults.shift()
+        if (fault !== undefined) {
+          throw fault
+        }
+        return 'stored'
+      }
+    })
+    await assert.rejects(
+      retryOnNetworkFault({
+        op: async () => {
+          throw new Error('403 Forbidden')
+        }
+      })
+    )
+    const after = retriedFaultCounts()
+    for (const fault of ['timed out', 'never connected', 'dropped'] as const) {
+      assert.equal(
+        (after.get(fault) ?? 0) - (before.get(fault) ?? 0),
+        1,
+        `expected one more "${fault}" retry`
+      )
+    }
+  })
+})
+
+describe('formatRetries', () => {
+  it('is none when nothing was retried', () => {
+    assert.equal(formatRetries(new Map()), 'none')
+  })
+
+  it("gives the total and each fault's share, in a fixed order, leaving out a fault never retried", () => {
+    const counts = new Map([
+      ['dropped', 2],
+      ['timed out', 21],
+      ['never connected', 0]
+    ] as const)
+    assert.equal(formatRetries(counts), '23 (21 timed out, 2 dropped)')
+  })
+})
+
+/**
+ * The error was-client throws for a connection the other side closed after
+ * the response headers arrived: its own `WasError`, wrapping undici's
+ * `terminated`, wrapping the socket error, with the URL http-client records.
+ * @returns {Error}
+ */
+function terminatedError(): Error {
+  const socketError = Object.assign(new Error('other side closed'), {
+    name: 'SocketError',
+    code: 'UND_ERR_SOCKET'
+  })
+  const terminated = new TypeError('terminated', { cause: socketError })
+  return Object.assign(new Error('terminated', { cause: terminated }), {
+    name: 'WasError',
+    requestUrl: 'https://host.example/space/s1/items/vc-4'
+  })
+}
+
+describe('describeError', () => {
+  it("adds the cause chain's messages and codes, and the URL requested", () => {
+    assert.equal(
+      describeError(terminatedError()),
+      'terminated (other side closed, UND_ERR_SOCKET) requesting ' +
+        '"https://host.example/space/s1/items/vc-4"'
+    )
+  })
+
+  it('leaves out a URL the message already names', () => {
+    const url = 'https://host.example/space/s1/items/vc-4'
+    const err = Object.assign(new Error(`Request to "${url}" timed out.`), {
+      requestUrl: url
+    })
+    assert.equal(describeError(err), `Request to "${url}" timed out.`)
+  })
+
+  it('is the message alone for an error with no cause', () => {
+    assert.equal(describeError(new Error('403 Forbidden')), '403 Forbidden')
+  })
+
+  it('describes a thrown value that is not an error', () => {
+    assert.equal(describeError('boom'), 'boom')
   })
 })
 
@@ -577,6 +861,245 @@ describe('parseLoadSettings', () => {
     assert.throws(
       () => parseLoadSettings({ ...values, 'large-file-clients': '0' }),
       /positive integer/
+    )
+  })
+})
+
+describe('parseSplit', () => {
+  it("parses each backend's percent, in the order given", () => {
+    assert.deepEqual(parseSplit('postgres=30, fs=70'), [
+      { backend: 'postgres', percent: 30 },
+      { backend: 'fs', percent: 70 }
+    ])
+  })
+
+  it('rejects percents that do not add up to 100', () => {
+    assert.throws(() => parseSplit('fs=60,postgres=30'), /add up to 90/)
+  })
+
+  it('rejects a backend that is not a server backend id', () => {
+    assert.throws(() => parseSplit('default=100'), /Unknown --split entry/)
+  })
+
+  it('rejects a backend named twice', () => {
+    assert.throws(() => parseSplit('fs=50,fs=50'), /twice/)
+  })
+
+  it('rejects a zero percent', () => {
+    assert.throws(() => parseSplit('fs=0,postgres=100'), /positive integer/)
+  })
+
+  it('rejects a split that needs more than 20 Collections per test', () => {
+    assert.throws(
+      () => parseSplit('fs=33,postgres=67'),
+      /needs 100 Collections per test/
+    )
+  })
+})
+
+describe('backendPool', () => {
+  it('is one member on the default backend, with no suffix, with no split', () => {
+    assert.deepEqual(backendPool(), [{ suffix: '' }])
+  })
+
+  it('is one member per backend for an even split', () => {
+    assert.deepEqual(backendPool(parseSplit('postgres=50,fs=50')), [
+      { backend: 'postgres', suffix: '-postgres-0' },
+      { backend: 'fs', suffix: '-fs-0' }
+    ])
+  })
+
+  it("is the smallest pool that realizes the split, each backend's members spaced through it", () => {
+    assert.deepEqual(
+      backendPool(parseSplit('postgres=30,fs=70')).map(({ suffix }) => suffix),
+      [
+        '-fs-0',
+        '-postgres-0',
+        '-fs-1',
+        '-fs-2',
+        '-postgres-1',
+        '-fs-3',
+        '-fs-4',
+        '-fs-5',
+        '-postgres-2',
+        '-fs-6'
+      ]
+    )
+  })
+
+  it('is one member for a single backend', () => {
+    assert.deepEqual(backendPool(parseSplit('fs=100')), [
+      { backend: 'fs', suffix: '-fs-0' }
+    ])
+  })
+})
+
+describe('describePool', () => {
+  it("counts each backend's Collections in the split's order", () => {
+    assert.equal(
+      describePool(parseSplit('postgres=30,fs=70')),
+      '10 Collections per test (3 on postgres, 7 on fs)'
+    )
+  })
+
+  it('names a single Collection in the singular', () => {
+    assert.equal(
+      describePool(parseSplit('fs=100')),
+      '1 Collection per test (1 on fs)'
+    )
+  })
+})
+
+describe('collectionBackend', () => {
+  it("names the member's backend by its fixed id", () => {
+    assert.deepEqual(collectionBackend({ backend: 'fs', suffix: '-fs-0' }), {
+      backend: { id: 'fs' }
+    })
+  })
+
+  it('names no backend for a member on the default backend', () => {
+    assert.deepEqual(collectionBackend({ suffix: '' }), {})
+  })
+})
+
+describe('missingBackends', () => {
+  it('returns the split backends the listing lacks', () => {
+    assert.deepEqual(
+      missingBackends({
+        split: parseSplit('postgres=50,fs=50'),
+        listedIds: ['fs']
+      }),
+      ['postgres']
+    )
+  })
+
+  it('returns nothing when the listing has every split backend', () => {
+    assert.deepEqual(
+      missingBackends({
+        split: parseSplit('postgres=50,fs=50'),
+        listedIds: ['postgres', 'fs']
+      }),
+      []
+    )
+  })
+})
+
+describe('createDeleteLoad', () => {
+  it('sends successive creates to successive pool members, and removes each where it was created', async () => {
+    const created: string[] = []
+    const removed: string[] = []
+    const result = await createDeleteLoad({
+      clients: 2,
+      durationSeconds: 0.02,
+      pool: [
+        { name: 'a', backend: 'postgres' as const },
+        { name: 'b', backend: 'fs' as const },
+        { name: 'c', backend: 'fs' as const }
+      ],
+      create: async ({ name }, worker, round) => {
+        created.push(`${name} ${worker} ${round}`)
+      },
+      remove: async ({ name }, worker, round) => {
+        removed.push(`${name} ${worker} ${round}`)
+      }
+    })
+    assert.deepEqual(created.slice(0, 4), ['a 0 0', 'b 1 0', 'c 0 1', 'a 1 1'])
+    assert.deepEqual(new Set(removed), new Set(created))
+    assert.ok(result.byBackend?.postgres && result.byBackend.fs)
+  })
+})
+
+describe('seedResourceCount', () => {
+  it('fills a public and a private Collection per size, three per edge size, per pool member', () => {
+    assert.equal(
+      seedResourceCount({ sizes: [1, 500, 2000], edgeSizes: [1, 2000] }),
+      2 * 2501 + 3 * 2001
+    )
+    assert.equal(
+      seedResourceCount({
+        sizes: [1, 500, 2000],
+        edgeSizes: [1, 2000],
+        poolSize: 2
+      }),
+      2 * (2 * 2501 + 3 * 2001)
+    )
+  })
+})
+
+describe('k6Measurement', () => {
+  const metrics = {
+    http_reqs: { values: { count: 30, rate: 3 } },
+    http_req_duration: { values: { avg: 12 } },
+    checks: { values: { fails: 1 } },
+    'http_reqs{backend:postgres}': { values: { count: 10, rate: 1 } },
+    'http_req_duration{backend:postgres}': { values: { avg: 20 } },
+    'checks{backend:postgres}': { values: { fails: 1 } },
+    'http_reqs{backend:fs}': { values: { count: 20, rate: 2 } },
+    'http_req_duration{backend:fs}': { values: { avg: 8 } },
+    'checks{backend:fs}': { values: { fails: 0 } }
+  }
+
+  it("reads the whole test, and each backend's part from its tagged submetrics", () => {
+    assert.deepEqual(k6Measurement({ metrics, backends: ['postgres', 'fs'] }), {
+      rate: 3,
+      avgMs: 12,
+      failed: 1,
+      byBackend: {
+        postgres: { rate: 1, avgMs: 20, failed: 1 },
+        fs: { rate: 2, avgMs: 8, failed: 0 }
+      }
+    })
+  })
+
+  it('reads the whole test alone for a pool on the default backend', () => {
+    assert.deepEqual(k6Measurement({ metrics, backends: [] }), {
+      rate: 3,
+      avgMs: 12,
+      failed: 1
+    })
+  })
+})
+
+describe('backendCell', () => {
+  const cell = {
+    rate: 3,
+    avgMs: 12,
+    failed: 0,
+    byBackend: { fs: { rate: 2, avgMs: 8, failed: 0 } }
+  }
+
+  it("is the backend's part of a measurement", () => {
+    assert.deepEqual(backendCell(cell, 'fs'), { rate: 2, avgMs: 8, failed: 0 })
+  })
+
+  it("is a gap for a backend that answered none of the test's requests", () => {
+    assert.equal(backendCell(cell, 'postgres'), undefined)
+  })
+
+  it('keeps a skip string and a gap as they are', () => {
+    assert.equal(backendCell('skipped (no k6)', 'fs'), 'skipped (no k6)')
+    assert.equal(backendCell(undefined, 'fs'), undefined)
+  })
+})
+
+describe('formatMatrixTable', () => {
+  it('renders a gap as -- and leaves it out of the failures', () => {
+    assert.equal(
+      formatMatrixTable([
+        {
+          category: 'public',
+          payload: 'large',
+          read: undefined,
+          write: { rate: 1.5, avgMs: 600, failed: 0 }
+        }
+      ]),
+      [
+        '| Collection | Payload | Read | Write |',
+        '|---|---|---:|---:|',
+        '| Public | 10 MiB file | -- | 1.5 files/s (600.00 ms) |',
+        '',
+        'Failures: none'
+      ].join('\n')
     )
   })
 })

@@ -48,19 +48,41 @@
   before, two runs started together could leave one measuring the other's
   server.
 - `pnpm perf:remote --url <https://host>` runs the same load tests against an
-  already-deployed server, so the filesystem and Postgres backends can be
-  compared on two staging hosts. It spawns no server and fills fresh over signed
-  HTTP under a throwaway `did:key`, then deletes the Spaces it created, even
-  when a test fails or the run is stopped with Ctrl-C (a second Ctrl-C exits at
-  once, skipping the cleanup). The target must allow Space creation (no
-  onboarding token). `--payloads` narrows the payload matrix (`json`, `small`,
-  `large`), for a machine whose upload is too slow to send 10 MiB within
-  was-client's 10 s request timeout, and `--label` titles the report.
-- The perf runs retry an untimed setup write (a seed write over HTTP, a delete
-  test's refill, a serial-write warm-up) that times out, up to three attempts,
-  so one response lost on a long network path no longer ends a run. A timed
-  request is still never retried and counts as a failure. A delete test's refill
-  now writes 10 at a time instead of every client's Resources at once.
+  already-deployed server. It spawns no server and fills fresh over signed HTTP
+  under a throwaway `did:key`, then deletes the Spaces it created, even when a
+  test fails or the run is stopped with Ctrl-C (a second Ctrl-C exits at once,
+  skipping the cleanup). The target must allow Space creation (no onboarding
+  token). `--payloads` narrows the payload matrix (`json`, `small`, `large`),
+  for a machine whose upload is too slow to send 10 MiB within was-client's 10 s
+  request timeout, and `--label` titles the report.
+- `pnpm perf:remote` measures a host's filesystem and Postgres backends side by
+  side in one run. `--split` (default `postgres=50,fs=50`) shares each test's
+  Collections among the backends by percent: each test spreads its load
+  round-robin over the smallest pool of Collections that realizes the split,
+  each created with its backend's fixed id, and the report adds a table per
+  backend under each combined one. The run reads the host's backends listing
+  first and stops before seeding when the split names a backend the host does
+  not list; `--split fs=100` measures one backend alone. `pnpm perf:fs` and
+  `pnpm perf:pg` run and report as before.
+- The perf runs retry an untimed setup request (a seed write over HTTP, a Space
+  or Collection create, a delete test's refill, a serial-write warm-up, and
+  `pnpm perf:remote`'s health check) on a network fault, up to eight attempts:
+  one that times out, whose connection never opened (undici's
+  `UND_ERR_CONNECT_TIMEOUT`), or whose connection closed partway through the
+  response (`UND_ERR_SOCKET` or `ECONNRESET`, which fetch reports as
+  `terminated`). A response lost on a long network path, or a path that drops
+  connections, no longer ends a run. Each fault is found under the `WasError`
+  was-client wraps it in. A timed request is still never retried and counts as a
+  failure. A delete test's refill now writes 10 at a time instead of every
+  client's Resources at once.
+- `pnpm perf:remote` reports the error that ends a run with its cause chain and
+  the URL it was requesting, e.g.
+  `terminated (other side closed, UND_ERR_SOCKET) requesting "https://..."`,
+  instead of a bare `terminated` or `fetch failed`. Its report header counts the
+  retries the run made, by fault, e.g.
+  `Retries of untimed requests after a network fault: 37 (21 timed out, 14 never connected, 2 dropped)`,
+  so two runs over the same path can be compared for how much the network got in
+  the way.
 - The perf runs' public read and list tests discard the response bodies k6
   reads, so reading the 10 MiB file no longer runs k6 out of memory on a small
   machine; the measured rates are unchanged, since each body is still read in

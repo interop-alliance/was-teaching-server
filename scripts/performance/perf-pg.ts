@@ -190,7 +190,7 @@ async function main(): Promise<void> {
       ...header,
       ...sizeReport({ sizes, rows }),
       '',
-      ...matrixReport(matrixRows)
+      ...matrixReport({ rows: matrixRows })
     ]
   })
 }
