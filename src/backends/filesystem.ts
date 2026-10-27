@@ -9262,19 +9262,15 @@ export class FileSystemBackend implements StorageBackend {
       stamps: [stamp],
       lockKeys: [this.#resourceLockKey({ spaceId, collectionId, resourceId })],
       run: async () => {
-        if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
-          return { outcome: 'skipped' }
-        }
-        // A chunk swap a fault left torn is finished first, so the decision
-        // is made against the settled record and the tombstone sweep below
-        // never removes the set that swap moved in.
-        await this.#settleStaging({
+        const skipped = await this.#settleReceivedParent({
           spaceId,
           collectionId,
           collectionDir,
-          resourceId,
-          discardUnswapped: false
+          resourceId
         })
+        if (skipped !== undefined) {
+          return skipped
+        }
         const { prior, livePath, log, stopped } =
           await this.#decideReceivedResource({
             collectionDir,
@@ -9770,16 +9766,15 @@ export class FileSystemBackend implements StorageBackend {
       stamps: [],
       lockKeys: [this.#resourceLockKey({ spaceId, collectionId, resourceId })],
       run: async () => {
-        if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
-          return { outcome: 'skipped' }
-        }
-        await this.#settleStaging({
+        const skipped = await this.#settleReceivedParent({
           spaceId,
           collectionId,
           collectionDir,
-          resourceId,
-          discardUnswapped: false
+          resourceId
         })
+        if (skipped !== undefined) {
+          return skipped
+        }
         // The registration's staging for any other revision of the parent
         // is stale: the loop has moved past that revision. Its bytes still
         // count toward usage until it is gone, so it goes before the check.
@@ -10317,6 +10312,43 @@ export class FileSystemBackend implements StorageBackend {
         parseChunkDirName(entry.name.slice(STAGING_DIR_LEAD.length))
       )
       .filter(stagedId => stagedId !== undefined)
+  }
+
+  /**
+   * The prologue of a replicated write under a Resource's lock: skips when
+   * the Collection is not live, else finishes a chunk swap a fault left
+   * torn (`#settleStaging`), so the write decides against the settled
+   * record and a tombstone sweep never removes the set that swap moved in.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<{ outcome: 'skipped' } | undefined>} the skip result,
+   *   or undefined once the Collection is live and the staging settled
+   */
+  async #settleReceivedParent({
+    spaceId,
+    collectionId,
+    collectionDir,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    collectionDir: string
+    resourceId: string
+  }): Promise<{ outcome: 'skipped' } | undefined> {
+    if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
+      return { outcome: 'skipped' }
+    }
+    await this.#settleStaging({
+      spaceId,
+      collectionId,
+      collectionDir,
+      resourceId,
+      discardUnswapped: false
+    })
+    return undefined
   }
 
   /**
