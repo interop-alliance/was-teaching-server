@@ -4845,6 +4845,16 @@ export class FileSystemBackend implements StorageBackend {
     const filename = fileNameFor({ resourceId, contentType: input.contentType })
     const filePath = this.#containedJoin(collectionDir, filename)
 
+    // A chunk swap a fault left torn is finished first, so the sidecar read
+    // below is the Resource's settled state and a chunk set the swap moved
+    // in is never taken for one left beside a tombstone.
+    await this.#settleStaging({
+      spaceId,
+      collectionId,
+      collectionDir,
+      resourceId,
+      discardUnswapped: false
+    })
     // One sidecar read serves every step below, with no directory listing.
     // Nothing else mutates this Resource while the lock is held, so the
     // precondition check, the create-path liveness probe, the prune, and the
@@ -6494,6 +6504,16 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<void> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const softDelete = async (): Promise<void> => {
+      // A chunk swap a fault left torn is finished first, so a tombstone
+      // read below is a settled one, and the chunk set a swap moved in is
+      // not cleared as one a delete left behind.
+      await this.#settleStaging({
+        spaceId,
+        collectionId,
+        collectionDir,
+        resourceId,
+        discardUnswapped: false
+      })
       // The sidecar names the live representation, so one read finds both,
       // with no directory listing.
       const located = await this.#readLiveFile({
@@ -6804,6 +6824,15 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
+    // A chunk swap a fault left torn is finished first, so this write lands
+    // on the settled parent and its settled set.
+    await this.#settleStaging({
+      spaceId,
+      collectionId,
+      collectionDir,
+      resourceId,
+      discardUnswapped: false
+    })
     // The parent Resource must exist: writing a chunk of an absent Resource
     // rejects, so orphan chunks cannot accumulate. Its sidecar says whether
     // it is live.
@@ -7034,6 +7063,15 @@ export class FileSystemBackend implements StorageBackend {
         this.#writeMutex.run(
           this.#resourceLockKey({ spaceId, collectionId, resourceId }),
           async () => {
+            // A chunk swap a fault left torn is finished first, so the
+            // delete lands on the settled set.
+            await this.#settleStaging({
+              spaceId,
+              collectionId,
+              collectionDir,
+              resourceId,
+              discardUnswapped: false
+            })
             // The chunk is found from its sidecar, as a read finds it. A
             // chunk file no live sidecar names is no chunk, and is left in
             // place.
@@ -9227,6 +9265,16 @@ export class FileSystemBackend implements StorageBackend {
         if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
           return { outcome: 'skipped' }
         }
+        // A chunk swap a fault left torn is finished first, so the decision
+        // is made against the settled record and the tombstone sweep below
+        // never removes the set that swap moved in.
+        await this.#settleStaging({
+          spaceId,
+          collectionId,
+          collectionDir,
+          resourceId,
+          discardUnswapped: false
+        })
         const { prior, livePath, log, stopped } =
           await this.#decideReceivedResource({
             collectionDir,
@@ -9663,10 +9711,10 @@ export class FileSystemBackend implements StorageBackend {
    * fault left torn (`#settleStaging`), drops the registration's runs for
    * other revisions of the parent (`#dropOtherRuns`), reads the chunk set
    * the swap will free and what the run already holds, makes the quota
-   * pre-check of the set (`chunkSetQuotaRefusal`, with one listed chunk of
-   * headroom, since the in-write check here is gross against a `du`
-   * measurement cached for `QUOTA_USAGE_CACHE_TTL`), keeps the chunk sizes
-   * for the credit each `stageChunk` of the run takes (`#stagingCredit`),
+   * pre-check of the set (`chunkSetQuotaRefusal`, net of the live chunks
+   * the swap frees, as each `stageChunk` of the run is, so a same-size
+   * rewrite passes it under a quota the live set fills), keeps the chunk
+   * sizes for the credit each `stageChunk` takes (`#stagingCredit`),
    * and creates the run directory. Nothing of `run` is staged here, but a
    * torn swap of an earlier run that is finished first does change the
    * live set, and takes a feed position, before the pre-check answers.
@@ -9750,11 +9798,6 @@ export class FileSystemBackend implements StorageBackend {
           listed,
           staged,
           liveBytes: live.reduce((total, { size }) => total + size, 0),
-          // A listing can run to many entries, so no argument spread here.
-          headroomBytes: listed.reduce(
-            (largest, { size }) => Math.max(largest, size),
-            0
-          ),
           usageBytes,
           ...(capacityBytes !== undefined && { capacityBytes }),
           maxUploadBytes: this.maxUploadBytes
@@ -10349,14 +10392,16 @@ export class FileSystemBackend implements StorageBackend {
    * completed (`#completeSwap`). When the Collection is gone, the run is
    * removed.
    *
-   * A swap torn in a running process can meet a local write before it is
-   * finished. When a later write of the parent stands, the run is removed
-   * and the chunk set that write was made over is kept: a live set the
-   * swap renamed aside (`prior/`) goes back in place when no chunk
-   * directory stands, and is discarded when one does. When the live set
-   * was renamed aside but `next/` was not yet moved in, and a local chunk
-   * write has since created a chunk directory, that write stands over the
-   * swap in the same way: the run, `prior/` with it, is removed.
+   * Every write of the parent or of its chunks under the parent's lock
+   * finishes a torn swap before it reads anything, and boot finishes them
+   * before the tombstone sweep, so a later write is not expected to stand
+   * over one. Should one stand, the run is removed and the chunk set that
+   * write was made over is kept: a live set the swap renamed aside
+   * (`prior/`) goes back in place when no chunk directory stands, and is
+   * discarded when one does. When the live set was renamed aside but
+   * `next/` was not yet moved in, and a chunk directory has since been
+   * created, that write stands over the swap in the same way: the run,
+   * `prior/` with it, is removed.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}

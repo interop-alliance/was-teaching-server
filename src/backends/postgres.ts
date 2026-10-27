@@ -5961,8 +5961,7 @@ export class PostgresBackend implements StorageBackend {
    * registration's staging of the same Resource under any other parent
    * revision is removed here, since the loop that owns it has moved past
    * that revision, and its bytes return to the usage counter. Then the
-   * quota pre-check of the set (`chunkSetQuotaRefusal`, with no headroom:
-   * the in-write check here is a counter under the Space row lock), from
+   * quota pre-check of the set (`chunkSetQuotaRefusal`), from
    * the rows staged under `run`, the live chunk bytes the swap frees and
    * the counter. A swap here is one transaction, so there is no torn run
    * to finish. Nothing is staged here.
@@ -6042,7 +6041,6 @@ export class PostgresBackend implements StorageBackend {
         listed,
         staged,
         liveBytes: Number(liveRows[0]!.bytes),
-        headroomBytes: 0,
         usageBytes: Number(usageRows[0]?.usage_bytes ?? 0),
         capacityBytes: this.capacityBytes,
         maxUploadBytes: this.maxUploadBytes
