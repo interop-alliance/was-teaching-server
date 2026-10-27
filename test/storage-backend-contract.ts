@@ -10040,6 +10040,21 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           listing.chunks.map(chunk => chunk.size),
           [1, 2, 3]
         )
+        // Each entry's `etag` is the validator the chunk's own read reports,
+        // so a client can pin a delete of a listed chunk on it.
+        for (const chunk of listing.chunks) {
+          assert.equal(
+            chunk.etag,
+            etagOf(
+              (await backend.getChunkMetadata({
+                spaceId: 'space-chunks-list',
+                collectionId: 'col',
+                resourceId: 'r',
+                chunkIndex: chunk.index
+              }))!
+            )
+          )
+        }
       })
 
       it('deleteChunk resolves true when it removes a chunk, false when absent', async () => {

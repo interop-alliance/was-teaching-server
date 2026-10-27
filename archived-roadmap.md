@@ -6296,11 +6296,11 @@ Pulled out of Someday / Maybe on 2026-10-23, with the design doc drafted the
 same day. The design keeps chunk writes invisible to the `changes` feed, as the
 core profile and the Encrypted Collections profile require, and discovers a
 Resource's chunk set by reading its chunk listing when the parent's own feed
-document applies, then each chunk with a conditional `GET`, so a resumed chunk
-pull moves no held bytes. A chunk delete leaves no tombstone and converges on
-the next parent write. The chunk set applies after the parent revision that won
-last-writer-wins, pinned to that revision at apply time, so two origins
-rewriting one stream converge on one origin's set.
+document applies, then each chunk the listing's `etag` shows an earlier run did
+not stage, so a resumed chunk pull moves no held bytes. A chunk delete leaves no
+tombstone and converges on the next parent write. The chunk set applies after
+the parent revision that won last-writer-wins, pinned to that revision at apply
+time, so two origins rewriting one stream converge on one origin's set.
 
 Context from the WAS-96 design (2026-10-01), which this item inherited: a chunk
 is a versioned record, so it takes the same origin stamp and four-field
@@ -6360,3 +6360,47 @@ directory entries and 2n control-plane reads; every live Resource of a
 chunk-pulling registration pays a chunk listing round trip, chunked or not; the
 chunks of one set are transferred one at a time; and the replica state is
 rewritten after every Resource whose chunks were pulled.
+
+### WAS-223: [M] (*) Chunk listing entries carry each chunk's `etag`
+
+- status: done
+- done: 2026-10-26
+- priority: medium
+- backend: *
+- labels: chunks, wire-contract
+- discovered-from: was-client code review of chunk reaping (2026-10-26)
+- touches:
+  - was-teaching-server: `src/types.ts` (`ChunkListing`), `src/backends/*`
+    (`listChunks`), `src/requests/ChunkRequest.ts` (list handler doc),
+    ARCHITECTURE.md (chunk listing), docs/openapi if the listing is described
+    there -- shipped 2026-10-26; the listing's shape is described in the handler
+    doc and docs/validators-and-stamps.md (ARCHITECTURE.md does not describe it,
+    and there is no openapi document)
+  - was-client: shipped -- `WasTransport.listChunks` returns `etag` when present
+    and the chunk reap pins each `deleteChunk` on it (`If-Match`)
+  - was-conformance-suite: a listing case asserting each entry's `etag` equals
+    the `ETag` the chunk's own `GET` serves -- shipped as PWSCS-27 in suite
+    0.34.0 (2026-10-26), consumed here through a `link:` devDependency until it
+    is published
+- acceptance:
+  - [x] Each `ChunkListing.chunks` entry carries `etag`: the quoted strong
+        validator the chunk's own `GET` and `HEAD` answer with, so a client can
+        pin a `DELETE` of a listed chunk with `If-Match` without a probe per
+        chunk
+  - [x] The filesystem backend formats it from the sidecar the listing already
+        reads to judge liveness (no extra read or stat per chunk); the Postgres
+        backend adds the validator columns to the listing's one `SELECT`
+  - [x] A backend test per backend asserts the listed `etag` equals the one
+        `getChunk` reports for the same chunk, and the chunk request tests cover
+        the member on the wire
+
+A client that replaces a chunked encrypted document deletes the chunks the new
+document does not cover, and wants each delete pinned to the chunk it listed so
+a concurrent writer's freshly stored chunk at the same index is left alone (the
+server answers 412). The listing today reports only `index`, `size` and
+`contentType`, so the client has nothing to pin on and its deletes are
+unconditional. The cost is nil on both backends: the filesystem listing already
+parses every chunk's sidecar (`LiveRepresentation.sidecar`) and the validator is
+`formatEtag(validatorPartsOf(sidecar))`; the Postgres listing already fetches
+the rows. The spec does not define the listing's shape, so this is a server
+convention until it does.

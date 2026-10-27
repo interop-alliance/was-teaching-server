@@ -49,7 +49,6 @@ import {
  */
 interface Exchange {
   url: string
-  ifNoneMatch?: string
   status?: number
 }
 
@@ -77,12 +76,7 @@ function scriptedTransport(servers: Map<string, { fastify: FastifyInstance }>) {
   let rules: TransportRule[] = []
 
   const peerFetch: PeerFetch = async options => {
-    const exchange: Exchange = {
-      url: options.url,
-      ...(options.headers['if-none-match'] !== undefined && {
-        ifNoneMatch: options.headers['if-none-match']
-      })
-    }
+    const exchange: Exchange = { url: options.url }
     exchanges.push(exchange)
     const rule = rules.find(
       ({ match, remaining }) => remaining > 0 && match(options.url)
@@ -407,7 +401,12 @@ describe('Chunk replication between servers', () => {
     resourceId: string
   }): Promise<
     | {
-        listed: Array<{ index: number; size: number; contentType: string }>
+        listed: Array<{
+          index: number
+          size: number
+          contentType: string
+          etag: string
+        }>
         chunks: Array<{ bytes: Buffer; etag: string; contentType: string }>
       }
     | undefined
@@ -631,11 +630,22 @@ describe('Chunk replication between servers', () => {
         resourceId: 'stream'
       })
       assert.ok(original && copy)
-      assert.deepStrictEqual(copy.listed, original.listed)
+      // The listings agree on the set; each server lists its own chunk ETags.
+      const withoutEtag = ({
+        index,
+        size,
+        contentType
+      }: (typeof copy.listed)[number]) => ({ index, size, contentType })
+      assert.deepStrictEqual(
+        copy.listed.map(withoutEtag),
+        original.listed.map(withoutEtag)
+      )
       for (const [index, chunk] of copy.chunks.entries()) {
         assert.ok(chunk.bytes.equals(chunks[index]!), `chunk ${index}`)
         assert.equal(chunk.contentType, original.chunks[index]!.contentType)
         assert.notEqual(chunk.etag, original.chunks[index]!.etag)
+        assert.equal(copy.listed[index]!.etag, chunk.etag)
+        assert.equal(original.listed[index]!.etag, original.chunks[index]!.etag)
         assert.equal(
           parseEtagSegments(chunk.etag).stamp.originId,
           replica.backend.originId
@@ -682,7 +692,7 @@ describe('Chunk replication between servers', () => {
       await pull({ server: replica, spaceId: 'c2-dst' })
     })
 
-    it('reads each staged chunk conditionally on its source ETag and moves only the missing one', async () => {
+    it('keeps each chunk staged under its listed source ETag and moves only the missing one', async () => {
       source.clock.now += 1_000
       replica.clock.now += 1_000
       await putChunks({
@@ -747,21 +757,11 @@ describe('Chunk replication between servers', () => {
       const chunkReads = transport.exchanges.filter(({ url }) =>
         /\/chunks\/\d+$/.test(url)
       )
+      // The two staged chunks are listed under the ETags they were staged
+      // under, so only the third is read.
       assert.deepStrictEqual(
-        chunkReads.map(({ status }) => status),
-        [304, 304, 200]
-      )
-      for (const index of [0, 1]) {
-        assert.ok(
-          chunkReads[index]!.ifNoneMatch?.includes(
-            sourceSet.chunks[index]!.etag
-          ),
-          `chunk ${index} is read on its staged ETag`
-        )
-      }
-      assert.ok(
-        !chunkReads[2]!.ifNoneMatch?.includes(sourceSet.chunks[2]!.etag),
-        'the third chunk was never staged'
+        chunkReads.map(({ url, status }) => ({ url, status })),
+        [{ url: sourceUrl('/space/c2-src/files/r/chunks/2'), status: 200 }]
       )
       assert.deepStrictEqual(
         (
@@ -1822,15 +1822,14 @@ describe('Chunk replication between servers', () => {
         404
       )
 
-      // Once local time catches up, the staged set is reused as it stands.
+      // Once local time catches up, the staged set is reused as it stands,
+      // with no chunk read.
       alignClocks()
       transport.reset()
       await pull({ server: replica, spaceId: 'c14-dst' })
       assert.deepStrictEqual(
-        transport.exchanges
-          .filter(({ url }) => /\/chunks\/\d+$/.test(url))
-          .map(({ status }) => status),
-        [304, 304]
+        transport.exchanges.filter(({ url }) => /\/chunks\/\d+$/.test(url)),
+        []
       )
       assert.equal(
         (await filesStatus({ server: replica, spaceId: 'c14-dst' })).state,

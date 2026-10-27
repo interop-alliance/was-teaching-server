@@ -236,18 +236,20 @@ with the next write of the parent.
 A chunked Resource is applied with its chunk set. The rules are:
 
 - The loop discovers the set when the parent's feed document applies. It reads
-  the parent's chunk listing on the source server, then makes one conditional
-  `GET` per listed chunk, a few at once (`REPLICA_CHUNK_PULL_CONCURRENCY`), then
-  reads the parent last as a closing check. The parent's `ETag` must still equal
-  the one the feed document named, else the pull is run again next cycle. A
-  chunk-only delete on the source server during the pull is not caught by that
-  check: it converges on the next write of the parent, as any chunk delete does.
+  the parent's chunk listing on the source server, then reads each listed chunk
+  an earlier run did not stage under the `etag` the listing names, a few at once
+  (`REPLICA_CHUNK_PULL_CONCURRENCY`), then reads the parent last as a closing
+  check. The parent's `ETag` must still equal the one the feed document named,
+  else the pull is run again next cycle. A chunk-only delete on the source
+  server during the pull is not caught by that check: it converges on the next
+  write of the parent, as any chunk delete does.
 - The listing is untrusted input. Each `index` must be an integer in range,
   strictly ascending and unique. Each `size` must be a non-negative integer.
-  Each `contentType` must be an ASCII media type of at most 128 characters. A
-  listing that fails stalls the Collection as `source-unavailable`. So does a
-  feed document whose `etag` is not printable ASCII of at most 160 characters,
-  since that `ETag` keys the staging.
+  Each `contentType` must be an ASCII media type of at most 128 characters. Each
+  `etag` must be a string. A listing that fails stalls the Collection as
+  `source-unavailable`. So does a feed document whose `etag` is not printable
+  ASCII of at most 160 characters, since that `ETag` keys the staging. A chunk
+  read the source server answers without an `ETag` is retried next cycle.
 - The chunks are staged, and nothing live changes until the set is whole. The
   backend's `beginChunkStaging` opens the run once per chunk pull: it drops the
   registration's staging of the Resource under any other revision, makes the
@@ -278,11 +280,12 @@ A chunked Resource is applied with its chunk set. The rules are:
   against the held content record, a tombstone included. When the held parent
   wins or is equal, the staging is discarded and the set stays as it is.
 - A chunk carries this server's own stamp and generation, minted at the swap.
-  The source server's chunk `ETag` is opaque here. It is the key of the
-  conditional `GET` of a re-run and nothing else: the `If-None-Match` names what
-  an earlier run staged, never a live chunk, whose validator the source server
-  cannot match. A parent rewritten on the source server with its chunks
-  untouched therefore re-transfers them.
+  The source server's chunk `ETag` is opaque here. It is kept with what a run
+  staged and nothing else: a re-run keeps a staged chunk the listing still names
+  under the same `etag` and reads every other one, with no request for the kept
+  ones. A live chunk's validator is this server's own, which no listing names,
+  so a parent rewritten on the source server with its chunks untouched
+  re-transfers them.
 - An individual chunk delete does not replicate on its own. It converges on the
   next write of the parent, when the chunk pull removes the index the source
   server no longer lists.

@@ -379,10 +379,13 @@ export class ChunkRequest {
    * GET /space/:spaceId/:collectionId/:resourceId/chunks/
    * Request handler for "List Chunks": the discovery/reassembly listing. The
    * server never reassembles a chunked Resource -- a reader learns the chunk
-   * set here (count + per-chunk index/size/contentType) and fetches
+   * set here (count + per-chunk index/size/contentType/etag) and fetches
    * `0..count-1` itself. `count` is the number of chunks stored, not their
    * total byte size (sum the per-chunk `size` values for that). It matches
-   * the highest index plus one only when no index is missing. Requires the
+   * the highest index plus one only when no index is missing. Each entry's
+   * `etag` is the `ETag` the chunk's own GET and HEAD answer with, and the
+   * one its GET answers 304 against, so a client can pin a `DELETE` with
+   * `If-Match`, or read a chunk conditionally, without a HEAD per chunk. Requires the
    * parent Resource to exist (404 otherwise). Authorization is
    * capability-or-policy against the `chunks/` container path, resolved at
    * the Resource's policy level. Chunks count toward the Space's byte quota.

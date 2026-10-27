@@ -4106,8 +4106,10 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Lists a Resource's stored chunks in ascending `chunk_index` order -- the
    * discovery/reassembly listing. The opaque `bytes` column is deliberately not
-   * selected. An empty listing (Resource with no chunks, or an absent Resource)
-   * resolves `{ count: 0, chunks: [] }`.
+   * selected. Each entry's `etag` is formatted from the validator columns the
+   * one `SELECT` reads beside the size and content type (`etagOfRow`), the
+   * same validator `getChunkMetadata` reports. An empty listing (Resource with no chunks, or
+   * an absent Resource) resolves `{ count: 0, chunks: [] }`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -4123,12 +4125,17 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<ChunkListing> {
-    const { rows } = await this.#reader().query<{
-      chunk_index: number
-      size: string
-      content_type: string
-    }>(
-      `SELECT chunk_index, size, content_type FROM chunks
+    const { rows } = await this.#reader().query<
+      StampColumns & {
+        chunk_index: number
+        size: string
+        content_type: string
+        generation: string
+      }
+    >(
+      `SELECT chunk_index, size, content_type, generation, updated_at,
+              updated_at_counter, origin_id
+         FROM chunks
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
         ORDER BY chunk_index`,
       [spaceId, collectionId, resourceId]
@@ -4138,7 +4145,9 @@ export class PostgresBackend implements StorageBackend {
       chunks: rows.map(row => ({
         index: row.chunk_index,
         size: Number(row.size),
-        contentType: row.content_type
+        contentType: row.content_type,
+        // The validator columns of a chunk row are NOT NULL.
+        etag: etagOfRow(row)!
       }))
     }
   }
