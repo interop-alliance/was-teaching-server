@@ -258,7 +258,9 @@ async function refuseUnstampedPolicies({
 /**
  * The layout step that refuses a store holding a replica registration file
  * (`.replica.<replicaId>.json`, not the `.state.json` beside it) with no write
- * stamp in any Space dir.
+ * stamp in any Space dir. A file whose JSON does not parse is not a
+ * registration here, as it is not one to the listings, which log and skip
+ * it; its own read and write still fail on it.
  * @param options {object}
  * @param options.dataDir {string}
  * @returns {Promise<void>}

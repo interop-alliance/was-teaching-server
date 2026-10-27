@@ -388,7 +388,8 @@ export class ReplicationManager {
    * Starts the loop of a registration that has none, and otherwise
    * reschedules the one it has. A cycle in flight is left to finish, and its
    * successor is then due at once instead of at the interval or the backoff
-   * it would have taken. A paused registration's cycle ends the loop.
+   * it would have taken; a cycle that ends its loop instead starts a fresh
+   * one (`#endLoopFromCycle`). A paused registration's cycle ends the loop.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.replicaId {string}
@@ -547,6 +548,25 @@ export class ReplicationManager {
   }
 
   /**
+   * Ends a loop from inside its own cycle, on what the cycle read: a
+   * registration that is gone or paused. A `wake` that landed while the
+   * cycle ran (a resume, or a re-create under the id) found a loop with a
+   * cycle in flight and set `wakeRequested` on it, so the registration it
+   * reads now may no longer be the one the cycle read. A fresh loop is
+   * started for it, whose first cycle reads the registration again and ends
+   * at once if nothing has changed. `unregister` ends a loop without this,
+   * since the registration is gone for good there.
+   * @param loop {Loop}
+   * @returns {void}
+   */
+  #endLoopFromCycle(loop: Loop): void {
+    this.#endLoop(loop)
+    if (loop.wakeRequested) {
+      this.register({ spaceId: loop.spaceId, replicaId: loop.replicaId })
+    }
+  }
+
+  /**
    * Schedules a loop's next cycle.
    * @param options {object}
    * @param options.loop {Loop}
@@ -610,7 +630,7 @@ export class ReplicationManager {
     const { spaceId, replicaId } = loop
     const replica = await this.#storage.getReplica({ spaceId, replicaId })
     if (replica === undefined) {
-      this.#endLoop(loop)
+      this.#endLoopFromCycle(loop)
       return
     }
     const state: ReplicaLoopState = (await this.#storage.getReplicaState({
@@ -618,12 +638,13 @@ export class ReplicationManager {
       replicaId
     })) ?? { collections: {} }
     if (replica.record.pausedAt !== undefined) {
-      this.#endLoop(loop)
       if (state.nextPullAt !== undefined || state.failures !== undefined) {
         delete state.nextPullAt
         delete state.failures
         await this.#storage.writeReplicaState({ spaceId, replicaId, state })
       }
+      // Last, so a resume that lands during the state write is seen.
+      this.#endLoopFromCycle(loop)
       return
     }
     state.lastPullAt = new Date().toISOString()
@@ -636,7 +657,7 @@ export class ReplicationManager {
       failure = err
     }
     if (!registered) {
-      this.#endLoop(loop)
+      this.#endLoopFromCycle(loop)
       return
     }
 
@@ -678,7 +699,7 @@ export class ReplicationManager {
       state
     })
     if (!stored) {
-      this.#endLoop(loop)
+      this.#endLoopFromCycle(loop)
       return
     }
     this.#schedule({ loop, delayMs })

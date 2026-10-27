@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 230
+nextAvailableId: 231
 
 <!-- roadmap-order:index:start -->
 
@@ -76,7 +76,6 @@ Chains:
 
 Ready:
 
-- WAS-180 [M] (fs) Delete Space removes revocations before the Space directory
 - WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
 - WAS-224 [M] (*) Admit a replica Space under a bootstrap did:key, and resolve
@@ -126,6 +125,7 @@ Ready:
 - WAS-210 [L] (*) One function decides where a `did:webvh` resolves from
 - WAS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
   with `LruCache`
+- WAS-230 [L] (fs) Keep Space revocations inside the Space dir
 
 **Someday / Maybe**
 
@@ -1063,32 +1063,6 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-180: [M] (fs) Delete Space removes revocations before the Space directory
-
-- status: todo
-- priority: medium
-- backend: fs
-- labels: filesystem-backend, zcap, correctness
-- acceptance:
-  - [ ] The filesystem backend's `deleteSpace` removes the Space directory
-        before, or atomically with, the Space's revocation records, so a crash
-        between the two steps cannot leave a live Space whose revoked grants
-        verify again
-  - [ ] A revocation directory left behind by a crash after the Space directory
-        is gone is removed on the next `deleteSpace` or at boot
-  - [ ] A test kills the delete between the two removals and asserts the Space
-        is either whole or gone
-
-Context (discovered-from: WAS-96, review 2026-10-01). `deleteSpace` removes the
-Space-scoped revocation directory, which sits outside the Space tree, and only
-then the Space directory (`src/backends/filesystem.ts:1365-1372`). A crash in
-between leaves the Space in place with every stored revocation gone, so a
-revoked grant verifies on the next invocation. The torn-state pass over the
-replication design found it while checking Delete Space against an in-flight
-pull; it is an existing defect independent of replication.
-
----
-
 ### WAS-96: [M] (*) Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
@@ -1677,11 +1651,11 @@ contract rather than confined to the loop.
 - acceptance:
   - [ ] An apply made for a registration whose stored record carries `pausedAt`
         resolves without writing, as one for a removed registration does, so a
-        pause takes effect at the next apply of a cycle in flight rather than
-        at the end of that cycle
-  - [ ] The pull loop treats that outcome as it treats `unregistered`: the
-        cycle ends, the loop ends, and the loop state drops `nextPullAt` and
-        the failure count as a pause at the start of a cycle does today
+        pause takes effect at the next apply of a cycle in flight rather than at
+        the end of that cycle
+  - [ ] The pull loop treats that outcome as it treats `unregistered`: the cycle
+        ends, the loop ends, and the loop state drops `nextPullAt` and the
+        failure count as a pause at the start of a cycle does today
   - [ ] A two-server test pauses a registration while a cycle is held mid-way
         (the `getReplicaState` seam the capability-replacement test uses) and
         shows no Resource lands after the PUT returns
@@ -2327,6 +2301,46 @@ Steps:
 6. `reportUsage` always re-measures and does not read the cache; leave it.
 
 ---
+
+### WAS-230: [L] (fs) Keep Space revocations inside the Space dir
+
+- status: todo
+- priority: low
+- backend: fs
+- labels: filesystem-backend, zcap, cleanup
+- discovered-from: WAS-180 simplify review (2026-10-27)
+- touches:
+  - `src/backends/filesystem.ts` (`spaceRevocationsDir`, `#spaceRevocationDir`,
+    `listCollections` and the quota measurement that treat every subdirectory of
+    a Space dir as a Collection, `deleteSpace`, `writeSpace`,
+    `#removeOrphanRevocationDirs`)
+  - `src/backends/filesystemStore.ts` (a layout step that moves the existing
+    `space-revocations/<spaceId>/` trees into their Space dirs)
+  - `docs/filesystem-layout.md` ("Delete Space" and the layout listing)
+- acceptance:
+  - [ ] A Space's zcap revocations live in a dot-prefixed subdirectory of its
+        Space dir, which the Collection listing and the quota measurement skip
+        as they skip the Space's dotfiles, so the `rm` of the Space dir removes
+        the Space and its revocations in one step
+  - [ ] The three recovery sites a torn Delete Space needed (the retried delete,
+        the create over the id in `writeSpace`, and the boot sweep) are gone,
+        with the "Delete Space" paragraph of the layout doc that describes them
+  - [ ] The layout step moves an existing store's revocation trees in, and a
+        store at the new version has no `space-revocations/` root
+  - [ ] The Delete Space tests assert the one-step removal, and the torn-delete
+        cases are dropped with the window they covered
+
+Context. Space revocations sit in a sibling root,
+`space-revocations/<spaceId>/`, because `listCollections` takes every
+subdirectory of a Space dir for a Collection. The sibling root is why Delete
+Space is two removals, and why a kill between them needs recovery at three sites
+(the retried delete, the create over the id, and the boot sweep). A dot-prefixed
+subdirectory inside the Space dir, in the convention the `.space.<id>.json`,
+`.meta.<id>.json` and `.tombstone.<id>.json` files already use, removes with the
+Space dir and needs none of them. The Postgres backend has no such window, since
+its revocations are rows keyed by Space id in the same store. The
+`insertRevocation` gate checkbox of WAS-135 (a revocation racing Delete Space)
+stays with that item.
 
 ## Someday / Maybe
 

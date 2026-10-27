@@ -46,7 +46,24 @@
   registration keeps its id, its loop and its checkpoint, and a cycle in flight
   is followed at once by one under the new capability. A `PUT` that repeats the
   stored body leaves the loop's schedule alone, and no replacement touches the
-  Space Metadata object's local segment.
+  Space Metadata object's local segment. `If-Match` is evaluated before the
+  fixed members, so a stale conditional write answers 412 rather than 400, and
+  once more at the request layer before the peer checks, so it costs the source
+  server no read. A resume that lands while the paused registration's last cycle
+  is in flight starts a fresh loop rather than being lost, and a create that
+  carries `pausedAt` starts no loop by `PUT`, as by POST.
+
+### Fixed
+
+- The filesystem backend's Delete Space removes the Space dir before the Space's
+  revocation records, which live beside the Space tree. A process killed between
+  the two no longer leaves a live Space whose revoked grants verify again. It
+  leaves a revocation dir with no Space instead, which a retried delete, a
+  create of a Space under the id and the next boot remove. The boot sweep treats
+  a Space dir with no Metadata file as gone.
+- The filesystem backend's replica listings log and skip a registration file
+  that does not read, so one damaged file no longer fails Read Space or the
+  start of every pull loop.
 
 ### Changed
 

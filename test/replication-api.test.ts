@@ -512,6 +512,26 @@ describe('Replication between two servers', () => {
       return read.statusCode === 200
     }
 
+    /**
+     * Holds the replica's next loop-state read until `release()` is called,
+     * so a cycle stays in flight while a PUT lands. `spy` reports the read;
+     * the caller restores it.
+     */
+    function holdReplicaStateRead() {
+      let release!: () => void
+      const held = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const readState = replica.backend.getReplicaState.bind(replica.backend)
+      const spy = vi
+        .spyOn(replica.backend, 'getReplicaState')
+        .mockImplementationOnce(async options => {
+          await held
+          return readState(options)
+        })
+      return { release, spy }
+    }
+
     beforeAll(async () => {
       await createSpace({ server: source, spaceId: 'put-src' })
       await createSpace({ server: replica, spaceId: 'put-dst' })
@@ -686,17 +706,7 @@ describe('Replication between two servers', () => {
     it('has a cycle in flight at a PUT schedule its successor at once', async () => {
       const before = (await read()).json()
       // Hold the cycle at its loop-state read until the PUT has landed.
-      let release!: () => void
-      const held = new Promise<void>(resolve => {
-        release = resolve
-      })
-      const readState = replica.backend.getReplicaState.bind(replica.backend)
-      const spy = vi
-        .spyOn(replica.backend, 'getReplicaState')
-        .mockImplementationOnce(async options => {
-          await held
-          return readState(options)
-        })
+      const { release, spy } = holdReplicaStateRead()
       try {
         const cycle = pull({ server: replica, spaceId: 'put-dst' })
         await vi.waitFor(() => assert.equal(spy.mock.calls.length, 1))
@@ -720,6 +730,35 @@ describe('Replication between two servers', () => {
       const status = await statusOf({ server: replica, spaceId: 'put-dst' })
       assert.ok(status.nextPullAt)
       assert.ok(Date.parse(status.nextPullAt) - Date.now() < 1_000)
+    })
+
+    it('starts a loop for a resume that lands while the paused cycle is in flight', async () => {
+      const before = (await read()).json()
+      const paused = await put({ ...before, pausedAt: 'now' })
+      assert.equal(paused.statusCode, 204, paused.payload)
+      // Hold the paused registration's cycle at its loop-state read, so the
+      // resume lands on a loop with a cycle in flight. That cycle read
+      // `pausedAt` and ends its loop; the resume must not be lost with it.
+      const { release, spy } = holdReplicaStateRead()
+      try {
+        const cycle = pull({ server: replica, spaceId: 'put-dst' })
+        await vi.waitFor(() => assert.equal(spy.mock.calls.length, 1))
+        const resumed = await put(before)
+        assert.equal(resumed.statusCode, 204, resumed.payload)
+        release()
+        await cycle
+      } finally {
+        spy.mockRestore()
+      }
+      // A fresh loop stands for the resumed registration: a pull by hand
+      // runs a cycle, where a registration with no loop pulls nothing.
+      assert.equal(
+        (await statusOf({ server: replica, spaceId: 'put-dst' })).state,
+        'idle'
+      )
+      await writeOnSource('after-held-resume')
+      await pull({ server: replica, spaceId: 'put-dst' })
+      assert.ok(await heldByReplica('after-held-resume'))
     })
 
     it('re-validates a replacement capability as a POST does', async () => {
@@ -777,6 +816,37 @@ describe('Replication between two servers', () => {
       assert.equal(exists.statusCode, 412)
       assert.deepStrictEqual((await read()).json(), record)
 
+      // A stale view is told so (412) before its body is judged (400): the
+      // client re-reads rather than treating the body as refused for good.
+      const staleBody = await put(
+        { ...record, collections: [{ id: 'notes' }] },
+        { 'if-match': '"stale.0.0.none"' }
+      )
+      assert.equal(staleBody.statusCode, 412, staleBody.payload)
+
+      // A stale conditional write with a new capability costs the source
+      // server no read: the precondition is evaluated before the peer checks.
+      const fromSpace = 'https://source.example/space/put-src/'
+      const capability = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+        invocationTarget: fromSpace,
+        controller: replica.did,
+        allowedActions: ['GET', 'HEAD']
+      })
+      const peerReads = vi.spyOn(source.fastify, 'inject')
+      try {
+        const staleCapability = await put(
+          { ...record, capability },
+          { 'if-match': '"stale.0.0.none"' }
+        )
+        assert.equal(staleCapability.statusCode, 412, staleCapability.payload)
+        assert.equal(peerReads.mock.calls.length, 0)
+      } finally {
+        peerReads.mockRestore()
+      }
+      assert.deepStrictEqual((await read()).json(), record)
+
       const fresh = await put(
         { ...record, pausedAt: 'x' },
         { 'if-match': String(current.headers.etag) }
@@ -815,13 +885,20 @@ describe('Replication between two servers', () => {
       const meta = await call({ server: replica, path: '/space/put-dst/meta' })
       assert.equal(meta.json().replicas.length, 2)
 
-      // A create may be made paused.
-      const pausedCreate = await call({
-        server: replica,
-        path: '/space/put-dst/replicas/third',
-        method: 'PUT',
-        json: { ...before, id: 'third', pausedAt: 'now' }
-      })
+      // A create may be made paused. It starts no loop, as POST starts none.
+      const wake = vi.spyOn(replica.fastify.replication, 'wake')
+      let pausedCreate
+      try {
+        pausedCreate = await call({
+          server: replica,
+          path: '/space/put-dst/replicas/third',
+          method: 'PUT',
+          json: { ...before, id: 'third', pausedAt: 'now' }
+        })
+        assert.equal(wake.mock.calls.length, 0)
+      } finally {
+        wake.mockRestore()
+      }
       assert.equal(pausedCreate.statusCode, 201, pausedCreate.payload)
       assert.equal(pausedCreate.json().pausedAt, pausedCreate.json().updatedAt)
       assert.equal(

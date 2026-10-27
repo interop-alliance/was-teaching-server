@@ -1301,6 +1301,13 @@ export class FileSystemBackend implements StorageBackend {
         'Finished Collection deletes interrupted by a previous shutdown'
       )
     }
+    const orphanRevocationDirs = await this.#removeOrphanRevocationDirs()
+    if (orphanRevocationDirs > 0) {
+      this.logger.warn(
+        { removed: orphanRevocationDirs },
+        'Removed the revocations of Spaces whose delete a previous shutdown interrupted'
+      )
+    }
     // After the cascades, which remove a deleted Collection's staging with
     // its other members.
     const staging = await this.#reclaimStagingAtBoot()
@@ -2478,6 +2485,13 @@ export class FileSystemBackend implements StorageBackend {
     })
     const { generation } = validator
 
+    if (prior === undefined) {
+      // A create under an id whose Delete Space was killed after the Space
+      // dir's removal: the old life's revocation dir still stands, and it
+      // must not deny the new life's grants. Under the Space gate, so no
+      // revocation of the new life can land before it.
+      await this.#removeSpaceRevocations({ spaceId })
+    }
     await this.#ensureSpaceDir({ spaceId })
     await this.#persistSpace({ spaceId, body: stamped, generation, local: 0 })
     return { validator, created: prior === undefined, metadata: stamped }
@@ -2598,7 +2612,11 @@ export class FileSystemBackend implements StorageBackend {
    * Removes a Space and everything scoped to it. The Space's zcap revocations
    * live in a sibling root (`spaceRevocationsDir`), not under the Space dir, so
    * they are removed explicitly here rather than falling out of the Space dir
-   * rm.
+   * rm. The Space dir goes first: a process killed between the two removals
+   * then leaves a revocation dir with no Space, which denies nothing and
+   * which the next delete of the id, a create under the id (`writeSpace`)
+   * or the next boot removes (`#removeOrphanRevocationDirs`). The other
+   * order would leave a live Space whose revoked grants verify again.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<void>}
@@ -2619,17 +2637,66 @@ export class FileSystemBackend implements StorageBackend {
           // Freed bytes: drop the cached usage total so the next write
           // re-measures.
           this.#dropUsageCache({ spaceId })
-          // Remove this Space's revocations, which sit outside the Space dir.
-          await rm(this.#spaceRevocationDir(spaceId), {
-            recursive: true,
-            force: true
-          })
           // `force: true` keeps delete idempotent (the `StorageBackend` contract):
           // removing an absent Space resolves rather than rejecting with `ENOENT`.
           await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
           this.#forgetStagingCredits({ under: this.#spaceDir(spaceId) })
+          // Then this Space's revocations, which sit outside the Space dir.
+          await this.#removeSpaceRevocations({ spaceId })
         })
     })
+  }
+
+  /**
+   * Removes a Space's revocation dir, absent or not.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<void>}
+   */
+  async #removeSpaceRevocations({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<void> {
+    await rm(this.#spaceRevocationDir(spaceId), {
+      recursive: true,
+      force: true
+    })
+  }
+
+  /**
+   * Removes, at boot, every Space revocation dir whose Space is gone: what a
+   * Delete Space killed after the Space dir's removal leaves behind. A Space
+   * scope's revocation is only ever inserted under a Space that exists, so a
+   * revocation dir with no Space is an orphan. A Space stands when its
+   * Metadata file does, the predicate every read and write uses; a Space dir
+   * a torn `rm` left with Collection dirs but no Metadata file is no Space.
+   * No request is in flight yet, so no gate is taken. An absent revocation
+   * root holds none. A failure on one dir is logged and does not stop the
+   * open.
+   * @returns {Promise<number>}   how many dirs were removed
+   */
+  async #removeOrphanRevocationDirs(): Promise<number> {
+    let removed = 0
+    for (const entry of await readDirEntries(this.spaceRevocationsDir)) {
+      if (!entry.isDirectory()) {
+        continue
+      }
+      const spaceId = entry.name
+      try {
+        if (await fileExists(this.#spaceMetadataPath(spaceId))) {
+          continue
+        }
+        await this.#removeSpaceRevocations({ spaceId })
+        removed += 1
+      } catch (err) {
+        this.logger.error(
+          { err, spaceId },
+          'Failed to remove the revocations of a deleted Space'
+        )
+      }
+    }
+    return removed
   }
 
   /**
@@ -8750,7 +8817,11 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Enumerates the Space's registrations, sorted by id. An absent Space dir
-   * holds none.
+   * holds none. A registration file that does not read (`#readReplicaFile`
+   * refuses it, or its JSON does not parse) is logged and left out, so one
+   * damaged file does not take down Read Space, which lists the
+   * registrations, or the start of every pull loop on the server. The
+   * damaged registration's own read and write still fail on it.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<StoredReplica[]>}
@@ -8769,7 +8840,21 @@ export class FileSystemBackend implements StorageBackend {
           /^\.replica\..+\.json$/.test(entry.name) &&
           !entry.name.endsWith('.state.json')
       )
-      .map(entry => this.#readReplicaFile(path.join(spaceDir, entry.name)))
+      .map(async entry => {
+        const filePath = path.join(spaceDir, entry.name)
+        try {
+          return await this.#readReplicaFile(filePath)
+        } catch (err) {
+          if (!(err instanceof StorageError || err instanceof SyntaxError)) {
+            throw err
+          }
+          this.logger.error(
+            { err, spaceId, filePath },
+            'Skipping a replica registration file that does not read'
+          )
+          return undefined
+        }
+      })
     const replicas = (await Promise.all(reads)).filter(
       (replica): replica is StoredReplica => replica !== undefined
     )

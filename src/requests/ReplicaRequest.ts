@@ -27,6 +27,7 @@ import {
   ReplicaRefusedError
 } from '../errors.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import { assertReplicaWritePrecondition } from '../lib/preconditions.js'
 import {
   assertReplacementKeepsFixedMembers,
   replicaValidator
@@ -196,9 +197,18 @@ export class ReplicaRequest {
     // carry, so a pause or a resume costs no read of the source server. The
     // read here decides that alone; the write judges the body against the
     // stored registration again inside its critical section, where it
-    // cannot go stale. The fixed-member check here spares a doomed body the
-    // peer checks.
+    // cannot go stale, and its verdict is the one that counts. The same
+    // precondition and fixed-member checks run here first only to spare a
+    // doomed write the peer checks: a stale `If-Match` under a retry loop
+    // would otherwise cost the source server a read per attempt.
     const prior = await storage.getReplica({ spaceId, replicaId })
+    const preconditions = parseWritePreconditions(request.headers)
+    assertReplicaWritePrecondition({
+      replicaId,
+      exists: prior !== undefined,
+      currentEtag: prior && replicaEtag(prior),
+      ...preconditions
+    })
     const sameCapability = (stored: StoredReplica | undefined): boolean =>
       stored !== undefined &&
       isDeepStrictEqual(record.capability, stored.record.capability)
@@ -233,7 +243,7 @@ export class ReplicaRequest {
       spaceId,
       record,
       pullsChunks,
-      ...parseWritePreconditions(request.headers)
+      ...preconditions
     })
     const created = replaced === undefined
     // A create changes the served `replicas` member of the Space Metadata
@@ -246,10 +256,14 @@ export class ReplicaRequest {
     }
     // The loop reacts at once to a create, a pause, a resume, or a new
     // capability. A write that changed none of those, a repeat of the
-    // stored body, leaves the scheduled cycle alone.
+    // stored body, leaves the scheduled cycle alone. A create that is
+    // paused starts no loop, as POST starts none for one.
     const paused = record.pausedAt !== undefined
     const wasPaused = replaced?.record.pausedAt !== undefined
-    if (created || paused !== wasPaused || !sameCapability(replaced)) {
+    const loopChanged = created
+      ? !paused
+      : paused !== wasPaused || !sameCapability(replaced)
+    if (loopChanged) {
       replication.wake({ spaceId, replicaId })
     }
 

@@ -6504,3 +6504,30 @@ takes optional `If-Match` and `If-None-Match: *` like every other write; and the
 record gains a write stamp, so its `ETag` is the standard four-segment shape and
 the stamp members are served in the body. The CORS defaults already list PUT
 (`src/plugin.ts:554-562`).
+
+---
+
+### WAS-180: [M] (fs) Delete Space removes revocations before the Space directory
+
+- status: done
+- done: 2026-10-27
+- priority: medium
+- backend: fs
+- labels: filesystem-backend, zcap, correctness
+- acceptance:
+  - [x] The filesystem backend's `deleteSpace` removes the Space directory
+        before, or atomically with, the Space's revocation records, so a crash
+        between the two steps cannot leave a live Space whose revoked grants
+        verify again
+  - [x] A revocation directory left behind by a crash after the Space directory
+        is gone is removed on the next `deleteSpace` or at boot
+  - [x] A test kills the delete between the two removals and asserts the Space
+        is either whole or gone
+
+Context (discovered-from: WAS-96, review 2026-10-01). `deleteSpace` removes the
+Space-scoped revocation directory, which sits outside the Space tree, and only
+then the Space directory (`src/backends/filesystem.ts:1365-1372`). A crash in
+between leaves the Space in place with every stored revocation gone, so a
+revoked grant verifies on the next invocation. The torn-state pass over the
+replication design found it while checking Delete Space against an in-flight
+pull; it is an existing defect independent of replication.

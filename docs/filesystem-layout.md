@@ -87,15 +87,19 @@ no torn state remains to detect at boot.
 A replica registration is a versioned record: its `.replica.<id>.json` carries
 the write stamp members (`updatedAt`, `updatedAtCounter`, `originId`) beside
 `_generation`, `_spaceGeneration` and `_pullsChunks` (see
-[validators-and-stamps.md](validators-and-stamps.md)). The step converts nothing.
-It refuses a data dir holding any registration file with no write stamp, with
-`StoreVersionError`, on every boot and with no conversion step. The remedy is to
-wipe the data dir, or remove the file and make the registration again. The
-`.state.json` beside it is not checked. An empty data dir, or one with no
-unstamped registration, is stamped at version 7. The Postgres twin is schema
-migration 15, which adds the `updated_at`, `updated_at_counter` and `origin_id`
-columns to `replicas` and refuses a schema whose `replicas` table holds any row.
-The remedy there is to delete the rows and make each registration again.
+[validators-and-stamps.md](validators-and-stamps.md)). The step converts
+nothing. It refuses a data dir holding any registration file with no write
+stamp, with `StoreVersionError`, on every boot and with no conversion step. The
+remedy is to wipe the data dir, or remove the file and make the registration
+again. The `.state.json` beside it is not checked. An empty data dir, or one
+with no unstamped registration, is stamped at version 7. After the boundary, a
+registration file that does not read (no stamp, or JSON that does not parse) is
+logged and left out of the replica listings, so one damaged file takes down
+neither Read Space nor the start of the pull loops; the registration's own read
+and write still fail on it. The Postgres twin is schema migration 15, which adds
+the `updated_at`, `updated_at_counter` and `origin_id` columns to `replicas` and
+refuses a schema whose `replicas` table holds any row. The remedy there is to
+delete the rows and make each registration again.
 
 ## The origin id and the clock mark
 
@@ -209,6 +213,18 @@ fixed order. Otherwise it is a `StorageError` (500).
 
 A read racing Delete Space can still answer 500: the Space dir is removed in no
 fixed order, and no tombstone is left for the read to find.
+
+### Delete Space
+
+Delete Space removes the Space dir first, then the Space's revocation dir under
+`space-revocations/`. A process killed between the two leaves a revocation dir
+with no Space. It denies nothing, since no Space stands for a grant to be
+invoked against, and a retried delete of the id, a create of a Space under the
+id, or the next boot removes it, so a re-created Space does not inherit the old
+life's revocations. A Space stands for the boot sweep when its Metadata file
+does, so a Space dir a kill mid-`rm` left with no Metadata file counts as gone.
+The other order would leave a live Space with its revocations gone, so a revoked
+grant verified again.
 
 ### Delete Chunk
 

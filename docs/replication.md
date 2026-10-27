@@ -67,11 +67,13 @@ Both backends store a registration through one write,
 one it replaced. `createReplica` is the create-only form. The decision is shared
 (`decideReplicaWrite` in `src/lib/replicaRecord.ts`) and made inside the write's
 critical section, from the registration read there: a create-only write over one
-is `id-conflict`, the fixed members are compared, the preconditions are
-evaluated against its `ETag`, the stamp is minted above its stamp, and
-`pausedAt` is decided by the pause rule from its presence on the client's shape.
-A replacement that keeps the stored capability keeps the stored `pullsChunks`
-with it, whatever the request layer passed.
+is `id-conflict`, the preconditions are evaluated against its `ETag`, the fixed
+members are compared, the stamp is minted above its stamp, and `pausedAt` is
+decided by the pause rule from its presence on the client's shape. The
+preconditions go before the fixed members, as on every other versioned record,
+so a conditional write made from a stale view answers 412 rather than 400. A
+replacement that keeps the stored capability keeps the stored `pullsChunks` with
+it, whatever the request layer passed.
 
 A record is stored inside the Space (`.replica.<id>.json` beside
 `.replica.<id>.state.json` in the filesystem Space dir, a row of the Postgres
@@ -97,9 +99,12 @@ under the id meanwhile is judged, not the one an earlier read saw.
 A `PUT` at an absent registration creates it through the same checks as POST and
 answers 201 with `Location` and the record. A replacement answers 204. Both
 carry the new `ETag`. `If-Match` and `If-None-Match: *` are optional and are
-evaluated by the backend atomically with the write. A miss is
+evaluated by the backend atomically with the write, after a first evaluation at
+the request layer against the registration read before the peer checks, so a
+stale conditional write costs the source server no read. A miss is
 `precondition-failed` (412), `If-None-Match: *` on an existing registration
-included. POST keeps `id-conflict` (409) for an existing id.
+included. POST keeps `id-conflict` (409) for an existing id. A create that
+carries `pausedAt` starts no loop, by `PUT` as by POST.
 
 `pausedAt` is an RFC 3339 UTC time, and the server sets it. A body that carries
 `pausedAt` pauses the registration, and a body that omits it resumes. A
@@ -421,11 +426,13 @@ reports no cycle that will not run and a resume carries no backoff over. `wake`
 schedules a cycle at once, and starts the loop of a registration that has none.
 A `PUT` calls it after a pause, a resume, a capability replacement, or a create.
 A cycle in flight is left to finish, and its successor is then due at once
-rather than at the interval or the backoff. The status `state` is `pulling`
-while a cycle is in flight, else `paused` for a paused registration, else
-`backing-off`, `stalled` or `idle`. A cycle reads the peer Space's Metadata
-object and policy (conditional reads), then its Collection listing under
-`?include=deleted`.
+rather than at the interval or the backoff. A cycle that ends its loop instead,
+on reading a paused or absent registration, starts a fresh loop when a `wake`
+landed while it ran, so a resume that races the paused registration's last cycle
+is not lost. The status `state` is `pulling` while a cycle is in flight, else
+`paused` for a paused registration, else `backing-off`, `stalled` or `idle`. A
+cycle reads the peer Space's Metadata object and policy (conditional reads),
+then its Collection listing under `?include=deleted`.
 
 The registration's `collections` list selects among the listed Collections, live
 and tombstoned, and the Collection that holds the controller's history log is

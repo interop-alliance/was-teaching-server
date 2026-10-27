@@ -120,13 +120,16 @@ export function replicaValidator(stored: StoredReplica): EtagValidator {
 /**
  * The decision both backends make inside a registration write's critical
  * section, from the stored registration they read there: a create-only
- * write over one is `IdConflictError`, a replacement must keep the fixed
- * members, the preconditions are evaluated against its `ETag`, the validator
- * is minted above its stamp (and the generation with it on a create), and
- * the stored record is composed. `pullsChunks` is what the request layer's
- * peer checks found for the client's capability; a replacement that keeps
- * the stored capability keeps the stored value with it. The caller persists
- * what comes back.
+ * write over one is `IdConflictError`, the preconditions are evaluated
+ * against its `ETag`, a replacement must keep the fixed members, the
+ * validator is minted above its stamp (and the generation with it on a
+ * create), and the stored record is composed. The preconditions go before
+ * the fixed members, as on every other versioned record: a stale
+ * conditional write is told so (412) rather than that its body is malformed
+ * (400), which a client treats as final. `pullsChunks` is what the request
+ * layer's peer checks found for the client's capability; a replacement that
+ * keeps the stored capability keeps the stored value with it. The caller
+ * persists what comes back.
  * @param options {object}
  * @param [options.prior] {StoredReplica}   the stored registration, if any
  * @param options.record {ReplicaRegistration}   the client's shape
@@ -166,13 +169,6 @@ export async function decideReplicaWrite({
   if (createOnly && prior !== undefined) {
     throw new IdConflictError({ kind: 'Replica' })
   }
-  if (prior !== undefined) {
-    assertReplacementKeepsFixedMembers({
-      record,
-      stored: prior.record,
-      requestName: replicaWriteRequestName({ createOnly })
-    })
-  }
   assertReplicaWritePrecondition({
     replicaId: record.id,
     exists: prior !== undefined,
@@ -180,6 +176,13 @@ export async function decideReplicaWrite({
     ifMatch,
     ifNoneMatch
   })
+  if (prior !== undefined) {
+    assertReplacementKeepsFixedMembers({
+      record,
+      stored: prior.record,
+      requestName: replicaWriteRequestName({ createOnly })
+    })
+  }
   const validator = await mintValidator({
     clock,
     prior: prior && { generation: prior.generation, ...stampOf(prior.record) }
