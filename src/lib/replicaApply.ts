@@ -534,18 +534,15 @@ export function chunkSetRefusal({
  * The quota pre-check of a chunk set, made by `beginChunkStaging` before
  * anything is staged. Each listed chunk must fit the upload cap. The set's
  * net growth is the listed sizes, less what the run already staged (counted
- * in the usage already), less the live chunks the swap frees, plus the
- * headroom the backend's own in-write check needs (one chunk for a check
- * that is gross against a cached measurement, none for a counter kept under
- * the write's lock). Both backends decide through this one function, so
- * they cannot drift on what fits. The check is advisory: a 507 or 413 from
- * staging stays authoritative.
+ * in the usage already), less the live chunks the swap frees, so a set the
+ * size of the live one fits under a quota the live set fills. Both backends
+ * decide through this one function, so they cannot drift on what fits. The
+ * check is advisory: a 507 or 413 from staging stays authoritative.
  * @param options {object}
  * @param options.listed {Array<{ index: number, size: number }>}   the
  *   source server's listing
  * @param options.staged {Array<{ size: number }>}   what the run holds
  * @param options.liveBytes {number}   the live chunk bytes the swap frees
- * @param options.headroomBytes {number}   `0` for a net in-write check
  * @param options.usageBytes {number}   the Space's usage
  * @param [options.capacityBytes] {number}   the Space's capacity; absent
  *   for no byte quota
@@ -557,7 +554,6 @@ export function chunkSetQuotaRefusal({
   listed,
   staged,
   liveBytes,
-  headroomBytes,
   usageBytes,
   capacityBytes,
   maxUploadBytes
@@ -565,7 +561,6 @@ export function chunkSetQuotaRefusal({
   listed: Array<{ index: number; size: number }>
   staged: Array<{ size: number }>
   liveBytes: number
-  headroomBytes: number
   usageBytes: number
   capacityBytes?: number
   maxUploadBytes?: number
@@ -590,7 +585,7 @@ export function chunkSetQuotaRefusal({
   }
   const sum = (sizes: Array<{ size: number }>): number =>
     sizes.reduce((total, { size }) => total + size, 0)
-  const growth = sum(listed) - sum(staged) - liveBytes + headroomBytes
+  const growth = sum(listed) - sum(staged) - liveBytes
   if (usageBytes + growth <= capacityBytes) {
     return undefined
   }

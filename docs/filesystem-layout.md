@@ -241,8 +241,15 @@ The swap runs under the parent's lock, in this order:
    one. An empty set leaves no chunk directory.
 5. The parent's file is moved into the Collection dir.
 6. The parent's sidecar is written. It takes the feed position and is the commit
-   point. The parent and its set become visible to readers and to the feed here.
+   point: the parent reaches the feed here, with its set in place.
 7. The run directory is removed, `prior/` with it.
+
+Reads take no lock, so a reader is not held to the commit point. One that reads
+a chunk between step 4 and step 6 gets a chunk of the new set under the prior
+parent revision. The window is the two renames and one sidecar write, and the
+Postgres swap, one transaction, has none. A write of the Resource that meets a
+swap a fault cut short between the two steps finishes the swap first, under the
+same lock, so the chunk directory it reads is the settled one.
 
 Every step can be run again over what a cut-short run left, so the same code
 serves the apply and the finish of a torn swap.

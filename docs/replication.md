@@ -75,8 +75,7 @@ The `/service` read also records whether the source server lists the Encrypted
 Collections entry. The answer is stored as `pullsChunks` on the stored
 registration. It is not a member of the wire record the controller sends and
 reads back. A registration made against a server without the entry pulls no
-chunks. One made before chunk replication shipped holds no `pullsChunks` and
-pulls none either, until it is made again.
+chunks.
 
 The controller match has two branches. The two controllers are equal, or the
 peer controller is a `did:webvh` hosted in the peer Space whose current document
@@ -266,15 +265,14 @@ A chunked Resource is applied with its chunk set. The rules are:
   upload cap, and the set's net growth (the listed sizes, less what the run
   already staged, less the live chunks the swap frees) against the remaining
   capacity. The filesystem backend reads the remaining capacity from the same
-  cached measurement its in-write check reads (and reads none under no quota),
-  and adds one listed chunk of headroom, since that check is gross; the Postgres
-  counter needs none. A set that does not fit stalls the Collection as
-  `quota-exceeded` with nothing staged. A 507 or 413 during staging stays
-  authoritative. While a run is open, each `stageChunk` credits the live chunks
-  at the indexes the run has staged so far, so a same-size rewrite of a stream
-  fits under a quota its live set already fills. A chunk directory left beside a
-  tombstone is credited too, since the swap removes it. A swap refused as
-  `container-refused` releases the run's staging, as a loss does.
+  cached measurement its in-write check reads (and reads none under no quota). A
+  set that does not fit stalls the Collection as `quota-exceeded` with nothing
+  staged. A 507 or 413 during staging stays authoritative. While a run is open,
+  each `stageChunk` credits the live chunks at the indexes the run has staged so
+  far, so a same-size rewrite of a stream fits under a quota its live set
+  already fills. A chunk directory left beside a tombstone is credited too,
+  since the swap removes it. A swap refused as `container-refused` releases the
+  run's staging, as a loss does.
 - There is no last-writer-wins per chunk. The set resolves with its parent
   revision. The loop decides it before reading anything from the source server,
   against the held content record, a tombstone included. When the held parent

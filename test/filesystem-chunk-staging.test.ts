@@ -380,6 +380,30 @@ describe('FileSystemBackend: chunk staging and the swap', () => {
       }),
       { outcome: 'refused', reason: 'quota-exceeded' }
     )
+    // A run with nothing staged yet passes the pre-check under the full
+    // quota too, for a set the size of the live one: the check is net of
+    // what the swap frees, with no headroom on top.
+    const fresh: ChunkStagingRun = { replicaId, parentEtag: '"rev-c"' }
+    assert.deepEqual(
+      await backend.beginChunkStaging({ ...open, run: fresh, listed }),
+      { staged: [] }
+    )
+    assert.partialDeepStrictEqual(
+      await backend.beginChunkStaging({
+        ...open,
+        run: fresh,
+        listed: [
+          { index: 0, size: 2 },
+          { index: 1, size: 64 * 1024 }
+        ]
+      }),
+      { outcome: 'refused', reason: 'quota-exceeded' }
+    )
+    // Reopening the run drops the fresh one; what it held is staged again.
+    assert.deepEqual(await backend.beginChunkStaging({ ...open, listed }), {
+      staged: []
+    })
+    await stage(1, 'b1')
     // The open run credits the live chunks the swap replaces, so the
     // same-size rewrite stages under the full quota.
     assert.deepEqual(await stage(0, 'B0'), { outcome: 'applied' })
@@ -579,7 +603,7 @@ describe('FileSystemBackend: chunk staging and the swap', () => {
     assert.equal(await exists(stagingDir('none')), false)
   })
 
-  it('puts the set renamed aside back when a local write stands over a torn swap', async () => {
+  it('finishes a swap torn between the two renames before a local write of the parent', async () => {
     await writeParentWithChunks(['a0', 'a1'])
     await stage(1, 'b1')
     const counterPath = path.join(
@@ -598,17 +622,18 @@ describe('FileSystemBackend: chunk staging and the swap', () => {
     assert.equal(await exists(path.join(runDir(), 'prior')), true)
     assert.deepEqual(await chunkBodies(), {})
 
-    // A local write of the parent lands before the swap is finished.
+    // A local write of the parent finishes the swap first, then lands over
+    // the parent it published, whose set it keeps.
     await backend.writeResource({
       spaceId,
       collectionId,
       resourceId,
       input: binaryInput('parent-local')
     })
-    assert.equal(await backend.reclaimStaging({ spaceId }), 1)
     assert.equal(await parentBody(), 'parent-local')
-    assert.deepEqual(await chunkBodies(), { 0: 'a0', 1: 'a1' })
+    assert.deepEqual(await chunkBodies(), { 1: 'b1' })
     assert.equal(await exists(stagingDir()), false)
+    assert.equal(await backend.reclaimStaging({ spaceId }), 0)
   })
 
   it('finishes a swap torn before the parent sidecar at the next open', async () => {
@@ -677,6 +702,104 @@ describe('FileSystemBackend: chunk staging and the swap', () => {
     } finally {
       await reopened.close()
     }
+  })
+
+  // Tears a swap of `staged` over the held tombstone between the directory
+  // swap and the parent sidecar write, by turning the feed counter into a
+  // directory for the apply, and restores the counter after.
+  async function tearSwapOverTombstone(staged: number[]): Promise<void> {
+    const counterPath = path.join(
+      collectionDir,
+      feedCounterFileName(collectionId)
+    )
+    const counter = await readFile(counterPath)
+    await rm(counterPath)
+    await mkdir(counterPath)
+    await assert.rejects(applyWithChunks({ stamp: stampAt(1000), staged }))
+    await rm(counterPath, { recursive: true })
+    await writeFile(counterPath, counter)
+    const held = await backend.readMetaSidecar({ collectionDir, resourceId })
+    assert.equal(held?.deleted, true)
+  }
+
+  it('finishes a swap torn over a tombstone before an apply sweeps the set beside it', async () => {
+    await writeParentWithChunks(['a0'])
+    await backend.deleteResource({ spaceId, collectionId, resourceId })
+    await stage(0, 'b0')
+    await stage(1, 'b1')
+    await tearSwapOverTombstone([0, 1])
+    assert.deepEqual(await chunkBodies(), { 0: 'b0', 1: 'b1' })
+
+    // A replicated tombstone older than the torn parent: the swap is
+    // finished first, so the tombstone loses and the set stays.
+    const tombstone = await backend.readMetaSidecar({
+      collectionDir,
+      resourceId
+    })
+    assert.deepEqual(
+      await backend.applyResource({
+        spaceId,
+        replicaId,
+        collectionId,
+        resourceId,
+        generation: tombstone!.generation,
+        stamp: stampAt(500),
+        resource: { deleted: true, contentType: 'application/octet-stream' }
+      }),
+      { outcome: 'skipped' }
+    )
+    assert.equal(await parentBody(), 'parent-b')
+    assert.deepEqual(await chunkBodies(), { 0: 'b0', 1: 'b1' })
+    assert.equal(await exists(stagingDir()), false)
+  })
+
+  it('finishes a swap torn over a tombstone before a repeat delete sweeps the set beside it', async () => {
+    await writeParentWithChunks(['a0'])
+    await backend.deleteResource({ spaceId, collectionId, resourceId })
+    await stage(0, 'b0')
+    await tearSwapOverTombstone([0])
+
+    // The idempotent delete finishes the swap, then deletes the parent it
+    // published: the parent took a feed position before the tombstone.
+    await backend.deleteResource({ spaceId, collectionId, resourceId })
+    assert.equal(await exists(chunkDir()), false)
+    assert.equal(await exists(stagingDir()), false)
+    const { documents } = await backend.changesSince({
+      spaceId,
+      collectionId,
+      limit: 100
+    })
+    const ofParent = documents.filter(
+      document =>
+        document.kind === 'resource' && document.resourceId === resourceId
+    )
+    const last = ofParent.at(-1)
+    assert.equal(last?.kind === 'resource' && last.deleted, true)
+    // The tombstone is of the published parent: it keeps that parent's
+    // generation, not the first tombstone's.
+    const held = await backend.readMetaSidecar({ collectionDir, resourceId })
+    assert.equal(held?.deleted, true)
+    assert.equal(held?.generation, 'gen-b')
+  })
+
+  it('finishes a swap torn over a tombstone before a local write over it', async () => {
+    await writeParentWithChunks(['a0'])
+    await backend.deleteResource({ spaceId, collectionId, resourceId })
+    await stage(0, 'b0')
+    await stage(1, 'b1')
+    await tearSwapOverTombstone([0, 1])
+
+    // The local write lands over the settled parent, which keeps its set,
+    // rather than over the tombstone, which would have cleared it.
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId,
+      input: binaryInput('parent-local')
+    })
+    assert.equal(await parentBody(), 'parent-local')
+    assert.deepEqual(await chunkBodies(), { 0: 'b0', 1: 'b1' })
+    assert.equal(await exists(stagingDir()), false)
   })
 
   it('discards an unswapped run at the next open', async () => {
