@@ -1,6 +1,6 @@
 /**
  * Performance check of an already-running (deployed) server, e.g. a staging
- * host, so two backends can be compared on the same network path.
+ * host, measuring its backends side by side on the same network path.
  *
  * Runs the same load tests as `pnpm perf:fs` and `pnpm perf:pg` (see
  * `scripts/performance/perf-fs.ts`), but spawns no server: every request goes
@@ -16,13 +16,21 @@
  * token). The numbers include the network round trip from this machine, so
  * compare runs made from the same machine, against hosts in the same place.
  *
+ * `--split` (default `postgres=50,fs=50`) shares each test's Collections
+ * among the host's backends by percent: every test spreads its load
+ * round-robin over a pool of Collections, the smallest one that realizes the
+ * split (`backendPool`), each created with that backend's fixed id. The report
+ * shows the combined tables and one per backend under each. Before seeding,
+ * the run reads the host's backends listing and stops if the split names a
+ * backend the host does not list; `--split fs=100` measures one backend alone.
+ *
  * `--payloads` narrows the payload matrix to some of `json`, `small` (100 KiB)
  * and `large` (10 MiB). Leaving out `large` is how to run from a machine whose
  * upload is too slow to send 10 MiB within was-client's 10 s request timeout.
  *
  * Usage: pnpm perf:remote --url https://staging.freewallet.me
- * [--label "Filesystem (staging)"] [--sizes 1,500,2000] [--clients 5]
- * [--duration 10] [--writes 100] [--payloads json,small,large]
+ * [--split postgres=50,fs=50] [--label "Staging"] [--sizes 1,500,2000]
+ * [--clients 5] [--duration 10] [--writes 100] [--payloads json,small,large]
  * [--large-file-clients 2].
  */
 import { randomBytes } from 'node:crypto'
@@ -36,10 +44,18 @@ import type { WasClient } from '@interop/was-client'
 
 import { seedViaHttp } from './perf-http-seed.js'
 import {
+  backendPool,
+  describeError,
+  describePool,
+  formatRetries,
+  missingBackends,
   parseLoadSettings,
   parsePayloads,
   parseSizes,
-  retryOnTimeout
+  parseSplit,
+  retriedFaultCounts,
+  retryOnNetworkFault,
+  type BackendShare
 } from './perf-lib.js'
 import {
   connect,
@@ -60,6 +76,7 @@ const { values: args } = parseArgs({
     ...loadTestOptions,
     sizes: { type: 'string', default: '1,500,2000' },
     payloads: { type: 'string', default: 'json,small,large' },
+    split: { type: 'string', default: 'postgres=50,fs=50' },
     url: { type: 'string' },
     label: { type: 'string' }
   }
@@ -73,6 +90,11 @@ const serverUrl = args.url.replace(/\/+$/, '')
 const { sizes, edgeSizes } = parseSizes(args.sizes)
 const payloads = parsePayloads(args.payloads)
 const settings = parseLoadSettings(args)
+const split = parseSplit(args.split)
+const pool = backendPool(split)
+// One backend's table would repeat the combined one.
+const reportedBackends =
+  split.length > 1 ? split.map(({ backend }) => backend) : []
 
 /**
  * How many times the cleanup lists and deletes the identity's Spaces before
@@ -83,9 +105,9 @@ const cleanupPauseMs = 2_000
 
 /**
  * Deletes every Space the throwaway identity created on the server, retrying
- * a request that times out. An interrupted run is still seeding while this
- * runs, and a Space created after a listing would be missed, so it lists and
- * deletes again, after a pause, until a listing comes back empty.
+ * a request that hits a network fault. An interrupted run is still seeding
+ * while this runs, and a Space created after a listing would be missed, so it
+ * lists and deletes again, after a pause, until a listing comes back empty.
  * @param was {WasClient}
  * @returns {Promise<void>}
  * @throws {Error}   naming each Space it could not delete
@@ -93,7 +115,7 @@ const cleanupPauseMs = 2_000
 async function deleteCreatedSpaces(was: WasClient): Promise<void> {
   const failed = new Map<string, string>()
   for (let pass = 0; pass < cleanupPasses; pass++) {
-    const { items } = await retryOnTimeout({ op: () => was.listSpaces() })
+    const { items } = await retryOnNetworkFault({ op: () => was.listSpaces() })
     const remaining = items.filter(item => !failed.has(item.id))
     if (remaining.length === 0) {
       break
@@ -101,9 +123,9 @@ async function deleteCreatedSpaces(was: WasClient): Promise<void> {
     console.log(`Deleting ${remaining.length} Spaces this run created...`)
     for (const item of remaining) {
       try {
-        await retryOnTimeout({ op: () => was.space(item.id).delete() })
+        await retryOnNetworkFault({ op: () => was.space(item.id).delete() })
       } catch (err) {
-        failed.set(item.id, (err as Error).message)
+        failed.set(item.id, describeError(err))
       }
     }
     await sleep(cleanupPauseMs)
@@ -115,6 +137,44 @@ async function deleteCreatedSpaces(was: WasClient): Promise<void> {
         spaces.join('; ')
     )
   }
+}
+
+/**
+ * The server backends the host lists, read from a new Space's backends
+ * listing (`GET /space/:spaceId/backends`), so the run stops before it seeds
+ * anything when `split` names one the host does not have. The Space is left
+ * for the run's cleanup to delete.
+ * @param options {object}
+ * @param options.was {WasClient}
+ * @param options.split {BackendShare[]}
+ * @returns {Promise<string[]>} the listed ids, in the listing's order,
+ *   without the `default` alias
+ * @throws {Error}   naming each backend the split needs and the host lacks
+ */
+async function hostBackends({
+  was,
+  split
+}: {
+  was: WasClient
+  split: BackendShare[]
+}): Promise<string[]> {
+  const space = await retryOnNetworkFault({
+    op: () => was.createSpace({ name: 'perf-backends' })
+  })
+  const listing = await retryOnNetworkFault({ op: () => space.backends() })
+  // `default` aliases one of the backends listed under its own id.
+  const listedIds = (listing ?? [])
+    .map(({ id }) => id)
+    .filter(id => id !== 'default')
+  const missing = missingBackends({ split, listedIds })
+  if (missing.length > 0) {
+    throw new Error(
+      `--split names ${missing.join(', ')}, which ${serverUrl} does not ` +
+        `list (it lists ${listedIds.join(', ') || 'only default'}). Give a ` +
+        '--split of the backends it lists.'
+    )
+  }
+  return listedIds
 }
 
 /**
@@ -159,39 +219,23 @@ function cleanUpOnSignal(cleanUp: () => Promise<void>): void {
           `(${signal} again to skip)...`
       )
       cleanUp()
-        .catch(err => console.error(`\n${(err as Error).message}`))
+        .catch(err => console.error(`\n${describeError(err)}`))
         .finally(() => process.exit(exitCode))
     })
   }
 }
 
 /**
- * Seeds the server, runs the tests, prints and saves the tables, and removes
- * the Spaces it created.
+ * Checks the host lists the split's backends, seeds it, runs the tests,
+ * prints and saves the tables, and removes the Spaces it created.
  * @returns {Promise<void>}
  */
 async function main(): Promise<void> {
   const k6Version = findK6({ rerunCommand: 'pnpm perf:remote' })
   const outDir = await mkdtemp(join(tmpdir(), 'was-perf-remote-'))
-  const header = reportHeader({
-    title: args.label ?? `Performance of ${serverUrl}`,
-    k6Version,
-    settings,
-    extraLines: [
-      `- Target: ${serverUrl}`,
-      `- Matrix payloads: ${payloads.join(', ')}`
-    ]
+  const response = await retryOnNetworkFault({
+    op: () => fetch(`${serverUrl}/health`)
   })
-  console.log(header.join('\n'))
-  printEstimate({
-    sizes,
-    edgeSizes,
-    settings,
-    k6Version,
-    filling: true,
-    matrix: true
-  })
-  const response = await fetch(`${serverUrl}/health`)
   if (!response.ok) {
     throw new Error(`${serverUrl}/health answered ${response.status}.`)
   }
@@ -202,13 +246,38 @@ async function main(): Promise<void> {
   cleanUpOnSignal(cleanUp)
   const publicRead = unsignedReader({ serverUrl, outDir, k6Version, settings })
   try {
+    const listedIds = await hostBackends({ was, split })
+    const shares = split
+      .map(({ backend, percent }) => `${backend} ${percent}%`)
+      .join(', ')
+    const header = reportHeader({
+      title: args.label ?? `Performance of ${serverUrl}`,
+      k6Version,
+      settings,
+      extraLines: [
+        `- Target: ${serverUrl}, listing backends ${listedIds.join(', ')}`,
+        `- Backend split: ${shares}; ${describePool(split)}`,
+        `- Matrix payloads: ${payloads.join(', ')}`
+      ]
+    })
+    console.log(header.join('\n'))
+    printEstimate({
+      sizes,
+      edgeSizes,
+      settings,
+      k6Version,
+      filling: true,
+      matrix: true,
+      split
+    })
     const { targets, encryptedIds } = await seedViaHttp({
       was,
       serverUrl,
       seed,
       sizes,
       edgeSizes,
-      payloads
+      payloads,
+      pool
     })
     const rows = await runTests({
       was,
@@ -221,29 +290,37 @@ async function main(): Promise<void> {
       was,
       settings,
       encryptedIds,
-      publicRead
+      publicRead,
+      pool
     })
+    const retries =
+      '- Retries of untimed requests after a network fault: ' +
+      formatRetries(retriedFaultCounts())
     await saveReport({
       outDir,
       serverLog: false,
       lines: [
-        ...header,
-        ...sizeReport({ sizes, rows }),
+        // Known only once the run is over, so it joins the header here,
+        // ahead of the blank line that ends it.
+        ...header.slice(0, -1),
+        retries,
+        ...header.slice(-1),
+        ...sizeReport({ sizes, rows, backends: reportedBackends }),
         '',
-        ...matrixReport(matrixRows)
+        ...matrixReport({ rows: matrixRows, backends: reportedBackends })
       ]
     })
   } finally {
     // Reported rather than thrown, so it doesn't hide the error that ended
     // the run.
     await cleanUp().catch(err => {
-      console.error(`\n${(err as Error).message}`)
+      console.error(`\n${describeError(err)}`)
       process.exitCode = 1
     })
   }
 }
 
 main().catch(err => {
-  console.error(`\n${(err as Error).message}`)
+  console.error(`\n${describeError(err)}`)
   process.exit(1)
 })

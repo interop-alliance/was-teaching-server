@@ -1,10 +1,12 @@
 /**
- * Pure and injectable-dependency logic shared by `pnpm perf:fs` and
- * `pnpm perf:pg` (`perf-fs.ts`, `perf-pg.ts`) and their seed scripts: CLI
- * argument parsing, the run-length estimate, the Markdown table formatting,
- * the load-aggregation harnesses, and the Collection-size seeding over an
- * injected backend. Kept free of side effects at import time so it can be
- * unit tested without spawning a server, k6, or any network request.
+ * Pure and injectable-dependency logic shared by `pnpm perf:fs`,
+ * `pnpm perf:pg` and `pnpm perf:remote` (`perf-fs.ts`, `perf-pg.ts`,
+ * `perf-remote.ts`) and their seed scripts: CLI argument parsing, the backend
+ * split and the Collection pool it needs, the run-length estimate, the
+ * Markdown table formatting, the load-aggregation harnesses, and the
+ * Collection-size seeding over an injected backend. Kept free of side effects
+ * at import time so it can be unit tested without spawning a server, k6, or
+ * any network request.
  */
 import type { StorageBackend } from '../../src/types.js'
 
@@ -82,10 +84,221 @@ export function parseLoadSettings({
   }
 }
 
+/**
+ * The server backends a perf run can place a Collection on, by the fixed id
+ * a Collection's `backend` names.
+ */
+export const serverBackendIds = ['fs', 'postgres'] as const
+
+export type ServerBackendId = (typeof serverBackendIds)[number]
+
+/**
+ * One backend's share of a `--split`, in whole percent.
+ */
+export interface BackendShare {
+  backend: ServerBackendId
+  percent: number
+}
+
+/**
+ * The most Collections a `--split` may need per test: any split in steps of
+ * 5 percent. Every pool member is one more Collection filled to each size,
+ * and a Space holds 100 Collections by default (`MAX_COLLECTIONS_PER_SPACE`).
+ */
+export const maxPoolSize = 20
+
+/**
+ * One Collection of the pool a test spreads its load over: the backend it is
+ * created on, and the suffix its Collection id carries. A run with no
+ * `--split` has a single member that names no backend and adds no suffix, so
+ * its Collections keep the ids a seed dir or schema already holds.
+ */
+export interface PoolMember {
+  backend?: ServerBackendId
+  suffix: string
+}
+
+/**
+ * A URL path a test sends requests to, with the backend of the Collection it
+ * is in.
+ */
+export interface PoolTarget {
+  path: string
+  backend?: ServerBackendId
+}
+
+/**
+ * The greatest common divisor of two non-negative integers.
+ * @param left {number}
+ * @param right {number}
+ * @returns {number}
+ */
+function greatestCommonDivisor(left: number, right: number): number {
+  return right === 0 ? left : greatestCommonDivisor(right, left % right)
+}
+
+/**
+ * The Collections each test spreads its load over: the smallest pool that
+ * realizes `split` exactly (2 for `50/50`, 4 for `25/75`, 10 for `30/70`),
+ * each backend's members spaced evenly through it, so a test that stops
+ * partway through the pool still sends each backend close to its share. A
+ * member's suffix is `-<backend>-<n>`. With no split, the one member a run
+ * on the server's default backend has.
+ * @param [split] {BackendShare[]}
+ * @returns {PoolMember[]}
+ */
+export function backendPool(split?: BackendShare[]): PoolMember[] {
+  if (split === undefined) {
+    return [{ suffix: '' }]
+  }
+  const divisor = split.reduce(
+    (divisorSoFar, { percent }) => greatestCommonDivisor(divisorSoFar, percent),
+    0
+  )
+  const spaced = split.flatMap(({ backend, percent }, order) => {
+    const count = percent / divisor
+    return Array.from({ length: count }, (_unused, index) => ({
+      member: { backend, suffix: `-${backend}-${index}` },
+      position: (index + 0.5) / count,
+      order
+    }))
+  })
+  spaced.sort(
+    (left, right) => left.position - right.position || left.order - right.order
+  )
+  return spaced.map(({ member }) => member)
+}
+
+/**
+ * Parses a `--split` value (comma-separated `<backend>=<percent>` entries,
+ * e.g. `postgres=30,fs=70`) into each backend's share, in the order given.
+ * The percents are whole numbers adding up to 100, and the pool they need
+ * (`backendPool`) is at most `maxPoolSize` Collections.
+ * @param value {string}
+ * @returns {BackendShare[]}
+ */
+export function parseSplit(value: string): BackendShare[] {
+  const split: BackendShare[] = []
+  for (const entry of value.split(',')) {
+    const [name = '', percent = '', ...rest] = entry
+      .split('=')
+      .map(part => part.trim())
+    const backend = serverBackendIds.find(id => id === name)
+    if (backend === undefined || rest.length > 0) {
+      throw new Error(
+        `Unknown --split entry "${entry.trim()}"; expected ` +
+          `<backend>=<percent>, with a backend of ${serverBackendIds.join(', ')}.`
+      )
+    }
+    if (split.some(share => share.backend === backend)) {
+      throw new Error(`--split names "${backend}" twice.`)
+    }
+    split.push({ backend, percent: positiveInteger(percent) })
+  }
+  const total = split.reduce((sum, { percent }) => sum + percent, 0)
+  if (total !== 100) {
+    throw new Error(`--split percents add up to ${total}, not 100.`)
+  }
+  const poolSize = backendPool(split).length
+  if (poolSize > maxPoolSize) {
+    throw new Error(
+      `--split ${value} needs ${poolSize} Collections per test; give ` +
+        `percents in steps of 5, which need at most ${maxPoolSize}.`
+    )
+  }
+  return split
+}
+
+/**
+ * The distinct backends `pool` names, in first-seen order.
+ * @param pool {Array<{ backend?: ServerBackendId }>}
+ * @returns {ServerBackendId[]}
+ */
+export function poolBackends(
+  pool: ReadonlyArray<{ backend?: ServerBackendId }>
+): ServerBackendId[] {
+  return [
+    ...new Set(
+      pool.flatMap(({ backend }) => (backend === undefined ? [] : [backend]))
+    )
+  ]
+}
+
+/**
+ * The pool a split needs, as the report header and the estimate name it, in
+ * the split's order, e.g. `10 Collections per test (3 on postgres, 7 on fs)`.
+ * @param split {BackendShare[]}
+ * @returns {string}
+ */
+export function describePool(split: BackendShare[]): string {
+  const pool = backendPool(split)
+  const counts = split.map(
+    ({ backend }) =>
+      `${pool.filter(member => member.backend === backend).length} on ${backend}`
+  )
+  const collections = pool.length === 1 ? 'Collection' : 'Collections'
+  return `${pool.length} ${collections} per test (${counts.join(', ')})`
+}
+
+/**
+ * The `backend` member a pool member's Collection is created with, to spread
+ * into a `createCollection` description: none for a member on the server's
+ * default backend.
+ * @param member {PoolMember}
+ * @returns {{ backend?: { id: ServerBackendId } }}
+ */
+export function collectionBackend({ backend }: PoolMember): {
+  backend?: { id: ServerBackendId }
+} {
+  return backend === undefined ? {} : { backend: { id: backend } }
+}
+
+/**
+ * The backends `split` names that a host's backends listing
+ * (`GET /space/:spaceId/backends`) does not, so a run can stop before it
+ * seeds anything.
+ * @param options {object}
+ * @param options.split {BackendShare[]}
+ * @param options.listedIds {string[]}   the listing's backend ids
+ * @returns {ServerBackendId[]}
+ */
+export function missingBackends({
+  split,
+  listedIds
+}: {
+  split: BackendShare[]
+  listedIds: string[]
+}): ServerBackendId[] {
+  return split
+    .map(({ backend }) => backend)
+    .filter(backend => !listedIds.includes(backend))
+}
+
+/**
+ * The member of `pool` the `index`th request goes to, round-robin.
+ * @param options {object}
+ * @param options.pool {Target[]}   at least one member
+ * @param options.index {number}
+ * @returns {Target}
+ */
+function roundRobin<Target>({
+  pool,
+  index
+}: {
+  pool: readonly Target[]
+  index: number
+}): Target {
+  return pool[index % pool.length]!
+}
+
 export interface Measurement {
   rate: number
   avgMs?: number
   failed: number
+  // Each backend's part of a test whose pool spans backends: the requests its
+  // Collections answered over the whole test's time, so the parts' rates add
+  // up to `rate`.
+  byBackend?: Partial<Record<ServerBackendId, Measurement>>
 }
 
 export interface Row {
@@ -283,18 +496,30 @@ export function formatMatrixProgressLine({
 
 /**
  * The payload matrix as a Markdown table, one row per category and payload,
- * followed by a failures line.
+ * followed by a failures line. A cell may be a gap (`backendCell` of a
+ * backend that answered none of a test's requests).
  * @param rows {MatrixRow[]}
  * @returns {string}
  */
-export function formatMatrixTable(rows: MatrixRow[]): string {
+export function formatMatrixTable(
+  rows: Array<{
+    category: MatrixCategory
+    payload: MatrixPayload
+    read: Measurement | string | undefined
+    write: Measurement | string | undefined
+  }>
+): string {
   const failures: string[] = []
   const body = rows.map(({ category, payload, read, write }) => {
     for (const [operation, result] of [
       ['read', read],
       ['write', write]
     ] as const) {
-      if (typeof result !== 'string' && result.failed > 0) {
+      if (
+        result !== undefined &&
+        typeof result !== 'string' &&
+        result.failed > 0
+      ) {
         failures.push(
           `${matrixLabel({ category, payload })} ${operation}: ${result.failed} failed`
         )
@@ -312,6 +537,57 @@ export function formatMatrixTable(rows: MatrixRow[]): string {
     '',
     failures.length > 0 ? `Failures: ${failures.join('; ')}` : 'Failures: none'
   ].join('\n')
+}
+
+/**
+ * One cell as `backend` alone answered it, for that backend's table: its part
+ * of a measurement, the skip string as-is, or `undefined` for a gap or a
+ * backend that answered none of the test's requests.
+ * @param cell {Measurement | string | undefined}
+ * @param backend {ServerBackendId}
+ * @returns {Measurement | string | undefined}
+ */
+export function backendCell(
+  cell: Measurement | string | undefined,
+  backend: ServerBackendId
+): Measurement | string | undefined {
+  if (cell === undefined || typeof cell === 'string') {
+    return cell
+  }
+  return cell.byBackend?.[backend]
+}
+
+/**
+ * Reads a measurement out of k6's end-of-test summary metrics: the whole test,
+ * and each backend's part from the submetrics `perf-unsigned-get.k6.js` tags
+ * by backend (`http_reqs{backend:fs}` and so on).
+ * @param options {object}
+ * @param options.metrics {Record<string, { values: Record<string, number> }>}
+ * @param options.backends {ServerBackendId[]}   the backends the test's pool
+ *   spans; none for a pool on the server's default backend
+ * @returns {Measurement}
+ */
+export function k6Measurement({
+  metrics,
+  backends
+}: {
+  metrics: Record<string, { values: Record<string, number> } | undefined>
+  backends: ServerBackendId[]
+}): Measurement {
+  const read = (tag: string): Measurement => ({
+    rate: metrics[`http_reqs${tag}`]?.values.rate ?? 0,
+    avgMs: metrics[`http_req_duration${tag}`]?.values.avg,
+    failed: metrics[`checks${tag}`]?.values.fails ?? 0
+  })
+  const measurement = read('')
+  if (backends.length === 0) {
+    return measurement
+  }
+  const byBackend: Partial<Record<ServerBackendId, Measurement>> = {}
+  for (const backend of backends) {
+    byBackend[backend] = read(`{backend:${backend}}`)
+  }
+  return { ...measurement, byBackend }
 }
 
 /**
@@ -415,6 +691,30 @@ export function formatMachine({
 }
 
 /**
+ * How many Resources a fresh fill writes into the Collection-size Spaces: a
+ * public and a private Collection per size and three Collections per edge
+ * size, each filled to its size, once per pool member.
+ * @param options {object}
+ * @param options.sizes {number[]}
+ * @param options.edgeSizes {number[]}
+ * @param [options.poolSize] {number}   1 by default
+ * @returns {number}
+ */
+export function seedResourceCount({
+  sizes,
+  edgeSizes,
+  poolSize = 1
+}: {
+  sizes: number[]
+  edgeSizes: number[]
+  poolSize?: number
+}): number {
+  const sum = (values: number[]) =>
+    values.reduce((total, value) => total + value, 0)
+  return poolSize * (2 * sum(sizes) + 3 * sum(edgeSizes))
+}
+
+/**
  * Estimates how long a run takes with the given settings. Filling Collections
  * and the delete tests' untimed refills are the parts that vary most, so they
  * are priced at a representative signed-write rate (25 writes/s, from a prior
@@ -428,6 +728,8 @@ export function formatMachine({
  * @param [options.matrix] {boolean}   whether the payload matrix runs too: 9
  *   reads (3 of them through k6) and 9 writes, the 6 binary writes with an
  *   untimed delete after each round, priced at half the test's length
+ * @param [options.poolSize] {number}   the Collections each test spreads its
+ *   load over, each one filled; 1 by default
  * @returns {number} minutes, rounded up
  */
 export function estimateMinutes({
@@ -439,7 +741,8 @@ export function estimateMinutes({
   pauseMs,
   withK6,
   filling,
-  matrix = false
+  matrix = false,
+  poolSize = 1
 }: {
   sizes: number[]
   edgeSizes: number[]
@@ -450,11 +753,10 @@ export function estimateMinutes({
   withK6: boolean
   filling: boolean
   matrix?: boolean
+  poolSize?: number
 }): number {
   const writesPerSecond = 25
-  const sum = (values: number[]) =>
-    values.reduce((total, value) => total + value, 0)
-  const filled = filling ? 2 * sum(sizes) + 3 * sum(edgeSizes) : 0
+  const filled = filling ? seedResourceCount({ sizes, edgeSizes, poolSize }) : 0
   const matrixTests = matrix ? (withK6 ? 9 : 6) + 9 : 0
   const matrixCleanupSeconds = matrix ? 6 * durationSeconds * 0.5 : 0
   const loadTests =
@@ -664,20 +966,100 @@ export async function fillConcurrently({
 }
 
 /**
- * Runs an untimed, idempotent setup write (a seed write, a refill, a warm-up),
- * running it again when it times out, up to `attempts` times in all. Over a
- * long network path, a response now and then never arrives although the
- * server answered it, and was-client gives a request 10 s (ky's
- * `TimeoutError`). Any other error, and a timeout on the last attempt, is
- * thrown. A timed request is never retried: it counts as a failure.
+ * `err` and each error along its `cause` chain, outermost first, up to 10:
+ * was-client rethrows the transport's error as the `cause` of its own
+ * `WasError`.
+ * @param err {unknown}
+ * @returns {{ name?: unknown, message?: unknown, code?: unknown, requestUrl?: unknown }[]}
+ */
+function causeChain(err: unknown): {
+  name?: unknown
+  message?: unknown
+  code?: unknown
+  requestUrl?: unknown
+}[] {
+  const chain = []
+  for (
+    let link = err;
+    typeof link === 'object' && link !== null && chain.length < 10;
+    link = (link as { cause?: unknown }).cause
+  ) {
+    chain.push(link)
+  }
+  return chain
+}
+
+/**
+ * The network faults `retryOnNetworkFault` runs a request again on, in the
+ * order a report lists them.
+ */
+export const networkFaults = [
+  'timed out',
+  'never connected',
+  'dropped'
+] as const
+
+export type NetworkFault = (typeof networkFaults)[number]
+
+/**
+ * The fault each undici and Node error code marks: a connection that never
+ * opened (`UND_ERR_CONNECT_TIMEOUT`), or one that closed before the response
+ * was read in full (`UND_ERR_SOCKET`, `ECONNRESET`; fetch reports it as
+ * `terminated` once the headers arrived).
+ */
+const faultByCode = new Map<string, NetworkFault>([
+  ['UND_ERR_CONNECT_TIMEOUT', 'never connected'],
+  ['UND_ERR_SOCKET', 'dropped'],
+  ['ECONNRESET', 'dropped']
+])
+
+/**
+ * How many times `retryOnNetworkFault` has run a request again in this
+ * process, by the fault that made it.
+ */
+const retriedFaults = new Map<NetworkFault, number>()
+
+/**
+ * The network fault along `err`'s cause chain: ky's `TimeoutError`, or an
+ * error whose code `faultByCode` lists.
+ * @param err {unknown}
+ * @returns {NetworkFault | undefined}   undefined for any other error
+ */
+function networkFault(err: unknown): NetworkFault | undefined {
+  for (const { name, code } of causeChain(err)) {
+    if (name === 'TimeoutError') {
+      return 'timed out'
+    }
+    const fault = typeof code === 'string' ? faultByCode.get(code) : undefined
+    if (fault !== undefined) {
+      return fault
+    }
+  }
+  return undefined
+}
+
+/**
+ * Runs an untimed, idempotent setup request (a seed write, a create, a
+ * refill, a warm-up), running it again on a network fault, up to `attempts`
+ * times in all. Over a long network path, a response now and then never
+ * arrives although the server answered it, and was-client gives a request
+ * 10 s (ky's `TimeoutError`). Over some paths a third of new connections never
+ * open either (undici's `UND_ERR_CONNECT_TIMEOUT`), and was-client's timeout
+ * often fires first, so the two cannot be told apart, and now and then a
+ * connection closes partway through a response (`UND_ERR_SOCKET`,
+ * `ECONNRESET`). All of them share the attempts; a run opens many
+ * connections, so three would not carry it through. Any other error, and a
+ * fault on the last attempt, is thrown. Each retry is counted, by its fault,
+ * for `retriedFaultCounts`. A timed request is never retried: it counts as a
+ * failure.
  * @param options {object}
  * @param options.op {() => Promise<Result>}
- * @param [options.attempts] {number}   3 by default
+ * @param [options.attempts] {number}   8 by default
  * @returns {Promise<Result>}
  */
-export async function retryOnTimeout<Result>({
+export async function retryOnNetworkFault<Result>({
   op,
-  attempts = 3
+  attempts = 8
 }: {
   op: () => Promise<Result>
   attempts?: number
@@ -686,51 +1068,170 @@ export async function retryOnTimeout<Result>({
     try {
       return await op()
     } catch (err) {
-      if ((err as Error).name !== 'TimeoutError' || attempt >= attempts) {
+      const fault = networkFault(err)
+      if (fault === undefined || attempt >= attempts) {
         throw err
       }
+      retriedFaults.set(fault, (retriedFaults.get(fault) ?? 0) + 1)
     }
   }
 }
 
 /**
- * The running count behind every load harness: completed and failed
- * requests, and the summed latency of the completed ones.
+ * How many times `retryOnNetworkFault` has run a request again in this
+ * process so far, by the fault that made it.
+ * @returns {Map<NetworkFault, number>}   a copy, holding only faults retried
+ *   at least once
+ */
+export function retriedFaultCounts(): Map<NetworkFault, number> {
+  return new Map(retriedFaults)
+}
+
+/**
+ * The retries `counts` holds, for a report header: the total and each
+ * fault's share, e.g. `37 (21 timed out, 14 never connected, 2 dropped)`, or
+ * `none`.
+ * @param counts {ReadonlyMap<NetworkFault, number>}
+ * @returns {string}
+ */
+export function formatRetries(
+  counts: ReadonlyMap<NetworkFault, number>
+): string {
+  const retried = networkFaults.flatMap(fault => {
+    const count = counts.get(fault) ?? 0
+    return count > 0 ? [{ fault, count }] : []
+  })
+  if (retried.length === 0) {
+    return 'none'
+  }
+  const total = retried.reduce((sum, { count }) => sum + count, 0)
+  const shares = retried.map(({ fault, count }) => `${count} ${fault}`)
+  return `${total} (${shares.join(', ')})`
+}
+
+/**
+ * `err`'s message, followed by what its `cause` chain adds (each cause's
+ * message and code) and the URL it was requesting, so a transport failure
+ * that was-client reports as a bare `terminated` or `fetch failed` says what
+ * happened, e.g.
+ * `terminated (other side closed, UND_ERR_SOCKET) requesting "https://..."`.
+ * @param err {unknown}
+ * @returns {string}
+ */
+export function describeError(err: unknown): string {
+  const [outer, ...causes] = causeChain(err)
+  const message = String(outer?.message ?? err)
+  const details: string[] = []
+  for (const { message: causeMessage, code } of causes) {
+    for (const detail of [causeMessage, code]) {
+      if (
+        typeof detail === 'string' &&
+        detail !== '' &&
+        detail !== message &&
+        !details.includes(detail)
+      ) {
+        details.push(detail)
+      }
+    }
+  }
+  const requestUrl = [outer, ...causes]
+    .map(link => link?.requestUrl)
+    .find(url => typeof url === 'string')
+  return [
+    message,
+    ...(details.length > 0 ? [`(${details.join(', ')})`] : []),
+    ...(requestUrl !== undefined && !message.includes(requestUrl)
+      ? [`requesting "${requestUrl}"`]
+      : [])
+  ].join(' ')
+}
+
+/**
+ * Completed and failed requests, and the summed latency of the completed
+ * ones.
+ */
+interface TallyCount {
+  completed: number
+  failed: number
+  totalMs: number
+}
+
+/**
+ * A count as a measurement over `elapsedMs` of timed work.
+ * @param options {object}
+ * @param options.count {TallyCount}
+ * @param options.elapsedMs {number}
+ * @returns {Measurement}
+ */
+function measure({
+  count: { completed, failed, totalMs },
+  elapsedMs
+}: {
+  count: TallyCount
+  elapsedMs: number
+}): Measurement {
+  return {
+    rate: completed / (elapsedMs / 1000),
+    avgMs: completed ? totalMs / completed : undefined,
+    failed
+  }
+}
+
+/**
+ * The running count behind every load harness, kept per backend.
  */
 class Tally {
-  #completed = 0
-  #failed = 0
-  #totalMs = 0
+  #counts = new Map<ServerBackendId | undefined, TallyCount>()
 
   /**
-   * Runs `op`, counting it as completed (with its latency) or failed.
+   * Runs `op`, counting it as completed (with its latency) or failed, under
+   * the backend of the Collection it went to.
    * @param op {() => Promise<unknown>}
+   * @param [backend] {ServerBackendId}
    * @returns {Promise<boolean>} whether it completed
    */
-  async time(op: () => Promise<unknown>): Promise<boolean> {
+  async time(
+    op: () => Promise<unknown>,
+    backend?: ServerBackendId
+  ): Promise<boolean> {
+    let count = this.#counts.get(backend)
+    if (count === undefined) {
+      count = { completed: 0, failed: 0, totalMs: 0 }
+      this.#counts.set(backend, count)
+    }
     const sent = performance.now()
     try {
       await op()
-      this.#completed++
-      this.#totalMs += performance.now() - sent
+      count.completed++
+      count.totalMs += performance.now() - sent
       return true
     } catch {
-      this.#failed++
+      count.failed++
       return false
     }
   }
 
   /**
-   * The tally as a measurement over `elapsedMs` of timed work.
+   * The tally as a measurement over `elapsedMs` of timed work, with each
+   * backend's part when any request went to a Collection that named one.
    * @param elapsedMs {number}
    * @returns {Measurement}
    */
   measurement(elapsedMs: number): Measurement {
-    return {
-      rate: this.#completed / (elapsedMs / 1000),
-      avgMs: this.#completed ? this.#totalMs / this.#completed : undefined,
-      failed: this.#failed
+    const total: TallyCount = { completed: 0, failed: 0, totalMs: 0 }
+    const byBackend: Partial<Record<ServerBackendId, Measurement>> = {}
+    for (const [backend, count] of this.#counts) {
+      total.completed += count.completed
+      total.failed += count.failed
+      total.totalMs += count.totalMs
+      if (backend !== undefined) {
+        byBackend[backend] = measure({ count, elapsedMs })
+      }
     }
+    const measurement = measure({ count: total, elapsedMs })
+    return Object.keys(byBackend).length > 0
+      ? { ...measurement, byBackend }
+      : measurement
   }
 }
 
@@ -747,29 +1248,37 @@ function workerIndexes(clients: number): number[] {
  * Runs `op` from `clients` concurrent clients until `durationSeconds` have
  * elapsed, reporting requests per second, average latency, and failures. Each
  * client sends one request at a time, moving to the next as soon as the
- * previous one settles.
+ * previous one settles. Successive requests, across every client, go to
+ * successive members of `pool` round-robin, so each member takes the same
+ * share of the load.
  * @param options {object}
  * @param options.clients {number}
  * @param options.durationSeconds {number}
- * @param options.op {(worker: number, count: number) => Promise<unknown>}
+ * @param options.pool {Target[]}   what each request goes to; a member's
+ *   `backend` keys its part of the measurement
+ * @param options.op {(target: Target, worker: number, count: number) => Promise<unknown>}
  * @returns {Promise<Measurement>}
  */
-export async function load({
+export async function load<Target extends { backend?: ServerBackendId }>({
   clients,
   durationSeconds,
+  pool,
   op
 }: {
   clients: number
   durationSeconds: number
-  op: (worker: number, count: number) => Promise<unknown>
+  pool: readonly Target[]
+  op: (target: Target, worker: number, count: number) => Promise<unknown>
 }): Promise<Measurement> {
   const tally = new Tally()
   const started = performance.now()
   const deadline = started + durationSeconds * 1000
+  let sent = 0
   await Promise.all(
     workerIndexes(clients).map(async worker => {
       for (let count = 0; performance.now() < deadline; count++) {
-        await tally.time(() => op(worker, count))
+        const target = roundRobin({ pool, index: sent++ })
+        await tally.time(() => op(target, worker, count), target.backend)
       }
     })
   )
@@ -817,16 +1326,18 @@ async function timedRounds({
  * `seedConcurrency` at a time, so many clients don't burst the server with
  * `clients * deleteRoundSize` writes at once), then each
  * client deletes its own (timed). Rounds repeat until the timed part reaches
- * `durationSeconds`. The ids repeat every round, so the Collection stays
- * within `clients * deleteRoundSize` Resources of its starting size.
+ * `durationSeconds`. The ids repeat every round, so each Collection stays
+ * within `clients * deleteRoundSize` Resources of its starting size. A
+ * round's ids, client by client, go to successive members of `pool`
+ * round-robin, and the refill writes each one where its delete goes.
  * @param options {object}
  * @param options.clients {number}
  * @param options.durationSeconds {number}
  * @param options.deleteRoundSize {number}
  * @param options.was {RequestingClient}
- * @param options.path {string}
- * @param options.collection {object} a minimal `Collection`-shaped dependency:
- *   just the write this needs to refill the Resources it is about to delete
+ * @param options.pool {object[]}   each Collection's path and backend, and a
+ *   minimal `Collection`-shaped dependency: just the write this needs to
+ *   refill the Resources it is about to delete
  * @returns {Promise<Measurement>}
  */
 export async function deleteLoad({
@@ -834,15 +1345,17 @@ export async function deleteLoad({
   durationSeconds,
   deleteRoundSize,
   was,
-  path,
-  collection
+  pool
 }: {
   clients: number
   durationSeconds: number
   deleteRoundSize: number
   was: RequestingClient
-  path: string
-  collection: { put(resourceId: string, data: unknown): Promise<unknown> }
+  pool: ReadonlyArray<
+    PoolTarget & {
+      collection: { put(resourceId: string, data: unknown): Promise<unknown> }
+    }
+  >
 }): Promise<Measurement> {
   const idsOf = (worker: number) =>
     Array.from(
@@ -850,24 +1363,31 @@ export async function deleteLoad({
       (_unused, index) => `del-${worker}-${index}`
     )
   const workers = workerIndexes(clients)
+  const targetOf = new Map(
+    workers
+      .flatMap(idsOf)
+      .map((id, index) => [id, roundRobin({ pool, index })] as const)
+  )
   const tally = new Tally()
   const timedMs = await timedRounds({
     durationSeconds,
     round: async () => {
       await fillConcurrently({
-        ids: workers.flatMap(idsOf),
+        ids: [...targetOf.keys()],
         concurrency: seedConcurrency,
         write: id =>
-          retryOnTimeout({
-            op: () => collection.put(id, { resourceId: id })
+          retryOnNetworkFault({
+            op: () => targetOf.get(id)!.collection.put(id, { resourceId: id })
           })
       })
       const started = performance.now()
       await Promise.all(
         workers.map(async worker => {
           for (const id of idsOf(worker)) {
-            await tally.time(() =>
-              was.request({ path: `${path}/${id}`, method: 'DELETE' })
+            const { path, backend } = targetOf.get(id)!
+            await tally.time(
+              () => was.request({ path: `${path}/${id}`, method: 'DELETE' }),
+              backend
             )
           }
         })
@@ -884,42 +1404,60 @@ export async function deleteLoad({
  * then `remove` for what it created (untimed). Rounds repeat until the timed
  * part reaches `durationSeconds`, so the stored data never grows past one
  * round's worth, however large each create is. A failed create counts as a
- * failure and is not removed.
+ * failure and is not removed. Successive creates, client by client and round
+ * by round, go to successive members of `pool` round-robin, and each remove
+ * goes where its create went.
  * @param options {object}
  * @param options.clients {number}
  * @param options.durationSeconds {number}
- * @param options.create {(worker: number, round: number) => Promise<unknown>}
- * @param options.remove {(worker: number, round: number) => Promise<unknown>}
+ * @param options.pool {Target[]}   a member's `backend` keys its part of the
+ *   measurement
+ * @param options.create {(target: Target, worker: number, round: number) => Promise<unknown>}
+ * @param options.remove {(target: Target, worker: number, round: number) => Promise<unknown>}
  * @returns {Promise<Measurement>}
  */
-export async function createDeleteLoad({
+export async function createDeleteLoad<
+  Target extends { backend?: ServerBackendId }
+>({
   clients,
   durationSeconds,
+  pool,
   create,
   remove
 }: {
   clients: number
   durationSeconds: number
-  create: (worker: number, round: number) => Promise<unknown>
-  remove: (worker: number, round: number) => Promise<unknown>
+  pool: readonly Target[]
+  create: (target: Target, worker: number, round: number) => Promise<unknown>
+  remove: (target: Target, worker: number, round: number) => Promise<unknown>
 }): Promise<Measurement> {
   const workers = workerIndexes(clients)
   const tally = new Tally()
   const timedMs = await timedRounds({
     durationSeconds,
     round: async round => {
+      const targetOf = (worker: number) =>
+        roundRobin({ pool, index: round * clients + worker })
       const created: number[] = []
       const started = performance.now()
       await Promise.all(
         workers.map(async worker => {
-          if (await tally.time(() => create(worker, round))) {
+          const target = targetOf(worker)
+          if (
+            await tally.time(
+              () => create(target, worker, round),
+              target.backend
+            )
+          ) {
             created.push(worker)
           }
         })
       )
       const elapsedMs = performance.now() - started
       await Promise.all(
-        created.map(worker => remove(worker, round).catch(() => undefined))
+        created.map(worker =>
+          remove(targetOf(worker), worker, round).catch(() => undefined)
+        )
       )
       return elapsedMs
     }
@@ -929,27 +1467,29 @@ export async function createDeleteLoad({
 
 /**
  * One client writing `serialWrites` new Resources in a row, after
- * `warmUpWrites` untimed warm-up writes.
+ * `warmUpWrites` untimed warm-up writes. Successive writes, the warm-up ones
+ * too, go to successive members of `pool` round-robin.
  * @param options {object}
  * @param options.was {RequestingClient}
- * @param options.path {string}
+ * @param options.pool {PoolTarget[]}
  * @param options.warmUpWrites {number}
  * @param options.serialWrites {number}
  * @returns {Promise<Measurement>}
  */
 export async function serialWriteLoad({
   was,
-  path,
+  pool,
   warmUpWrites,
   serialWrites
 }: {
   was: RequestingClient
-  path: string
+  pool: readonly PoolTarget[]
   warmUpWrites: number
   serialWrites: number
 }): Promise<Measurement> {
   for (let index = 0; index < warmUpWrites; index++) {
-    await retryOnTimeout({
+    const { path } = roundRobin({ pool, index })
+    await retryOnNetworkFault({
       op: () =>
         was.request({
           path: `${path}/warm-${index}`,
@@ -961,12 +1501,15 @@ export async function serialWriteLoad({
   const tally = new Tally()
   const started = performance.now()
   for (let index = 0; index < serialWrites; index++) {
-    await tally.time(() =>
-      was.request({
-        path: `${path}/s-${index}`,
-        method: 'PUT',
-        json: { index }
-      })
+    const { path, backend } = roundRobin({ pool, index })
+    await tally.time(
+      () =>
+        was.request({
+          path: `${path}/s-${index}`,
+          method: 'PUT',
+          json: { index }
+        }),
+      backend
     )
   }
   return tally.measurement(performance.now() - started)

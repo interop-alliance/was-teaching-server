@@ -2,22 +2,26 @@
  * Fills a server with everything the load tests read and write, over signed
  * HTTP through `@interop/was-client`: the Collection-size Spaces, then the
  * payload matrix. It works against any server, a local one `pnpm perf:fs`
- * starts or a deployed one `pnpm perf:remote` targets.
+ * starts or a deployed one `pnpm perf:remote` targets. Each test's
+ * Collection is made once per pool member, on that member's backend.
  */
 import type { Collection, JsonObject, WasClient } from '@interop/was-client'
 
 import {
+  backendPool,
+  collectionBackend,
   credential,
   edgeSpaceLabels,
   fillConcurrently,
   itemIds,
-  retryOnTimeout,
+  retryOnNetworkFault,
   seedConcurrency,
   type EncryptedReadIds,
-  type MatrixPayload
+  type MatrixPayload,
+  type PoolMember
 } from './perf-lib.js'
 import { seedMatrix } from './perf-matrix-seed.js'
-import type { TestTargets } from './perf-runner.js'
+import type { EdgeTarget, TestTargets } from './perf-runner.js'
 
 /**
  * Writes one Resource per id into the Collection over signed HTTP, several
@@ -38,35 +42,56 @@ async function fillViaHttp({
     ids,
     concurrency: seedConcurrency,
     write: id =>
-      retryOnTimeout({
+      retryOnNetworkFault({
         op: () => collection.put(id, credential(id) as JsonObject)
       })
   })
 }
 
 /**
- * Creates a Space holding one Collection of `size` Resources over signed
- * HTTP.
+ * Creates a Space holding one Collection of `size` Resources per pool member
+ * (`items<suffix>`, on the member's backend) over signed HTTP.
  * @param options {object}
  * @param options.was {WasClient}
  * @param options.name {string}
  * @param options.size {number}
- * @returns {Promise<{ path: string, collection: Collection }>} the
- *   Collection's path, with no trailing slash, and its handle
+ * @param options.pool {PoolMember[]}
+ * @returns {Promise<EdgeTarget[]>} each Collection's path, with no trailing
+ *   slash, its backend and its handle, in pool order
  */
 async function seedSpaceViaHttp({
   was,
   name,
-  size
+  size,
+  pool
 }: {
   was: WasClient
   name: string
   size: number
-}): Promise<{ path: string; collection: Collection }> {
-  const space = await was.createSpace({ name })
-  const collection = await space.createCollection({ id: 'items', name })
-  await fillViaHttp({ collection, ids: itemIds(size) })
-  return { path: `/space/${space.id}/items`, collection }
+  pool: PoolMember[]
+}): Promise<EdgeTarget[]> {
+  const space = await retryOnNetworkFault({
+    op: () => was.createSpace({ name })
+  })
+  const targets: EdgeTarget[] = []
+  for (const member of pool) {
+    const collectionId = `items${member.suffix}`
+    const collection = await retryOnNetworkFault({
+      op: () =>
+        space.createCollection({
+          id: collectionId,
+          name,
+          ...collectionBackend(member)
+        })
+    })
+    await fillViaHttp({ collection, ids: itemIds(size) })
+    targets.push({
+      path: `/space/${space.id}/${collectionId}`,
+      backend: member.backend,
+      collection
+    })
+  }
+  return targets
 }
 
 /**
@@ -80,6 +105,8 @@ async function seedSpaceViaHttp({
  * @param options.edgeSizes {number[]}
  * @param [options.payloads] {MatrixPayload[]}   the matrix payloads to seed;
  *   every payload by default
+ * @param [options.pool] {PoolMember[]}   the Collections each test spreads
+ *   its load over; one on the server's default backend by default
  * @returns {Promise<{
  *   targets: TestTargets, encryptedIds: EncryptedReadIds
  * }>}
@@ -90,7 +117,8 @@ export async function seedViaHttp({
   seed,
   sizes,
   edgeSizes,
-  payloads
+  payloads,
+  pool = backendPool()
 }: {
   was: WasClient
   serverUrl: string
@@ -98,6 +126,7 @@ export async function seedViaHttp({
   sizes: number[]
   edgeSizes: number[]
   payloads?: readonly MatrixPayload[]
+  pool?: PoolMember[]
 }): Promise<{
   targets: TestTargets
   encryptedIds: EncryptedReadIds
@@ -105,23 +134,33 @@ export async function seedViaHttp({
   const seedStarted = performance.now()
   console.log('Filling Collections and the payload matrix...')
 
-  const publicSpace = await was.createSpace({ name: 'perf-public' })
-  const privateSpace = await was.createSpace({ name: 'perf-private' })
+  const publicSpace = await retryOnNetworkFault({
+    op: () => was.createSpace({ name: 'perf-public' })
+  })
+  const privateSpace = await retryOnNetworkFault({
+    op: () => was.createSpace({ name: 'perf-private' })
+  })
   for (const size of sizes) {
-    const publicCollection = await publicSpace.createCollection({
-      id: `c-${size}`
-    })
-    await fillViaHttp({ collection: publicCollection, ids: itemIds(size) })
-    await publicCollection.setPublic()
-    const privateCollection = await privateSpace.createCollection({
-      id: `c-${size}`
-    })
-    await fillViaHttp({ collection: privateCollection, ids: itemIds(size) })
+    for (const member of pool) {
+      const collection = {
+        id: `c-${size}${member.suffix}`,
+        ...collectionBackend(member)
+      }
+      const publicCollection = await retryOnNetworkFault({
+        op: () => publicSpace.createCollection(collection)
+      })
+      await fillViaHttp({ collection: publicCollection, ids: itemIds(size) })
+      await retryOnNetworkFault({ op: () => publicCollection.setPublic() })
+      const privateCollection = await retryOnNetworkFault({
+        op: () => privateSpace.createCollection(collection)
+      })
+      await fillViaHttp({ collection: privateCollection, ids: itemIds(size) })
+    }
   }
   const edgeSpaces = []
   for (const size of edgeSizes) {
     const seed = (label: string) =>
-      seedSpaceViaHttp({ was, name: `${label}-${size}`, size })
+      seedSpaceViaHttp({ was, name: `${label}-${size}`, size, pool })
     edgeSpaces.push({
       size,
       write: await seed(edgeSpaceLabels.write),
@@ -129,13 +168,14 @@ export async function seedViaHttp({
       serial: await seed(edgeSpaceLabels.serial)
     })
   }
-  const encryptedIds = await seedMatrix({ serverUrl, seed, payloads })
+  const encryptedIds = await seedMatrix({ serverUrl, seed, payloads, pool })
   const seedSeconds = (performance.now() - seedStarted) / 1000
   console.log(`Filled in ${seedSeconds.toFixed(0)}s. Running tests...\n`)
   return {
     targets: {
       publicSpaceId: publicSpace.id,
       privateSpaceId: privateSpace.id,
+      pool,
       edgeSpaces
     },
     encryptedIds
