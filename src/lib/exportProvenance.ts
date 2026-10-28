@@ -243,10 +243,10 @@ async function signStatement({
  * Builds the archive's `provenance.jsonl` body from its entry tree: one
  * signed statement per exported object, in the order the manifest lists the
  * object's entry. The Space Metadata object is attested at its
- * `.space.<id>.json` entry, a Collection Metadata object at its
- * `.collection.<id>.json` entry, and a Resource at its representation file,
- * with the server-managed members read off its `.meta.<id>.json` sidecar. A
- * Resource with a chunk directory beside its representation gets the
+ * `.space.meta.<id>.json` entry, a Collection Metadata object at its
+ * `.collection.meta.<id>.json` entry, and a Resource at its representation
+ * file, with the server-managed members read off its `.meta.<id>.json` sidecar.
+ * A Resource with a chunk directory beside its representation gets the
  * composite chunk digest. A tombstone (a sidecar with no representation)
  * holds no content and gets no statement, and neither does an object whose
  * file, or one of whose chunks, was deleted after the tree was built.

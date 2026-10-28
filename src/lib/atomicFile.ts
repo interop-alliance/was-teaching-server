@@ -9,10 +9,10 @@
  *
  * Backend-agnostic (no backend imports). Temp files use a `.tmp-`
  * dot-prefix that no directory enumeration in the tree parses or filters on
- * (those match `r.`, `.r.`, `.meta.`, `.tombstone.`, `.space.`,
- * `.collection.`, `.backend.`, or a `.json` suffix), so a temp file transiently
- * present during a write is never mistaken for a Resource, sidecar, or config
- * record.
+ * (those match `r.`, `.r.`, `.meta.`, `.tombstone.`, `.space.meta.`,
+ * `.collection.meta.`, `.backend.`, or a `.json` suffix), so a temp file
+ * transiently present during a write is never mistaken for a Resource, sidecar,
+ * or config record.
  */
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'

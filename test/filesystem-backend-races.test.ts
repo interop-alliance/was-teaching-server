@@ -107,7 +107,7 @@ describe('FileSystemBackend races', () => {
     if (metadata === undefined) {
       assert.deepEqual(
         await collectionDirEntries(),
-        [`.collection.${collectionId}.json`],
+        [`.collection.meta.${collectionId}.json`],
         'Collection was deleted but its directory holds more than its tombstone'
       )
     }
@@ -169,7 +169,7 @@ describe('FileSystemBackend races', () => {
     // whose shared acquisition came after the removal released the exclusive
     // side went ahead on the request layer's earlier existence check. Its
     // `mkdir -p` recreated `spaces/<S>/<C>/` with live Resources and no
-    // `.space.<S>.json`, which the next Space created under the same id
+    // `.space.meta.<S>.json`, which the next Space created under the same id
     // adopted.
     //
     // The prelude: the request layer finds the Space and the Collection.

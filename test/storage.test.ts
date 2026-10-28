@@ -157,12 +157,12 @@ describe('Storage API', () => {
         assert.ok(entryNames.includes('space/'))
         assert.ok(entryNames.includes(`space/${spaceId}/`))
         assert.ok(
-          entryNames.includes(`space/${spaceId}/.space.${spaceId}.json`)
+          entryNames.includes(`space/${spaceId}/.space.meta.${spaceId}.json`)
         )
         assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/`))
         assert.ok(
           entryNames.includes(
-            `space/${spaceId}/${collectionId}/.collection.${collectionId}.json`
+            `space/${spaceId}/${collectionId}/.collection.meta.${collectionId}.json`
           )
         )
         assert.ok(
@@ -1390,7 +1390,7 @@ describe('Storage API', () => {
         assert.equal(typeof counter.generation, 'string')
         // Neither stored record carries a position of its own.
         for (const fileName of [
-          `.collection.${collectionId}.json`,
+          `.collection.meta.${collectionId}.json`,
           `.collectionlog.${collectionId}.json`
         ]) {
           const stored = await readFile(

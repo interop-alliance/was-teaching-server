@@ -45,7 +45,7 @@ export const MIGRATIONS: Migration[] = [
   -- The Spaces tree. 'description' is NULL for a placeholder row created by a
   -- write below the Space level (a resource/policy write to a Space whose
   -- description was never written) -- the analogue of a Space directory
-  -- without a '.space.' file; getSpaceDescription treats it as absent.
+  -- without a '.space.meta.' file; getSpaceDescription treats it as absent.
   -- 'usage_bytes' is the transactional quota counter (spec "Quotas"),
   -- maintained in the same transaction as every content write and delete.
   -- 'controller' denormalizes the Space controller (also present as

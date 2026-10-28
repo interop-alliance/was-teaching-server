@@ -1180,7 +1180,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
 
       it('a later write does not backfill createdAt onto a Collection stored without one', async () => {
-        // A pre-v0.5 archive carries no `.collection.<id>.json`, so the import
+        // A pre-v0.5 archive carries no `.collection.meta.<id>.json`, so the import
         // plan falls back to `{ id, type, name }` and the Collection lands
         // with no `createdAt` at all. A later write must not stamp its own
         // clock as the creation time -- that would date the container later
@@ -1869,7 +1869,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             files.set(entry.name, await entry.bytes())
           }
         }
-        const tombstonePath = `space/${exportSpace}/.collection.dead.json`
+        const tombstonePath = `space/${exportSpace}/.collection.meta.dead.json`
         assert.ok(files.has(tombstonePath))
         assert.ok(
           names.every(name => !name.startsWith(`space/${exportSpace}/dead/`))
@@ -2051,7 +2051,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           'ubc-version: "0.1"\ncontents:\n  space:\n    url: x\n'
         )
         pack.entry(
-          { name: 'space/src/bad/.collection.bad.json' },
+          { name: 'space/src/bad/.collection.meta.bad.json' },
           JSON.stringify({
             deleted: true,
             updatedAt: '2026-10-03T00:00:00.000Z',
@@ -2107,7 +2107,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         let body: Record<string, unknown> | undefined
         for await (const entry of exported.entries) {
-          if (entry.name === `space/${destination}/.collection.gen.json`) {
+          if (entry.name === `space/${destination}/.collection.meta.gen.json`) {
             body = JSON.parse(
               Buffer.from(await entry.bytes()).toString('utf8')
             ) as Record<string, unknown>
@@ -2151,7 +2151,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend,
           spaceId,
           tarStream: archive({
-            'space/src/gov/.collection.gov.json': JSON.stringify({
+            'space/src/gov/.collection.meta.gov.json': JSON.stringify({
               id: 'gov',
               type: ['Collection']
             }),
@@ -2205,7 +2205,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const cases: Array<[Record<string, string>, RegExp]> = [
           [
             {
-              'space/src/col/.collection.col.json': JSON.stringify({
+              'space/src/col/.collection.meta.col.json': JSON.stringify({
                 id: 'col',
                 type: ['Collection'],
                 encryption: { scheme: 'edv' }
@@ -2216,7 +2216,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ],
           [
             {
-              'space/src/col/.collection.col.json': JSON.stringify({
+              'space/src/col/.collection.meta.col.json': JSON.stringify({
                 id: 'col',
                 type: ['Collection'],
                 plaintext: { indexes: [null] }
@@ -2226,7 +2226,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ],
           [
             {
-              'space/src/col/.collection.col.json': JSON.stringify({
+              'space/src/col/.collection.meta.col.json': JSON.stringify({
                 id: 'col',
                 type: ['Collection']
               }),
@@ -4156,7 +4156,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(!Object.prototype.hasOwnProperty.call(after, '_local'))
         assert.ok(!Object.prototype.hasOwnProperty.call(after, '_generation'))
 
-        // The archived `.collection.` body carries the internal `_generation`
+        // The archived `.collection.meta.` body carries the internal `_generation`
         // interchange token and never the server-local `_local` segment or the
         // out-of-band `metaGeneration` / `metaLocal` -- identical members on
         // both backends (the Postgres jsonb-strip fix).
@@ -4164,9 +4164,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await backend.exportSpace({ spaceId })
         )
         const entry = [...entries].find(([entryName]) =>
-          entryName.endsWith('.collection.merge.json')
+          entryName.endsWith('.collection.meta.merge.json')
         )
-        assert.ok(entry, 'expected an archived .collection.merge.json entry')
+        assert.ok(entry, 'expected an archived .collection.meta.merge.json entry')
         const body = JSON.parse(entry![1].body!.toString('utf8'))
         assert.equal(body._generation, after?.metaGeneration)
         assert.ok(!Object.prototype.hasOwnProperty.call(body, '_local'))
@@ -11438,7 +11438,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ].join('\n')
           )
           pack.entry(
-            { name: 'space/src/col/.collection.col.json' },
+            { name: 'space/src/col/.collection.meta.col.json' },
             JSON.stringify({
               id: 'col',
               type: ['Collection'],

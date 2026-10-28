@@ -247,7 +247,7 @@ if (!connectionString) {
             // two. Every record's stamps are re-minted by the import.
             const comparable = (document: unknown) => {
               const unstamped = withoutStamps(document)
-              return name.endsWith(`/.space.${spaceId}.json`)
+              return name.endsWith(`/.space.meta.${spaceId}.json`)
                 ? Object.fromEntries(
                     Object.entries(unstamped as object).filter(
                       ([key]) => key !== '_generation' && key !== 'backends'

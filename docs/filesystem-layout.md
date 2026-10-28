@@ -123,6 +123,22 @@ cannot read fails the step rather than reading as gone. A run repeated after a
 kill finds the moved trees gone from the root. The Postgres backend has no
 counterpart: its revocations are rows keyed by Space id.
 
+### Version 9: Metadata files under the `meta` name
+
+A Space Metadata file is `.space.meta.<spaceId>.json` in its Space dir and a
+Collection Metadata file is `.collection.meta.<collectionId>.json` in its
+Collection dir (or in the Space dir, for a Collection tombstone). The names come
+from `@interop/space-archive`, so the data dir and the export archive agree on
+them. The earlier `.space.<id>.json` form collided with the Space policy file
+`.space.policy.json` when a Space's id was `policy`: the Space could be created
+but its export tree held one entry under the two meanings. The `meta` segment
+keeps a Metadata file apart from the policy file under every id. The step
+converts nothing. It refuses, with `StoreVersionError`, a data dir holding any
+Metadata file under an earlier name, counting the files it found, on every boot
+and with no conversion step. The remedy is to wipe the data dir. An empty data
+dir, or one with no such file, is stamped at version 9. Postgres is unchanged:
+it keeps no Metadata files.
+
 ## The origin id and the clock mark
 
 `store.json` also carries the store's origin id as its `originId` member (see
@@ -392,7 +408,7 @@ it holds and how a create over it behaves.
 ### The filesystem backend
 
 The filesystem backend keeps the tombstone as the Collection's
-`.collection.<id>.json`, now holding only `deleted: true`, the stamp, and
+`.collection.meta.<id>.json`, now holding only `deleted: true`, the stamp, and
 `_generation`, in the Collection dir. It writes the tombstone first, durably,
 then removes every other entry of the dir.
 

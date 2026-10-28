@@ -32,8 +32,10 @@ import type { FastifyBaseLogger } from 'fastify'
 import { isWriteStamp } from '@interop/storage-core'
 import {
   ARCHIVE_REVOCATIONS_DIR,
+  COLLECTION_FILE_PREFIX,
   COLLECTION_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
+  SPACE_FILE_PREFIX,
   SPACE_POLICY_FILE_NAME,
   parseMetaSidecarFileName,
   parseResourcePolicyFileName,
@@ -129,7 +131,17 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // dir, drops the tree of a Space that is gone (what a Delete Space the
   // earlier layout cut short left), and removes the `space-revocations/`
   // root. It refuses a root holding an entry it does not recognize.
-  moveSpaceRevocationsIntoSpaceDirs
+  moveSpaceRevocationsIntoSpaceDirs,
+  // v9: the Space Metadata file is `.space.meta.<spaceId>.json` and the
+  // Collection Metadata file (live in its Collection dir, or a tombstone in
+  // the Space dir) is `.collection.meta.<collectionId>.json`, the names of
+  // the export archive's dialect, apart from the policy files for every id.
+  // A Metadata file written at an earlier layout sits under the old name
+  // (`.space.<spaceId>.json`, `.collection.<collectionId>.json`), and there
+  // is no conversion step: a store holding one is refused, every boot, until
+  // it is wiped or restored from an archive (an import writes the new
+  // names). A store with none passes and is stamped at this version.
+  refuseMetadataUnderOldNames
 ]
 
 /**
@@ -388,6 +400,84 @@ async function moveSpaceRevocationsIntoSpaceDirs({
     await rename(source, target)
   }
   await rm(root, { recursive: true, force: true })
+}
+
+/**
+ * The prefix a Space Metadata file carried before layout 9 (`.space.`), and
+ * the one a Collection Metadata file carried (`.collection.`), each followed
+ * by the id and `.json`. Frozen history: the current names insert a `meta.`
+ * segment after each.
+ */
+const OLD_SPACE_FILE_PREFIX = '.space.'
+const OLD_COLLECTION_FILE_PREFIX = '.collection.'
+
+/**
+ * Whether a file name is a Metadata file under its pre-layout-9 name: the
+ * given old prefix, an id, and `.json`. The two policy files, which share the
+ * old prefixes, and a file under either current prefix are not.
+ * @param fileName {string}
+ * @param oldPrefix {string}
+ * @returns {boolean}
+ */
+function isMetadataUnderOldName(fileName: string, oldPrefix: string): boolean {
+  return (
+    fileName.startsWith(oldPrefix) &&
+    fileName.endsWith(JSON_FILE_SUFFIX) &&
+    fileName !== SPACE_POLICY_FILE_NAME &&
+    fileName !== COLLECTION_POLICY_FILE_NAME &&
+    !fileName.startsWith(SPACE_FILE_PREFIX) &&
+    !fileName.startsWith(COLLECTION_FILE_PREFIX)
+  )
+}
+
+/**
+ * The layout step that refuses a store holding a Space or Collection Metadata
+ * file under its pre-layout-9 name: `.space.<spaceId>.json` in a Space dir,
+ * or `.collection.<collectionId>.json` in a Space dir (a tombstone) or a
+ * Collection dir (a live Collection). The policy files, which share the old
+ * prefixes, are not Metadata files.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @returns {Promise<void>}
+ */
+async function refuseMetadataUnderOldNames({
+  dataDir
+}: {
+  dataDir: string
+}): Promise<void> {
+  const spacesDir = path.join(dataDir, 'spaces')
+  let spaceFiles = 0
+  let collectionFiles = 0
+  for await (const { spaceDir, entries } of spaceDirs(spacesDir)) {
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        if (isMetadataUnderOldName(entry.name, OLD_SPACE_FILE_PREFIX)) {
+          spaceFiles++
+        } else if (
+          isMetadataUnderOldName(entry.name, OLD_COLLECTION_FILE_PREFIX)
+        ) {
+          collectionFiles++
+        }
+      } else if (entry.isDirectory() && isCollectionDirName(entry.name)) {
+        const children = await readDirEntries(path.join(spaceDir, entry.name))
+        collectionFiles += children.filter(
+          child =>
+            child.isFile() &&
+            isMetadataUnderOldName(child.name, OLD_COLLECTION_FILE_PREFIX)
+        ).length
+      }
+    }
+  }
+  if (spaceFiles > 0 || collectionFiles > 0) {
+    throw new StoreVersionError({
+      detail:
+        `${spacesDir} holds ${spaceFiles} Space Metadata file(s) and ` +
+        `${collectionFiles} Collection Metadata file(s) under the names ` +
+        'written before the `.meta.` segment was added, and there is no ' +
+        'conversion migration. Wipe the data directory, or restore each ' +
+        'Space from an export archive into an empty store.'
+    })
+  }
 }
 
 /**

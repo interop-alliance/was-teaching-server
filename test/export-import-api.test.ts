@@ -283,7 +283,7 @@ describe('Export/Import Space API (wire level)', () => {
         ['space/', null],
         [`space/${sourceSpaceId}/`, null],
         [
-          `space/${sourceSpaceId}/.space.${sourceSpaceId}.json`,
+          `space/${sourceSpaceId}/.space.meta.${sourceSpaceId}.json`,
           JSON.stringify({ id: sourceSpaceId })
         ]
       ])
@@ -440,7 +440,7 @@ describe('Export/Import Space API (wire level)', () => {
       )
       const archived = JSON.parse(
         entries
-          .get(`space/${sourceSpaceId}/.space.${sourceSpaceId}.json`)!
+          .get(`space/${sourceSpaceId}/.space.meta.${sourceSpaceId}.json`)!
           .body!.toString('utf8')
       )
       assert.ok(
@@ -613,7 +613,7 @@ describe('Export/Import Space API (wire level)', () => {
         ['manifest.yml', validManifestYaml()],
         ['space/', null],
         [`space/${destSpaceId}/`, null],
-        [`space/${destSpaceId}/.space.${destSpaceId}.json`, '{not json'],
+        [`space/${destSpaceId}/.space.meta.${destSpaceId}.json`, '{not json'],
         [`space/${destSpaceId}/notes/`, null]
       ])
       const imported = await alice.was.request({
@@ -691,6 +691,98 @@ describe('Export/Import Space API (wire level)', () => {
         method: 'GET'
       })
       assert.equal(read.data.name, 'Destination Name')
+    })
+  })
+
+  describe('a Space whose id is `policy`', () => {
+    // The Space Metadata file is `.space.meta.<spaceId>.json`, so a Space
+    // named `policy` keeps it apart from the Space's own policy file,
+    // `.space.policy.json`, in the Space dir and in the archive alike. Under
+    // the earlier `.space.<spaceId>.json` name the two collided, and the
+    // Space could be created but not exported.
+    const spaceId = 'policy'
+    const metadataEntry = `space/${spaceId}/.space.meta.${spaceId}.json`
+    const policyEntry = `space/${spaceId}/.space.policy.json`
+
+    async function provision(): Promise<void> {
+      const space = await alice.was.createSpace({
+        id: spaceId,
+        name: 'Policy Space',
+        controller: alice.did
+      })
+      await space.createCollection({ id: collectionId, name: 'Notes' })
+      await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/${resourceId}`,
+        method: 'PUT',
+        json: { id: resourceId, hello: 'policy' }
+      })
+    }
+
+    it('exports its Metadata and policy files apart and imports both', async () => {
+      await provision()
+      const policyWrite = await alice.was.request({
+        path: `/space/${spaceId}/policy`,
+        method: 'PUT',
+        json: { type: 'PublicCanRead' }
+      })
+      assert.equal(policyWrite.status, 201)
+
+      const exported = await alice.was.request({
+        path: `/space/${spaceId}/export`,
+        method: 'POST'
+      })
+      assert.equal(exported.status, 200)
+      const tarBytes = new Uint8Array(await exported.arrayBuffer())
+      const entries = await extractTarEntries(
+        Readable.from(Buffer.from(tarBytes))
+      )
+      const metadata = JSON.parse(
+        entries.get(metadataEntry)!.body!.toString('utf8')
+      )
+      assert.equal(metadata.id, spaceId)
+      assert.equal(metadata.name, 'Policy Space')
+      const policy = JSON.parse(
+        entries.get(policyEntry)!.body!.toString('utf8')
+      )
+      assert.equal(policy.type, 'PublicCanRead')
+
+      // The Space is lost and restored from the archive. The Metadata object,
+      // the policy and the Resource all come back.
+      const deleted = await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'DELETE'
+      })
+      assert.equal(deleted.status, 204)
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Fresh Policy Space',
+        controller: alice.did
+      })
+      const imported = await alice.was.request({
+        path: `/space/${spaceId}/import`,
+        method: 'POST',
+        body: tarBytes,
+        headers: { 'content-type': 'application/x-tar' }
+      })
+      assert.equal(imported.status, 200)
+      assert.equal(imported.data.spaceMetadata, 'restored')
+
+      const readMetadata = await alice.was.request({
+        path: `/space/${spaceId}/meta`,
+        method: 'GET'
+      })
+      assert.equal(readMetadata.data.name, 'Policy Space')
+      const readPolicy = await alice.was.request({
+        path: `/space/${spaceId}/policy`,
+        method: 'GET'
+      })
+      assert.equal(readPolicy.status, 200)
+      assert.equal(readPolicy.data.type, 'PublicCanRead')
+      const readResource = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/${resourceId}`,
+        method: 'GET'
+      })
+      assert.equal(readResource.data.hello, 'policy')
     })
   })
 

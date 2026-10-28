@@ -78,6 +78,16 @@
 
 ### Changed
 
+- **Breaking (filesystem store layout 9):** the Space Metadata file is
+  `.space.meta.<spaceId>.json` and the Collection Metadata file (live in its
+  Collection dir, or a tombstone in the Space dir) is
+  `.collection.meta.<collectionId>.json`, on disk and in the export archive,
+  following `@interop/space-archive` 0.10.0. The `meta` segment keeps each name
+  apart from the Space's or Collection's own policy file for every id, so the
+  package no longer reserves the Space id `policy`. There is no conversion step:
+  a store holding a Metadata file under an old name is refused at boot with
+  `StoreVersionError`, every boot, until it is wiped or each Space is restored
+  from an export archive into an empty store.
 - Import Space places every archive entry through the archive package's path
   classifier. An entry the layout holds nowhere (a path deeper than the layout
   goes, a directory inside a chunk directory or inside the revocations

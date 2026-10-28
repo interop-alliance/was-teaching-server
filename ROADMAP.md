@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 233
+nextAvailableId: 235
 
 <!-- roadmap-order:index:start -->
 
@@ -113,6 +113,7 @@ Ready:
 Ready:
 
 - WAS-46 [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
+- WAS-234 [M] `startTestServer` returns the service description URL
 - WAS-47 [M] (*) Cover `start.ts` and the untested config parsers
 - WAS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 - WAS-10 [M] (*) Open the upstream `edv-client` truncation issue
@@ -605,10 +606,10 @@ implement once decided, and research that may end in either.
         path- and glob-safe segment encoding; the encoding choice (and any
         change to export tar entry names, which are a wire artifact) gets
         maintainer sign-off before coding
-  - [ ] Derived on-disk names (`.meta.<id>.json` sidecars, `.space.` /
-        `.collection.` description files, chunk directories) and every glob the
-        backend builds use the encoded form; a hostile id can no longer reach a
-        glob metacharacter or path separator
+  - [ ] Derived on-disk names (`.meta.<id>.json` sidecars, `.space.meta.` /
+        `.collection.meta.` Metadata files, chunk directories) and every glob
+        the backend builds use the encoded form; a hostile id can no longer
+        reach a glob metacharacter or path separator
   - [ ] Export/import round-trips such ids; `importTar.ts` validates the decoded
         id, and the reserved-path-segment registry is compared against the
         decoded id
@@ -1975,6 +1976,31 @@ and silently collapses to one `it.skip` in a normal run. Worse, the contract
 tests that only run when a backend advertises `hardQuota`/`exactUsage` then run
 against _no_ backend at all, since the filesystem harness sets both flags false
 -- the race-condition tests the flags exist for are dormant by default.
+
+### WAS-234: [M] `startTestServer` returns the service description URL
+
+- status: todo
+- priority: medium
+- labels: tests, testing-counterpart
+- discovered-from: WCL-140 (was-client, 2026-10-28)
+- touches:
+  - was-client: its `test/integration/globalSetup.ts` discovers the service
+    URL through the `service` link on a response from `serverUrl`; it
+    switches to the returned value once this ships
+  - was-react and dcw: their counterpart tests build clients from the value
+- acceptance:
+  - [ ] `startTestServer` returns `serviceUrl` (the absolute service
+        description URL) beside `serverUrl`, and `src/testing.ts` documents
+        that ZCap clients are built from the service URL
+  - [ ] The in-repo tests that build an `@interop/was-client` from
+        `serverUrl` use `serviceUrl` and `spaceAt(space.url)`; the pair rule
+        of LEARNINGS.md applies to the was-client bump
+
+A `WasClient` is now built from the service URL (`{ serviceUrl }`) or the
+Spaces Repository URL, and opens Spaces by the URL the server named in
+`Location`; `was.space(id)` and the base-URL derivation are gone (was-client
+0.100.0, decision 0002 there). The testing counterpart hands back the listen
+URL, which is neither, so every consumer re-derives the service URL on its own.
 
 ### WAS-47: [M] (*) Cover `start.ts` and the untested config parsers
 

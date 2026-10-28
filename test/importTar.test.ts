@@ -113,11 +113,11 @@ describe('buildImportPlan', () => {
       ['manifest.yml', fileEntry(validManifestYaml())],
       ['space/', { type: 'directory' }],
       ['space/S1/', { type: 'directory' }],
-      ['space/S1/.space.S1.json', fileEntry(JSON.stringify({ id: 'S1' }))],
+      ['space/S1/.space.meta.S1.json', fileEntry(JSON.stringify({ id: 'S1' }))],
       ['space/S1/.space.policy.json', fileEntry(JSON.stringify(spacePolicy))],
       ['space/S1/colA/', { type: 'directory' }],
       [
-        'space/S1/colA/.collection.colA.json',
+        'space/S1/colA/.collection.meta.colA.json',
         fileEntry(
           JSON.stringify({ id: 'colA', type: ['Collection'], name: 'A' })
         )
@@ -145,7 +145,7 @@ describe('buildImportPlan', () => {
         fileEntry(JSON.stringify({ hello: 'world' }))
       ],
       [
-        'space/S1/colB/.collection.colB.json',
+        'space/S1/colB/.collection.meta.colB.json',
         fileEntry(
           JSON.stringify({ id: 'colB', type: ['Collection'], name: 'B' })
         )
@@ -156,7 +156,7 @@ describe('buildImportPlan', () => {
   it("carries the archived Space Metadata object's type and name", () => {
     const entries = validSpaceEntries()
     entries.set(
-      'space/S1/.space.S1.json',
+      'space/S1/.space.meta.S1.json',
       fileEntry(
         JSON.stringify({
           id: 'S1',
@@ -185,7 +185,7 @@ describe('buildImportPlan', () => {
   it('drops a malformed type or name, and reads a non-object entry as absent', () => {
     const planFor = (body: string) => {
       const entries = validSpaceEntries()
-      entries.set('space/S1/.space.S1.json', fileEntry(body))
+      entries.set('space/S1/.space.meta.S1.json', fileEntry(body))
       return buildImportPlan(entries)
     }
     // A `type` that Update Space would refuse is dropped, not carried.
@@ -285,7 +285,7 @@ describe('buildImportPlan', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
       [
-        'space/S1/colA/.collection.colA.json',
+        'space/S1/colA/.collection.meta.colA.json',
         fileEntry(JSON.stringify({ type: ['Collection'], name: 'A' }))
       ]
     ])
@@ -301,7 +301,7 @@ describe('buildImportPlan', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
       [
-        'space/S1/colA/.collection.colA.json',
+        'space/S1/colA/.collection.meta.colA.json',
         fileEntry(
           JSON.stringify({ id: 'colB', type: ['Collection'], name: 'A' })
         )
@@ -319,7 +319,7 @@ describe('buildImportPlan', () => {
     for (const body of ['not json', '[1]', '"colA"']) {
       const entries = new Map<string, TarEntry>([
         ['manifest.yml', fileEntry(validManifestYaml())],
-        ['space/S1/colA/.collection.colA.json', fileEntry(body)]
+        ['space/S1/colA/.collection.meta.colA.json', fileEntry(body)]
       ])
       assert.throws(
         () => buildImportPlan(entries),
@@ -345,7 +345,7 @@ describe('buildImportPlan', () => {
   it('rejects a path-traversal collection id parsed from the archive', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
-      ['space/S1/../.collection.x.json', fileEntry('{}')]
+      ['space/S1/../.collection.meta.x.json', fileEntry('{}')]
     ])
     assert.throws(
       () => buildImportPlan(entries),
@@ -517,7 +517,7 @@ describe('buildImportPlan', () => {
     ]) {
       const entries = validSpaceEntries()
       entries.set(
-        'space/S1/colA/.collection.colA.json',
+        'space/S1/colA/.collection.meta.colA.json',
         fileEntry(
           JSON.stringify({ id: 'colA', type: ['Collection'], ...member })
         )
@@ -547,7 +547,7 @@ describe('buildImportPlan', () => {
     for (const members of malformed) {
       const entries = validSpaceEntries()
       entries.set(
-        'space/S1/colA/.collection.colA.json',
+        'space/S1/colA/.collection.meta.colA.json',
         fileEntry(
           JSON.stringify({ id: 'colA', type: ['Collection'], ...members })
         )
@@ -609,7 +609,7 @@ describe('buildImportPlan', () => {
   ): Map<string, TarEntry> {
     const entries = validSpaceEntries()
     entries.set(
-      'space/S1/colA/.collection.colA.json',
+      'space/S1/colA/.collection.meta.colA.json',
       fileEntry(
         JSON.stringify({ id: 'colA', type: ['Collection'], ...members })
       )
@@ -732,8 +732,8 @@ describe('buildImportPlan Collection tombstones', () => {
   it('plans a tombstone in the Space directory with its archived generation', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
-      ['space/s1/.space.s1.json', fileEntry('{}')],
-      ['space/s1/.collection.gone.json', fileEntry(tombstoneBody)],
+      ['space/s1/.space.meta.s1.json', fileEntry('{}')],
+      ['space/s1/.collection.meta.gone.json', fileEntry(tombstoneBody)],
       ['space/s1/.collection.policy.json', fileEntry('{"type":"X"}')]
     ])
     const plan = buildImportPlan(entries)
@@ -746,9 +746,9 @@ describe('buildImportPlan Collection tombstones', () => {
   it('refuses an archive holding one Collection both as a tombstone and a directory', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
-      ['space/s1/.collection.both.json', fileEntry(tombstoneBody)],
+      ['space/s1/.collection.meta.both.json', fileEntry(tombstoneBody)],
       [
-        'space/s1/both/.collection.both.json',
+        'space/s1/both/.collection.meta.both.json',
         fileEntry('{"id":"both","type":["Collection"]}')
       ]
     ])
@@ -764,7 +764,7 @@ describe('buildImportPlan Collection tombstones', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
       [
-        'space/s1/.collection.live.json',
+        'space/s1/.collection.meta.live.json',
         fileEntry('{"id":"live","type":["Collection"]}')
       ]
     ])
@@ -777,7 +777,7 @@ describe('buildImportPlan Collection tombstones', () => {
   it('refuses a tombstone body inside a Collection directory', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
-      ['space/s1/dir/.collection.dir.json', fileEntry(tombstoneBody)]
+      ['space/s1/dir/.collection.meta.dir.json', fileEntry(tombstoneBody)]
     ])
     assert.throws(
       () => buildImportPlan(entries),

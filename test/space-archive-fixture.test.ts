@@ -132,7 +132,7 @@ function stageFixtureTree(dataDir: string): void {
   fs.mkdirSync(collectionDir, { recursive: true })
 
   fs.writeFileSync(
-    path.join(spaceDir, `.space.${SPACE_ID}.json`),
+    path.join(spaceDir, `.space.meta.${SPACE_ID}.json`),
     // Stored without `backends`: the export derives that listing and writes
     // it after the stamp members.
     JSON.stringify({
@@ -144,7 +144,7 @@ function stageFixtureTree(dataDir: string): void {
     })
   )
   fs.writeFileSync(
-    path.join(collectionDir, `.collection.${COLLECTION_ID}.json`),
+    path.join(collectionDir, `.collection.meta.${COLLECTION_ID}.json`),
     JSON.stringify({
       id: COLLECTION_ID,
       createdAt: '1970-01-01T00:00:00.000Z',
@@ -297,7 +297,7 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
         spaceId: SPACE_ID,
         entries: [
           {
-            name: `.space.${SPACE_ID}.json`,
+            name: `.space.meta.${SPACE_ID}.json`,
             bytes: Buffer.from(
               JSON.stringify({
                 id: SPACE_ID,
@@ -310,7 +310,7 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
             name: COLLECTION_ID,
             files: [
               {
-                name: `.collection.${COLLECTION_ID}.json`,
+                name: `.collection.meta.${COLLECTION_ID}.json`,
                 bytes: Buffer.from(JSON.stringify({ id: COLLECTION_ID }))
               },
               {

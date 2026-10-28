@@ -6661,3 +6661,43 @@ refuses: a path deeper than the layout parses as `other` in the package but is
 appended to a Collection's file list here, and is refused later, per file, if at
 all. One classifier makes the plan refuse those where it refuses everything
 else. Nothing is wrong today, which keeps the item low.
+
+### WAS-233: [M] (fs) Rename the Metadata files to `.<level>.meta.<id>.json` (store layout 9)
+
+- status: done
+- done: 2026-10-27
+- priority: medium
+- backend: fs
+- labels: data-model, filesystem-backend, export-import
+- discovered-from: space-archive SAR-8 (2026-10-27)
+- touches:
+  - space-archive: the file-name dialect -- SAR-8 (0.10.0 TBD, codec shipped
+    locally), consumed here through a temporary `link:` until published
+  - was-teaching-server: the filesystem store's on-disk names (through the
+    package's builders), layout step 9, `importTar.ts`, `exportProvenance.ts`,
+    `spaceProjection.ts`, `collectionTombstone.ts` comments, the counterpart
+    fixture test, ARCHITECTURE.md and the `docs/` layout pages -- shipped here
+  - unaffected: postgres backend (its rows carry no file name; only its export
+    goes through the package's builders, which it does not call by name)
+- acceptance:
+  - [x] The filesystem backend writes and reads `.space.meta.<spaceId>.json` and
+        `.collection.meta.<collectionId>.json`, and the export archive carries
+        the same names
+  - [x] Layout step 9 refuses a store holding a Metadata file under an old name,
+        every boot, and stamps a store with none
+  - [x] `test/space-archive-fixture.test.ts` passes against the package's
+        regenerated fixtures
+  - [x] ARCHITECTURE.md, `docs/filesystem-layout.md`, `docs/export-import.md`
+        and `docs/validators-and-stamps.md` name the new files
+
+Context: the Space Metadata file was `.space.<spaceId>.json`, one `.space.`
+prefix away from the Space's own `.space.policy.json`, so a Space id of `policy`
+gave both one file name. The archive package had reserved the id on its writing
+side (its SAR-1) while this server still created such a Space, which then could
+not be exported. SAR-8 removed the collision instead, by adding a `meta` segment
+to the Space and Collection Metadata file names. This server names its on-disk
+Metadata files through the package's builders, so the rename reaches the
+filesystem store's layout as well as the archive; layout step 9 refuses a store
+written under the old names, in the pattern of the earlier no-conversion steps,
+instead of renaming files in place. No Space id is reserved for the archive any
+more; `validateId.ts` still reserves `server`.

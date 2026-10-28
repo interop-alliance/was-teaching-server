@@ -66,8 +66,8 @@ importers:
         specifier: ^10.1.6
         version: 10.1.6
       '@interop/space-archive':
-        specifier: ^0.9.0
-        version: 0.9.0
+        specifier: link:../space-archive
+        version: link:../space-archive
       '@interop/storage-core':
         specifier: ^0.41.0
         version: 0.41.0
@@ -722,20 +722,12 @@ packages:
     resolution: {integrity: sha512-WxnkYKmg4y0eSMlXVUPlzHkZlWSRVlyjTBRQkrEtcmPY5A7gw/K/ANB9S8YPtOVWreV+RAATEvjF56CJGDU3Yg==}
     engines: {node: '>=24.0'}
 
-  '@interop/space-archive@0.9.0':
-    resolution: {integrity: sha512-yTV+TVXN+/uSwBUA6WsGEeObe/kKuB+MCPjQ3MzI5WdhzNRptU0Iq6VgU3sH6dtp9nmetggL0PAfBIuuav8NVg==}
-    engines: {node: '>=24.0'}
-
   '@interop/storage-core@0.20.0':
     resolution: {integrity: sha512-hMUl57Y5plOlvvgXOSvYIt7VdB3HP5JjUEJ12aJ/0xjWQGTF0RqbKk1BAjnOmRqlp/bi//vtBhe55YcpNx5TDw==}
     engines: {node: '>=22.0'}
 
   '@interop/storage-core@0.22.0':
     resolution: {integrity: sha512-XduxAdgKQX0Wi8AH7jNn3OyZxIJM6bMMJGRPm+RTKqFV6Fpo+s+1h10yw6Lc586GEVs92YxDw55gsSemFNlobA==}
-    engines: {node: '>=22.0'}
-
-  '@interop/storage-core@0.36.0':
-    resolution: {integrity: sha512-yoBABfWtLwcUK8caPXKlPPNjq6AX4/SUJ/JRwa0ps8ihuxVfqwz6sMKbsvMDmVrLLjSOApY0innoTIDrtRGjrg==}
     engines: {node: '>=22.0'}
 
   '@interop/storage-core@0.38.0':
@@ -1614,10 +1606,6 @@ packages:
 
   events-universal@1.0.1:
     resolution: {integrity: sha512-LUd5euvbMLpwOF8m6ivPCbhQeSiYVNb8Vs0fQ8QjXo0JTkEHpz8pxdQf0gStltaPpw0Cca8b39KxvK9cfKRiAw==}
-
-  events@3.3.0:
-    resolution: {integrity: sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==}
-    engines: {node: '>=0.8.x'}
 
   expect-type@1.4.0:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
@@ -3608,27 +3596,11 @@ snapshots:
 
   '@interop/social-core@0.8.1': {}
 
-  '@interop/space-archive@0.9.0':
-    dependencies:
-      '@interop/storage-core': 0.36.0
-      events: 3.3.0
-      mime-types: 3.0.2
-      tar-stream: 3.2.2
-      yaml: 2.9.1
-    transitivePeerDependencies:
-      - bare-abort-controller
-      - bare-buffer
-      - react-native-b4a
-
   '@interop/storage-core@0.20.0':
     dependencies:
       '@interop/data-integrity-core': 8.9.0
 
   '@interop/storage-core@0.22.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.9.0
-
-  '@interop/storage-core@0.36.0':
     dependencies:
       '@interop/data-integrity-core': 8.9.0
 
@@ -4604,8 +4576,6 @@ snapshots:
       bare-events: 2.9.2
     transitivePeerDependencies:
       - bare-abort-controller
-
-  events@3.3.0: {}
 
   expect-type@1.4.0: {}
 

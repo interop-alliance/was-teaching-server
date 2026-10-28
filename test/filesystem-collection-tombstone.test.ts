@@ -91,7 +91,7 @@ describe('FileSystemBackend Collection tombstones', () => {
         'deleted'
       )
       for (const name of await readdir(saved)) {
-        if (name !== `.collection.${collectionId}.json`) {
+        if (name !== `.collection.meta.${collectionId}.json`) {
           await cp(path.join(saved, name), path.join(collectionDir, name), {
             recursive: true
           })
@@ -107,11 +107,11 @@ describe('FileSystemBackend Collection tombstones', () => {
     const live = await backend.getCollectionMetadata({ spaceId, collectionId })
     await backend.deleteCollection({ spaceId, collectionId })
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`
+      `.collection.meta.${collectionId}.json`
     ])
     const stored = JSON.parse(
       await readFile(
-        path.join(collectionDir, `.collection.${collectionId}.json`),
+        path.join(collectionDir, `.collection.meta.${collectionId}.json`),
         'utf8'
       )
     )
@@ -189,7 +189,7 @@ describe('FileSystemBackend Collection tombstones', () => {
     await backend.close()
     backend = await FileSystemBackend.open({ dataDir })
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`
+      `.collection.meta.${collectionId}.json`
     ])
   })
 
@@ -200,7 +200,7 @@ describe('FileSystemBackend Collection tombstones', () => {
       undefined
     )
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`
+      `.collection.meta.${collectionId}.json`
     ])
   })
 
@@ -211,7 +211,7 @@ describe('FileSystemBackend Collection tombstones', () => {
       'already-deleted'
     )
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`
+      `.collection.meta.${collectionId}.json`
     ])
   })
 
@@ -226,7 +226,7 @@ describe('FileSystemBackend Collection tombstones', () => {
     // The torn life's members are gone. The new life's create took the
     // first position of a fresh feed counter.
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`,
+      `.collection.meta.${collectionId}.json`,
       `.feed.${collectionId}.json`
     ])
     assertFreshFeedCounter()
@@ -296,7 +296,7 @@ describe('FileSystemBackend Collection tombstones', () => {
     })
     assert.equal(stats.collectionsCreated, 1)
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`,
+      `.collection.meta.${collectionId}.json`,
       `.feed.${collectionId}.json`
     ])
     assertFreshFeedCounter()
@@ -447,7 +447,7 @@ describe('FileSystemBackend Collection tombstones', () => {
     // them before the read takes the Space gate.
     afterFirstListingOf(collectionDir, async () => {
       for (const name of await readdir(collectionDir)) {
-        if (name !== `.collection.${collectionId}.json`) {
+        if (name !== `.collection.meta.${collectionId}.json`) {
           await rm(path.join(collectionDir, name), { recursive: true })
         }
       }
@@ -470,7 +470,7 @@ describe('FileSystemBackend Collection tombstones', () => {
       maxCollectionsPerSpace: 3
     })
     await writeFile(
-      path.join(collectionDir, `.collection.${collectionId}.json`),
+      path.join(collectionDir, `.collection.meta.${collectionId}.json`),
       '{ not json'
     )
 

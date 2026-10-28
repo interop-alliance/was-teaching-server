@@ -445,7 +445,7 @@ export interface ImportPlanCollection {
   collectionId: string
   /**
    * The Collection Metadata object parsed from the archive's
-   * `.collection.<id>.json` file (the merged object: configuration members
+   * `.collection.meta.<id>.json` file (the merged object: configuration members
    * beside `createdAt`, the stamp members, `custom`, `epoch`, and
    * `createdBy`), carrying the archived `_generation` member when the file
    * had one. The importing backend re-stamps it (`restampImportedMetadata`)
@@ -481,7 +481,7 @@ export interface ImportPlanCollection {
 
 /**
  * One Collection tombstone staged for import: the archive's
- * `.collection.<id>.json` file directly in the Space directory. Only the
+ * `.collection.meta.<id>.json` file directly in the Space directory. Only the
  * archived generation travels. The importing backend writes the tombstone
  * only when it holds no record under the id, re-stamped by its own clock.
  */
@@ -517,7 +517,7 @@ export interface ImportPlan {
   sourceSpaceId: string
   /**
    * The archived Space Metadata object's user-writable members, when the
-   * archive carries a `.space.<sourceSpaceId>.json` entry that parses as a
+   * archive carries a `.space.meta.<sourceSpaceId>.json` entry that parses as a
    * JSON object; undefined when it does not (an import then reports
    * `spaceMetadata: 'absent'`).
    */
@@ -613,10 +613,10 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
 }
 
 /**
- * Parses an archived Collection Metadata file (`.collection.<id>.json` inside
- * the Collection's directory). The entry is caller-supplied, so it gets the
- * checks the Collection write handlers apply to a body. An absent `id` is set
- * from the path the file is stored under, and one naming another Collection
+ * Parses an archived Collection Metadata file (`.collection.meta.<id>.json`
+ * inside the Collection's directory). The entry is caller-supplied, so it gets
+ * the checks the Collection write handlers apply to a body. An absent `id` is
+ * set from the path the file is stored under, and one naming another Collection
  * fails the import (`InvalidImportError`, 400). Nothing downstream re-derives
  * the id, so this is the one place the archive's `id` is checked. `name`, the
  * `encryption` descriptor, the `plaintext` declaration, the `generator`
@@ -682,15 +682,15 @@ function importedCollectionMetadata({
  * - space/<sourceSpaceId>/.revocations/<digest>.json (Space-scoped zcap
  *   revocations; optional, and read by `archivedRevocations` rather than by
  *   this walk, which never takes the directory for a Collection)
- * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (the Space Metadata
+ * - space/<sourceSpaceId>/.space.meta.<sourceSpaceId>.json (the Space Metadata
  *   object; only its user-writable `type` and `name` are carried on the plan,
  *   and they are restored only under a root invocation)
  * - space/<sourceSpaceId>/.space.policy.json (space-level policy)
- * - space/<sourceSpaceId>/.collection.<collectionId>.json (a Collection
+ * - space/<sourceSpaceId>/.collection.meta.<collectionId>.json (a Collection
  *   tombstone: `deleted: true` and its archived validator, with no
  *   `<collectionId>/` directory beside it)
  * - space/<sourceSpaceId>/<collectionId>/
- * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
+ * - space/<sourceSpaceId>/<collectionId>/.collection.meta.<collectionId>.json
  *   (the Collection Metadata object, with its archived validator)
  * - space/<sourceSpaceId>/<collectionId>/.collection.policy.json (collection policy)
  * - space/<sourceSpaceId>/<collectionId>/.r.<resourceId>.policy.json (resource policy)
@@ -722,8 +722,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
   const prefix = `space/${sourceSpaceId}/`
 
-  // The archived Space Metadata object (`.space.<sourceSpaceId>.json` at the
-  // space root). Only its user-writable members travel; whether they are
+  // The archived Space Metadata object (`.space.meta.<sourceSpaceId>.json` at
+  // the space root). Only its user-writable members travel; whether they are
   // applied is the importing backend's decision, on the invocation's authority.
   const spaceMetadata = importedSpaceMetadata({
     entry: entries.get(`${prefix}${spaceMetadataFileName(sourceSpaceId)}`)
@@ -975,7 +975,7 @@ function placeEntries(
 }
 
 /**
- * Reads the archive's Collection tombstones: each `.collection.<id>.json`
+ * Reads the archive's Collection tombstones: each `.collection.meta.<id>.json`
  * file directly in the Space directory. A tombstone whose id the archive
  * also carries as a Collection directory, or whose body is not a tombstone,
  * refuses the import (`InvalidImportError`, 400) before anything is written.
@@ -1048,7 +1048,8 @@ function collectionTombstones({
  * still imports, as it did before the entry was read at all.
  *
  * @param options {object}
- * @param [options.entry] {TarEntry}   the `.space.<sourceSpaceId>.json` entry
+ * @param [options.entry] {TarEntry}   the `.space.meta.<sourceSpaceId>.json`
+ *   entry
  * @returns {ImportedSpaceMetadata | undefined}   undefined when the archive
  *   carries no such entry, or one that is not a JSON object
  */

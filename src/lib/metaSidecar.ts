@@ -133,8 +133,8 @@ export interface MetaSidecar {
 /**
  * Prefix of the filesystem backend's Resource tombstone file
  * (`.tombstone.<resourceId>.json`). Disjoint from every archive dot-file
- * prefix (`.meta.`, `.r.`, `.collection.`, `.collectionlog.`, `.space.`), so
- * no other file in a Collection directory parses as one.
+ * prefix (`.meta.`, `.r.`, `.collection.meta.`, `.collectionlog.`,
+ * `.space.meta.`), so no other file in a Collection directory parses as one.
  */
 const TOMBSTONE_FILE_PREFIX = '.tombstone.'
 

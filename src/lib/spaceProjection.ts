@@ -3,7 +3,7 @@
  * Space Metadata object this server hands out. `projectSpaceMetadata` is the
  * served object (spec "Space Metadata Data Model"): Read Space and the two
  * create responses that echo the object go through it. `archivedSpaceMetadata`
- * is the export archive's `.space.<spaceId>.json` entry, which keeps the
+ * is the export archive's `.space.meta.<spaceId>.json` entry, which keeps the
  * filesystem backend's on-disk layout (the generation embedded and the stamp
  * members bare, no local validator segment, no `url` or `linkset`) and adds
  * only `backends`. Both derive `backends` here, so the
@@ -138,7 +138,7 @@ export async function projectSpaceMetadata({
 
 /**
  * Serializes a stored Space record as the export archive's
- * `.space.<spaceId>.json` entry: the stored body, stamp members included,
+ * `.space.meta.<spaceId>.json` entry: the stored body, stamp members included,
  * with its generation embedded under the reserved `_generation` member (the
  * filesystem backend's on-disk layout, so archives stay interchangeable
  * between backends) and the server-derived `backends` listing added: the

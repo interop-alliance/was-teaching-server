@@ -30,9 +30,9 @@ export function collectionTombstoneBody(
 }
 
 /**
- * The serialized Metadata file of a Collection tombstone, `.collection.<id>.json`
- * on disk and in an export archive: the tombstone body with the Collection's
- * generation embedded. It carries no local segment.
+ * The serialized Metadata file of a Collection tombstone,
+ * `.collection.meta.<id>.json` on disk and in an export archive: the tombstone
+ * body with the Collection's generation embedded. It carries no local segment.
  * @param options {object}
  * @param options.stamp {WriteStamp}   the delete's write stamp
  * @param options.generation {string}   the Collection's generation

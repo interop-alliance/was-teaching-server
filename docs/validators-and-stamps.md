@@ -154,10 +154,10 @@ to 0.
 
 The generation and local segment are embedded in the stored record as reserved
 `_generation` / `_local` members. The filesystem backend keeps one file per
-container (`.space.<id>.json`, `.collection.<id>.json`) holding the wire body
-and the two together. Postgres keeps them as `meta_generation` / `meta_local`
-columns on the `spaces` and `collections` rows, kept out of the wire body. The
-stamp members are wire members and are stored in the body.
+container (`.space.meta.<id>.json`, `.collection.meta.<id>.json`) holding the
+wire body and the two together. Postgres keeps them as `meta_generation` /
+`meta_local` columns on the `spaces` and `collections` rows, kept out of the
+wire body. The stamp members are wire members and are stored in the body.
 
 An export archive's Metadata entry carries `_generation` alone, since the local
 segment does not leave this server (see [export-import.md](export-import.md)).

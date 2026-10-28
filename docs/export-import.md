@@ -82,8 +82,8 @@ written.
 
 ## The Space Metadata entry
 
-The archive's `.space.<id>.json` entry is the stored Space Metadata object in
-the filesystem backend's on-disk layout, with the server-derived `backends`
+The archive's `.space.meta.<id>.json` entry is the stored Space Metadata object
+in the filesystem backend's on-disk layout, with the server-derived `backends`
 listing stamped on. `archivedSpaceMetadata` in `lib/spaceProjection.ts` builds
 it, in the same module the served object is projected in.
 
@@ -108,10 +108,11 @@ when the archive carried no such entry.
 
 ## Collection tombstones in an archive
 
-Export writes a tombstone as `.collection.<id>.json` directly in the archive's
-Space directory, with no Collection directory, and the codec flags it on the
-manifest. Members a delete cut short left on disk do not travel. How a tombstone
-is stored is described in [filesystem-layout.md](filesystem-layout.md).
+Export writes a tombstone as `.collection.meta.<id>.json` directly in the
+archive's Space directory, with no Collection directory, and the codec flags it
+on the manifest. Members a delete cut short left on disk do not travel. How a
+tombstone is stored is described in
+[filesystem-layout.md](filesystem-layout.md).
 
 Import plans a tombstone apart from the live Collections. It refuses an archive
 holding one id both ways as `invalid-import` (400). It writes the tombstone only

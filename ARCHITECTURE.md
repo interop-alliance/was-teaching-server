@@ -325,7 +325,7 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
   user-writable members in full, so an omitted `name` is removed.
   `src/lib/spaceProjection.ts` holds the two projections from the stored record:
   the served object, which Read Space and the two create responses go through,
-  and the export archive's `.space.<id>.json` entry, which keeps the on-disk
+  and the export archive's `.space.meta.<id>.json` entry, which keeps the on-disk
   layout and stamps only `backends`; both derive `backends` there, so no path
   drifts on it. A create response projects the object `writeSpace` returns, as
   the write stored it. It hands the projection the listing instead of having it

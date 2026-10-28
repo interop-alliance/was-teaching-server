@@ -311,11 +311,59 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, eight, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 8)
+  it('stamps an empty store at the current version, nine, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 9)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 8)
+    assert.equal(await storedVersion(dataDir), 9)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
+  })
+
+  /**
+   * Stamps the store at layout 8 and stages one Space with a live Collection
+   * and a Collection tombstone, each Metadata file named with the given
+   * segment between the kind prefix and the id (`meta.` is the layout-9 name,
+   * an empty segment the earlier one). The policy files share the old
+   * prefixes and are not Metadata files, so both layouts hold them.
+   */
+  async function stageLayout8Metadata(segment: '' | 'meta.'): Promise<void> {
+    await stamp(dataDir, 8)
+    const spaceDir = path.join(dataDir, 'spaces', 'some-space')
+    const collectionDir = path.join(spaceDir, 'notes')
+    await mkdir(collectionDir, { recursive: true })
+    await writeFile(
+      path.join(spaceDir, `.space.${segment}some-space.json`),
+      JSON.stringify({ id: 'some-space' })
+    )
+    await writeFile(
+      path.join(spaceDir, `.collection.${segment}gone.json`),
+      '{}'
+    )
+    await writeFile(
+      path.join(collectionDir, `.collection.${segment}notes.json`),
+      '{}'
+    )
+    await writeFile(path.join(spaceDir, '.space.policy.json'), '{}')
+    await writeFile(path.join(collectionDir, '.collection.policy.json'), '{}')
+  }
+
+  it('refuses a layout-8 store that holds a Metadata file under its old name, on every boot', async () => {
+    await stageLayout8Metadata('')
+    for (let boot = 0; boot < 2; boot++) {
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        (err: Error) =>
+          err instanceof StoreVersionError &&
+          err.message.includes('1 Space Metadata file(s)') &&
+          err.message.includes('2 Collection Metadata file(s)')
+      )
+      assert.equal(await storedVersion(dataDir), 8)
+    }
+  })
+
+  it('stamps a layout-8 store holding Metadata files under the new names at layout 9', async () => {
+    await stageLayout8Metadata('meta.')
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 9)
   })
 
   /**
@@ -331,7 +379,7 @@ describe('Filesystem store version', () => {
     const spaceDir = path.join(dataDir, 'spaces', 'some-space')
     await mkdir(spaceDir, { recursive: true })
     await writeFile(
-      path.join(spaceDir, '.space.some-space.json'),
+      path.join(spaceDir, '.space.meta.some-space.json'),
       JSON.stringify({ id: 'some-space', type: ['Space'] })
     )
     const oldRoot = path.join(dataDir, 'space-revocations')
@@ -347,7 +395,7 @@ describe('Filesystem store version', () => {
   it("moves a layout-7 store's revocation trees into the Space dirs and drops the root", async () => {
     const { spaceDir, oldRoot } = await stageLayout7Revocations()
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 8)
+    assert.equal(await storedVersion(dataDir), 9)
     assert.deepEqual(await readdir(path.join(spaceDir, '.revocations')), [
       'one.json'
     ])
@@ -362,7 +410,7 @@ describe('Filesystem store version', () => {
     await applyStoreMigrations({ dataDir, logger })
     await stamp(dataDir, 7)
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 8)
+    assert.equal(await storedVersion(dataDir), 9)
     assert.deepEqual(await readdir(path.join(spaceDir, '.revocations')), [
       'one.json'
     ])
@@ -396,11 +444,11 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), 7)
   })
 
-  it('stamps a layout-7 store with no revocation root at layout 8', async () => {
+  it('stamps a layout-7 store with no revocation root at the current layout', async () => {
     await stamp(dataDir, 7)
     await mkdir(path.join(dataDir, 'spaces', 'some-space'), { recursive: true })
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 8)
+    assert.equal(await storedVersion(dataDir), 9)
   })
 
   it('refuses a layout-6 store that holds an unstamped registration file, on every boot', async () => {

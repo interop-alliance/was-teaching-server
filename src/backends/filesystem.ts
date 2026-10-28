@@ -963,8 +963,9 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Refuses a write into a container that has no Metadata object: the Space's
-   * `.space.<id>.json`, and the Collection's `.collection.<id>.json` when a
-   * `collectionId` is given. A tombstoned Collection has no Metadata object.
+   * `.space.meta.<id>.json`, and the Collection's
+   * `.collection.meta.<id>.json` when a `collectionId` is given. A tombstoned
+   * Collection has no Metadata object.
    * Called under the Space gate (see `#underSpaceWrite`), so the answer holds
    * until the write finishes. Resolves the live Collection Metadata object
    * when a `collectionId` is given.
@@ -1355,7 +1356,7 @@ export class FileSystemBackend implements StorageBackend {
    * and a per-Collection breakdown in one pass. `du -d 1 -B 1` (GNU coreutils)
    * reports each immediate subdirectory (one per Collection) plus the Space dir
    * itself (the total, which also covers top-level Space files such as the
-   * `.space.` / policy documents and the Space's revocation records under
+   * `.space.meta.` / policy documents and the Space's revocation records under
    * `ARCHIVE_REVOCATIONS_DIR`, which is no Collection), all in bytes. An
    * absent Space dir (ENOENT before the dir is provisioned) reports zero usage
    * rather than throwing.
@@ -1799,9 +1800,9 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * The Resource representations in a directory listing, parsed: keeps only the
    * files named `r.<id>.<type>.<ext>` -- which drops the `.meta.` /
-   * `.collection.` / policy dot-files and every subdirectory -- and resolves
-   * each one's `resourceId` / `contentType` alongside the `fileName` it was read
-   * from.
+   * `.collection.meta.` / policy dot-files and every subdirectory -- and
+   * resolves each one's `resourceId` / `contentType` alongside the `fileName`
+   * it was read from.
    * @param entries {fs.Dirent[]}
    * @returns {RepresentationEntry[]}
    */
@@ -2483,7 +2484,7 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Builds the on-disk path for a Space's Metadata file
-   * (`.space.<spaceId>.json`) in its own Space dir.
+   * (`.space.meta.<spaceId>.json`) in its own Space dir.
    * @param spaceId {string}
    * @returns {string}
    */
@@ -3963,7 +3964,7 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Builds the on-disk path for a Collection's Metadata file
-   * (`.collection.<collectionId>.json`) in its own Collection dir.
+   * (`.collection.meta.<collectionId>.json`) in its own Collection dir.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -4564,7 +4565,7 @@ export class FileSystemBackend implements StorageBackend {
     // Enumerate the Collection dir directly rather than globbing: glob v13 does
     // not sort, so its order is nondeterministic -- pagination needs a stable
     // keyset. The candidates are the representation files, which drops the
-    // `.meta.` / `.collection.` / policy dot-files.
+    // `.meta.` / `.collection.meta.` / policy dot-files.
     // An absent directory lists nothing (a Collection whose metadata file exists
     // but which holds no Resource yet). Any other failure -- `EACCES`, `EIO`,
     // `EMFILE` -- is a real fault and must surface: swallowing it would serve a
@@ -7846,12 +7847,12 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Builds the on-disk path for a policy document. Stored as a dot-file
-   * alongside the matching `.space.` / `.collection.` metadata file: the Space's
-   * own policy is `.space.policy.json` in the Space dir, the Collection's own
-   * policy is `.collection.policy.json` in the Collection dir, and a Resource's
-   * policy is `.r.<resourceId>.policy.json` in that same Collection dir. The
-   * per-level names are what keep a Resource named like its Collection from
-   * sharing the Collection's policy file.
+   * alongside the matching `.space.meta.` / `.collection.meta.` metadata file:
+   * the Space's own policy is `.space.policy.json` in the Space dir, the
+   * Collection's own policy is `.collection.policy.json` in the Collection dir,
+   * and a Resource's policy is `.r.<resourceId>.policy.json` in that same
+   * Collection dir. The per-level names are what keep a Resource named like
+   * its Collection from sharing the Collection's policy file.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
@@ -8341,8 +8342,8 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Builds the on-disk path for a registered backend record: a
    * `.backend.<backendId>.json` dot-file in the Space dir (the same per-file
-   * convention as `.space.` and the policy dot-files). One file per backend
-   * id.
+   * convention as `.space.meta.` and the policy dot-files). One file per
+   * backend id.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.backendId {string}
