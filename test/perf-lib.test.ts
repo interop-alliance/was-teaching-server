@@ -33,6 +33,7 @@ import {
   positiveInteger,
   retriedFaultCounts,
   retryOnNetworkFault,
+  nonNegativeInteger,
   seedResourceCount,
   serialWriteLoad
 } from '../scripts/performance/perf-lib.js'
@@ -52,6 +53,16 @@ describe('positiveInteger', () => {
 
   it('rejects a non-integer value', () => {
     assert.throws(() => positiveInteger('1.5'), /positive integer/)
+  })
+})
+
+describe('nonNegativeInteger', () => {
+  it('accepts zero', () => {
+    assert.equal(nonNegativeInteger('0'), 0)
+  })
+
+  it('rejects a negative value', () => {
+    assert.throws(() => nonNegativeInteger('-1'), /non-negative integer/)
   })
 })
 

@@ -24,7 +24,8 @@
   client-side crypto stays out of the numbers, and binary writes delete their
   files untimed so repeated runs don't fill the database. The seed's new
   `--binary-total-mib` (default 100) adds that much extra binary data in a
-  `perf-ballast` Space, to grow the database past Postgres's own cache.
+  `perf-ballast` Space, to grow the database past Postgres's own cache; `0`
+  skips the ballast.
 - `pnpm perf:fs` runs the same payload matrix, so the two backends' tables
   compare directly. A fresh run seeds it over signed HTTP against the server
   under test, and `pnpm perf:fs:seed` seeds it through an in-process server and
@@ -146,6 +147,10 @@
 - `pnpm perf:fs` works again: it now passes `@interop/was-client` 0.97 the
   Spaces Repository URL (`<base>/spaces/`) it requires, where it failed at its
   first signed request before.
+- The Postgres backend quotes the `schema` option in the connection
+  `search_path`, so a mixed-case schema name resolves to the schema `open()`
+  creates instead of being folded to lowercase. `pnpm perf:pg` quotes it the
+  same way.
 - The filesystem backend keeps a Space's zcap revocation records in the
   `.revocations/` subdirectory of its Space dir (filesystem layout version 8,
   whose step moves an existing store's `space-revocations/` trees in), so Delete

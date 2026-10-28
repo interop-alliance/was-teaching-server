@@ -26,6 +26,7 @@
  * targets' EDV ids go into `seed-meta.json` too.
  *
  * Usage: pnpm perf:pg:seed [--sizes 1,500,2000] [--binary-total-mib 100]
+ * (`--binary-total-mib 0` skips the ballast Space)
  *   [--schema perf] [--database-url postgres://was:was@localhost:5433/was]
  */
 import { mkdir } from 'node:fs/promises'
@@ -39,8 +40,8 @@ import {
 } from '../../src/backends/postgres.js'
 import {
   formatSeedPlan,
+  nonNegativeInteger,
   parseSizes,
-  positiveInteger,
   seedSizeSpaces
 } from './perf-lib.js'
 import { seedMatrixInProcess } from './perf-matrix-seed.js'
@@ -61,7 +62,7 @@ const { values: args } = parseArgs({
   }
 })
 const { sizes, edgeSizes } = parseSizes(args.sizes)
-const binaryTotalMib = positiveInteger(args['binary-total-mib'])
+const binaryTotalMib = nonNegativeInteger(args['binary-total-mib'])
 const databaseUrl =
   args['database-url'] ?? process.env.DATABASE_URL ?? defaultDatabaseUrl
 const schema = args.schema

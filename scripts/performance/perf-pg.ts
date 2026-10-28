@@ -90,7 +90,7 @@ const settings = parseLoadSettings(args)
 
 /**
  * Adds the seeded schema's `search_path` to a Postgres connection string via
- * the `options` query parameter (`options: -c search_path=<schema>`), the
+ * the `options` query parameter (`options: -c search_path="<schema>"`), the
  * same startup parameter `PostgresBackend`'s own `schema` option sets
  * internally -- so the spawned server lands in the seeded schema without any
  * config surface of its own needing to know about schemas.
@@ -107,7 +107,7 @@ function withSchema({
   schema: string
 }): string {
   const url = new URL(databaseUrl)
-  url.searchParams.set('options', `-c search_path=${schema}`)
+  url.searchParams.set('options', `-c search_path="${schema}"`)
   return url.toString()
 }
 
