@@ -24,6 +24,19 @@ export function positiveInteger(value: string): number {
 }
 
 /**
+ * Parses a command-line value as a non-negative integer (0 allowed).
+ * @param value {string}
+ * @returns {number}
+ */
+export function nonNegativeInteger(value: string): number {
+  const number = Number(value.trim())
+  if (!Number.isInteger(number) || number < 0) {
+    throw new Error(`Expected a non-negative integer, got "${value}".`)
+  }
+  return number
+}
+
+/**
  * Parses a `--sizes` value (comma-separated Collection sizes) into the
  * deduped, sorted list and the edge sizes (smallest and largest) that the
  * signed write/delete/serial-write tests run at.

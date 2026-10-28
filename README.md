@@ -511,7 +511,7 @@ a local Postgres container the repo's `docker-compose.yml` defines
 
 ```bash
 # Start Postgres once:
-docker compose up -d
+docker compose up -d --wait
 # Seed a fixed schema (`perf`) with Collections of 1, 500 and 2,000 Resources
 # (pass `--sizes` for others), the payload matrix below, and 100 MiB of binary
 # ballast (pass `--binary-total-mib` for more or less) -- this always resets the

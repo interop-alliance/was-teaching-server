@@ -986,7 +986,9 @@ export class PostgresBackend implements StorageBackend {
       connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
       // `search_path` is a connection-startup parameter, so every pooled
       // connection lands in the right schema with no per-checkout SET race.
-      ...(schema !== undefined && { options: `-csearch_path=${schema}` })
+      // Quoted, so a mixed-case name resolves to the schema `open()` creates
+      // (an unquoted identifier is folded to lowercase).
+      ...(schema !== undefined && { options: `-csearch_path="${schema}"` })
     }
     this.#pool = new pg.Pool({ ...poolOptions, max: POOL_MAX })
     this.#clockPool = new pg.Pool({ ...poolOptions, max: 1 })
