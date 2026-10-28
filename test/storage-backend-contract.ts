@@ -399,7 +399,8 @@ async function archivedRevocations({
   return [...entries]
     .filter(
       ([entryName, entry]) =>
-        entryName.startsWith('revocations/') && entry.type === 'file'
+        entryName.startsWith(`space/${spaceId}/.revocations/`) &&
+        entry.type === 'file'
     )
     .map(([, entry]) => JSON.parse(entry.body!.toString('utf8')))
 }

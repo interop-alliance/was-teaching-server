@@ -100,7 +100,10 @@ same way, for every method the canonical form implements. It refuses `POST` with
 the canonical form's `Allow`.
 
 `/space/:spaceId/collections/` answers a 308 to the Space URL, which lists and
-creates Collections. `collections` and `meta` are reserved Collection ids.
+creates Collections. `collections` and `meta` are reserved Collection ids, and
+so is `.revocations`, the system Collection the filesystem backend keeps a
+Space's revocation records in; it is not a route, so every path at or beneath it
+is not found.
 
 ## Request body integrity
 
@@ -122,8 +125,8 @@ raw request itself, is tapped rather than piped. The hook hashes it as busboy
 reads it and leaves the verdict on `request.multipartDigest`. The multipart
 write path awaits that verdict before it stores anything. The media type is
 matched case-insensitively and ignores parameters. Any other `multipart/*` type
-is an opaque representation: it is piped through the digest transform and
-stored as a blob like any other media type.
+is an opaque representation: it is piped through the digest transform and stored
+as a blob like any other media type.
 
 ## Media types on a write
 
@@ -131,28 +134,28 @@ stored as a blob like any other media type.
 stores. A JSON media type (`application/json`, or `application/<suffix>+json`
 with the suffix ending at the media type) arrives parsed and is stored as a
 document. `application/ld+jsonl` and `application/ld+json-seq` are not JSON
-documents, so they reach the catch-all parser and are stored as byte streams.
-A `multipart/form-data` body is the one file part it carries, stored under
-that part's content type, which the create response's `content-type` names.
-Its in-memory buffer is bounded by the buffered-body limit of the next
-section, the `fileSize` limit `plugin.ts` gives `@fastify/multipart`, and the
+documents, so they reach the catch-all parser and are stored as byte streams. A
+`multipart/form-data` body is the one file part it carries, stored under that
+part's content type, which the create response's `content-type` names. Its
+in-memory buffer is bounded by the buffered-body limit of the next section, the
+`fileSize` limit `plugin.ts` gives `@fastify/multipart`, and the
 `payload-too-large` (413) names that limit, and the server backend when the
 limit is its `maxUploadBytes`. The data-plane backend the Collection selected
 applies its own cap when it writes the buffered part. Into a Collection that
 declares an `encryption` scheme, the conformance check runs on the file part's
-content type and bytes, the representation that will be stored, once the part
-is read; a raw body is checked on its own content type before it is resolved.
+content type and bytes, the representation that will be stored, once the part is
+read; a raw body is checked on its own content type before it is resolved.
 
 A chunk write (`PUT .../chunks/:chunkIndex`) stores its bytes as received
 whatever media type they declare. A chunk is a range of a stream, not a
 document, so a slice of a JSON stream need not parse as JSON and must not be
 re-serialized. The route sits in its own encapsulated scope that removes the
-JSON and text parsers, so every non-multipart body reaches the handler as a
-raw stream through the catch-all. The chunk URL's slash-form redirect sits in
-the same scope, so no parser refuses a body ahead of the 308. An empty body is
+JSON and text parsers, so every non-multipart body reaches the handler as a raw
+stream through the catch-all. The chunk URL's slash-form redirect sits in the
+same scope, so no parser refuses a body ahead of the 308. An empty body is
 stored as a zero-byte chunk whatever its media type, as it is for
-`application/octet-stream`. A body that still arrives parsed, from a chunk
-write mounted outside that scope, is refused as `invalid-request-body` (400).
+`application/octet-stream`. A body that still arrives parsed, from a chunk write
+mounted outside that scope, is refused as `invalid-request-body` (400).
 
 ## The body limit
 

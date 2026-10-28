@@ -8,6 +8,7 @@
  * It also rejects Collection / Resource ids that collide with the spec's
  * Reserved Path Segment Registry (`reserved-id`, 409).
  */
+import { ARCHIVE_REVOCATIONS_DIR } from '@interop/space-archive'
 import {
   InvalidSpaceIdError,
   InvalidCollectionIdError,
@@ -94,7 +95,12 @@ export const RESERVED_COLLECTION_IDS = new Set([
   // The Space's replica registrations (`/space/{id}/replicas`).
   'replicas',
   // The Space's revocation endpoint sits under `/space/{id}/zcaps`.
-  'zcaps'
+  'zcaps',
+  // Not a route: the system Collection the filesystem backend keeps a Space's
+  // revocation records in, as the `.revocations/` subdirectory of the Space
+  // dir, under the name the export archive gives it. Reserved so no
+  // Collection dir can take the name.
+  ARCHIVE_REVOCATIONS_DIR
 ])
 /**
  * Space ids no client may create a Space under. Unlike the two registries

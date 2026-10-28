@@ -41,7 +41,10 @@ import type { DIDLog } from '@interop/did-method-webvh'
 import type { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import jsigs from '@interop/jsonld-signatures'
-import { classifyCollectionFile } from '@interop/space-archive'
+import {
+  ARCHIVE_REVOCATIONS_DIR,
+  classifyCollectionFile
+} from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { FastifyBaseLogger } from 'fastify'
 import type { StorageBackend } from '../types.js'
@@ -306,7 +309,8 @@ export async function attestArchiveEntries({
   for (const entry of entries) {
     // A Space-level file other than the Space Metadata object gets no
     // statement. That includes a Collection tombstone, which holds no
-    // content.
+    // content. Neither does a revocation record, which is not a stored
+    // object.
     if (!('files' in entry)) {
       if (classifyCollectionFile(entry.name).kind === 'spaceMetadata') {
         await attestMetadata({
@@ -314,6 +318,9 @@ export async function attestArchiveEntries({
           file: entry
         })
       }
+      continue
+    }
+    if (entry.name === ARCHIVE_REVOCATIONS_DIR) {
       continue
     }
     const collectionId = entry.name

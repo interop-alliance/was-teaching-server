@@ -66,7 +66,8 @@ import {
   resourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionLogFileName
+  collectionLogFileName,
+  ARCHIVE_REVOCATIONS_DIR
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
@@ -241,8 +242,7 @@ import type {
   ReplicaLoopState,
   StoredReplica,
   ChunkStagingRun,
-  StagedChunk,
-  SpaceExportEntries
+  StagedChunk
 } from '../types.js'
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
@@ -7294,14 +7294,8 @@ export class PostgresBackend implements StorageBackend {
     service?: ServiceDescription
     attestor?: ExportAttestor
   }): Promise<Readable> {
-    const { entries, revocations } = await this.exportSpaceEntries({ spaceId })
-    return packExportArchive({
-      spaceId,
-      entries,
-      revocations,
-      service,
-      attestor
-    })
+    const entries = await this.exportSpaceEntries({ spaceId })
+    return packExportArchive({ spaceId, entries, service, attestor })
   }
 
   /**
@@ -7312,7 +7306,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.serverBackends] {BackendDescriptor[]}   the
    *   server-managed entries of the archived Space Metadata object's
    *   backends listing; defaults to this backend's descriptor
-   * @returns {Promise<SpaceExportEntries>}
+   * @returns {Promise<ArchiveEntry[]>}
    */
   async exportSpaceEntries({
     spaceId,
@@ -7320,7 +7314,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     spaceId: string
     serverBackends?: BackendDescriptor[]
-  }): Promise<SpaceExportEntries> {
+  }): Promise<ArchiveEntry[]> {
     const [
       spaceMetadata,
       { rows: policyRows },
@@ -7591,20 +7585,10 @@ export class PostgresBackend implements StorageBackend {
       chunkFiles.sort((left, right) => left.name.localeCompare(right.name))
     }
 
-    // Top-level order: space-level files and collection dirs interleaved,
-    // sorted by name -- the same order the filesystem's readdir+sort yields.
-    const topLevel: ArchiveEntry[] = [
-      ...spaceFiles,
-      ...[...collectionsById].map(([collectionId, files]) => ({
-        name: collectionId,
-        files: files.sort((a, b) => a.name.localeCompare(b.name))
-      }))
-    ].sort((a, b) => a.name.localeCompare(b.name))
-
-    // Space-scoped zcap revocations travel with the export, packed under a
-    // top-level `revocations/` dir and named by the shared file-name codec so
-    // both backends produce the same archive entries. Pretty-printed to match
-    // the filesystem's stored records.
+    // Space-scoped zcap revocations travel with the export as the archive's
+    // `.revocations/` directory, named by the shared file-name codec so both
+    // backends produce the same archive entries. Pretty-printed to match the
+    // filesystem's stored records. No directory when the Space has none.
     const revocations: ArchiveFile[] = revocationRows
       .map(row => ({
         name: revocationFileName({
@@ -7614,7 +7598,21 @@ export class PostgresBackend implements StorageBackend {
         bytes: Buffer.from(JSON.stringify(row.record, null, 2))
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
-    return { entries: topLevel, revocations }
+
+    // Top-level order: space-level files, collection dirs and the
+    // revocations dir interleaved, sorted by name -- the same order the
+    // filesystem's readdir+sort yields.
+    const topLevel: ArchiveEntry[] = [
+      ...spaceFiles,
+      ...(revocations.length > 0
+        ? [{ name: ARCHIVE_REVOCATIONS_DIR, files: revocations }]
+        : []),
+      ...[...collectionsById].map(([collectionId, files]) => ({
+        name: collectionId,
+        files: files.sort((a, b) => a.name.localeCompare(b.name))
+      }))
+    ].sort((a, b) => a.name.localeCompare(b.name))
+    return topLevel
   }
 
   /**

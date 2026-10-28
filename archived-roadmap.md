@@ -6531,3 +6531,97 @@ between leaves the Space in place with every stored revocation gone, so a
 revoked grant verifies on the next invocation. The torn-state pass over the
 replication design found it while checking Delete Space against an in-flight
 pull; it is an existing defect independent of replication.
+
+### WAS-230: [L] (fs) Keep Space revocations inside the Space dir
+
+- status: done (2026-10-27)
+- priority: low
+- backend: fs
+- labels: filesystem-backend, zcap, cleanup
+- discovered-from: WAS-180 simplify review (2026-10-27)
+- touches:
+  - `src/backends/filesystem.ts` (`spaceRevocationsDir`, `#spaceRevocationDir`,
+    `listCollections` and the quota measurement that treat every subdirectory of
+    a Space dir as a Collection, `deleteSpace`, `writeSpace`,
+    `#removeOrphanRevocationDirs`)
+  - `src/backends/filesystemStore.ts` (a layout step that moves the existing
+    `space-revocations/<spaceId>/` trees into their Space dirs)
+  - `docs/filesystem-layout.md` ("Delete Space" and the layout listing)
+  - `src/lib/validateId.ts` and `@interop/storage-core` (`.revocations` joins
+    `RESERVED_COLLECTION_IDS`, storage-core 0.41.0, so no Collection can take
+    the subdirectory's name)
+- acceptance:
+  - [x] A Space's zcap revocations live in a dot-prefixed subdirectory of its
+        Space dir, which the Collection listing and the quota measurement skip
+        as they skip the Space's dotfiles, so the `rm` of the Space dir removes
+        the Space and its revocations in one step
+  - [x] The three recovery sites a torn Delete Space needed (the retried delete,
+        the create over the id in `writeSpace`, and the boot sweep) are gone,
+        with the "Delete Space" paragraph of the layout doc that describes them
+  - [x] The layout step moves an existing store's revocation trees in, and a
+        store at the new version has no `space-revocations/` root
+  - [x] The Delete Space tests assert the one-step removal, and the torn-delete
+        cases are dropped with the window they covered
+
+Context. Space revocations sit in a sibling root,
+`space-revocations/<spaceId>/`, because `listCollections` takes every
+subdirectory of a Space dir for a Collection. The sibling root is why Delete
+Space is two removals, and why a kill between them needs recovery at three sites
+(the retried delete, the create over the id, and the boot sweep). A dot-prefixed
+subdirectory inside the Space dir, in the convention the `.space.<id>.json`,
+`.meta.<id>.json` and `.tombstone.<id>.json` files already use, removes with the
+Space dir and needs none of them. The Postgres backend has no such window, since
+its revocations are rows keyed by Space id in the same store. The
+`insertRevocation` gate checkbox of WAS-135 (a revocation racing Delete Space)
+stays with that item. Decided at implementation (2026-10-27): the records count
+toward the Space's byte quota, as the other Space-level files do; only the
+Collection listing, the export walk and the boot sweeps skip the directory.
+
+### WAS-231: [L] (*) Pack a Space's revocations inside the archive's Space tree
+
+- status: done (2026-10-27)
+- priority: low
+- backend: *
+- labels: export-import, zcap, cleanup
+- discovered-from: WAS-230 (2026-10-27)
+- touches:
+  - `src/backends/filesystem.ts` and `src/backends/postgres.ts`
+    (`exportSpaceEntries` returns the revocation records as a separate
+    `revocations` list beside the entry tree)
+  - `src/lib/exportArchive.ts` (packs that list under a top-level `revocations/`
+    dir)
+  - `src/lib/importTar.ts` (`REVOCATIONS_PREFIX`, the archive layout comment)
+    and `src/lib/importPlan.ts` (`archivedRevocations`)
+  - `@interop/space-archive` (the fixture archives its writer packs from the
+    fixed entry tree, which `test/space-archive-fixture.test.ts` pins the
+    server's export bytes to); shipped as 0.9.0: the `revocations` area moves
+    under the Space dir and `packSpaceArchive` takes the directory in `entries`
+  - unaffected: the wallet readers (`wallet-backup`, `freewallet`) walk the
+    `collection` and `chunk` areas only, so no counterpart item
+  - `docs/export-import.md` ("Archived revocations") and the archive layout
+    listing
+- acceptance:
+  - [x] An export packs a Space's revocation records as
+        `space/<spaceId>/.revocations/<digest>.json`, one entry per record,
+        carried by the same Space-tree walk as every other Space-level entry;
+        the separate `revocations` return of `exportSpaceEntries` and the
+        top-level `revocations/` dir of the archive are gone from both backends
+  - [x] The import walk reads the records from that directory, which it cannot
+        take for a Collection since `.revocations` is a reserved Collection id,
+        and still hands them to `importRevocations` after the data import
+  - [x] The space-archive fixture is repacked from an entry tree that holds the
+        directory, and the fixture test pins the server's bytes to it
+  - [x] The archive layout comment in `importTar.ts` and the export-import doc
+        list the directory in place of the top-level one
+
+Context. WAS-230 moved the filesystem backend's revocation records into the
+`.revocations/` subdirectory of the Space dir, and reserved that name as a
+Collection id. The export still lifts them out of the tree and packs them under
+a top-level `revocations/` dir, which predates the reservation: a subdirectory
+of `space/<spaceId>/` read as a Collection on import, so the records could not
+live there. With the name reserved, the Space tree can carry them, which drops
+the second return value of `exportSpaceEntries` on both backends and the
+special-cased walk in `exportArchive.ts`. The archive layout is a published
+format read by the wallets' backup readers, so the entry path and the fixture
+change need sign-off before they are coded, and the readers need a counterpart
+item once the shape is settled.

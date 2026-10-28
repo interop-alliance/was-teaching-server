@@ -55,12 +55,23 @@
 
 ### Fixed
 
-- The filesystem backend's Delete Space removes the Space dir before the Space's
-  revocation records, which live beside the Space tree. A process killed between
-  the two no longer leaves a live Space whose revoked grants verify again. It
-  leaves a revocation dir with no Space instead, which a retried delete, a
-  create of a Space under the id and the next boot remove. The boot sweep treats
-  a Space dir with no Metadata file as gone.
+- The filesystem backend keeps a Space's zcap revocation records in the
+  `.revocations/` subdirectory of its Space dir (filesystem layout version 8,
+  whose step moves an existing store's `space-revocations/` trees in), so Delete
+  Space is one removal and a process killed during it can no longer leave a live
+  Space whose revoked grants verify again. Create Space removes a Space dir a
+  killed delete left without its Metadata file before making the new Space, so a
+  Space re-created under the id inherits neither the old life's revocations nor
+  its Collections. The records now count toward the Space's usage on the
+  filesystem backend, as the other Space-level files do; an insert is not
+  refused at capacity. `.revocations` is a reserved Collection id (409
+  `reserved-id`), listed in `RESERVED_COLLECTION_IDS`.
+- An export archive packs a Space's revocation records inside the Space tree, as
+  `space/<spaceId>/.revocations/<digest>.json`, in place of the top-level
+  `revocations/` directory, and the manifest lists the directory inside the
+  Space's contents (`@interop/space-archive` 0.9.0). Import Space reads the
+  records from there, and an archive written under the old layout imports with
+  no revocation installed.
 - The filesystem backend's replica listings log and skip a registration file
   that does not read, so one damaged file no longer fails Read Space or the
   start of every pull loop.

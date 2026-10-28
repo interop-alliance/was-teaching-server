@@ -365,9 +365,9 @@ describe('buildImportPlan', () => {
     )
   })
 
-  it('reads the capabilities of top-level revocation records (and none when absent)', () => {
-    // An archive without a `revocations/` dir (e.g. from an older server)
-    // yields an empty list.
+  it('reads the capabilities of the revocation records (and none when absent)', () => {
+    // An archive without a `.revocations/` dir (e.g. from a Space with no
+    // revocation) yields an empty list.
     assert.deepStrictEqual(archivedRevocations(validSpaceEntries()), [])
 
     // Only the capability is read. The record's `meta` is the exporting
@@ -382,9 +382,15 @@ describe('buildImportPlan', () => {
     }
     const metaless = { capability: { id: 'urn:zcap:delegated-2' } }
     const entries = validSpaceEntries()
-    entries.set('revocations/', { type: 'directory' })
-    entries.set('revocations/abc123.json', fileEntry(JSON.stringify(record)))
-    entries.set('revocations/def456.json', fileEntry(JSON.stringify(metaless)))
+    entries.set('space/S1/.revocations/', { type: 'directory' })
+    entries.set(
+      'space/S1/.revocations/abc123.json',
+      fileEntry(JSON.stringify(record))
+    )
+    entries.set(
+      'space/S1/.revocations/def456.json',
+      fileEntry(JSON.stringify(metaless))
+    )
     assert.deepStrictEqual(archivedRevocations(entries), [
       record.capability,
       metaless.capability
@@ -393,7 +399,7 @@ describe('buildImportPlan', () => {
 
   it('throws InvalidImportError on a malformed revocation record', () => {
     const badJson = validSpaceEntries()
-    badJson.set('revocations/broken.json', fileEntry('{not json'))
+    badJson.set('space/S1/.revocations/broken.json', fileEntry('{not json'))
     assert.throws(
       () => archivedRevocations(badJson),
       (err: Error) =>
@@ -403,7 +409,10 @@ describe('buildImportPlan', () => {
     // Parses, but names no capability id.
     for (const body of [{ capability: {}, meta: {} }, { meta: {} }, []]) {
       const badShape = validSpaceEntries()
-      badShape.set('revocations/keyless.json', fileEntry(JSON.stringify(body)))
+      badShape.set(
+        'space/S1/.revocations/keyless.json',
+        fileEntry(JSON.stringify(body))
+      )
       assert.throws(
         () => archivedRevocations(badShape),
         (err: Error) =>
@@ -417,7 +426,7 @@ describe('buildImportPlan', () => {
     const entries = validSpaceEntries()
     for (let index = 0; index <= IMPORT_MAX_REVOCATIONS; index++) {
       entries.set(
-        `revocations/${index}.json`,
+        `space/S1/.revocations/${index}.json`,
         fileEntry(JSON.stringify({ capability: { id: `urn:zcap:${index}` } }))
       )
     }
@@ -427,7 +436,7 @@ describe('buildImportPlan', () => {
         err instanceof InvalidImportError &&
         /more than \d+ revocation records/.test(err.message)
     )
-    entries.delete(`revocations/${IMPORT_MAX_REVOCATIONS}.json`)
+    entries.delete(`space/S1/.revocations/${IMPORT_MAX_REVOCATIONS}.json`)
     assert.equal(archivedRevocations(entries).length, IMPORT_MAX_REVOCATIONS)
   })
 

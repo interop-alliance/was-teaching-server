@@ -11,8 +11,7 @@ layer map and the glossary. Archive export and import of this layout are in
 
 The `src/backends/filesystemStore.ts` module holds the filesystem backend's
 storage layout version. The data root holds `store.json`, whose integer
-`version` names the layout, beside `spaces/`, `keystores/` and
-`space-revocations/`.
+`version` names the layout, beside `spaces/` and `keystores/`.
 
 `STORE_MIGRATIONS` is an ordered, append-only list of migration functions,
 version `n` being entry `n - 1`, like `MIGRATIONS` in `postgresSchema.ts`. The
@@ -100,6 +99,29 @@ and write still fail on it. The Postgres twin is schema migration 15, which adds
 the `updated_at`, `updated_at_counter` and `origin_id` columns to `replicas` and
 refuses a schema whose `replicas` table holds any row. The remedy there is to
 delete the rows and make each registration again.
+
+### Version 8: Space revocations inside the Space dir
+
+A Space's zcap revocation records live in the `.revocations/` subdirectory of
+its Space dir, one file per record, the name the export archive gives the same
+directory. `.revocations` is a reserved Collection id, so no Collection dir can
+take the name, and the Collection listing, the Space export and the boot sweeps
+skip it by name. Its bytes count toward the Space's usage, as the other
+Space-level files do, and a revocation insert drops the Space's cached usage
+total so the next Resource write re-measures. The insert is not refused at
+capacity: a revocation withdraws a grant, and a Space over its quota that could
+not revoke one would leave a leaked capability valid. The Postgres backend
+charges no bytes for a revocation row. The step moves each
+`space-revocations/<spaceId>/` tree of the earlier layout into its Space dir
+with one `rename`, drops the tree of a Space that has no Metadata file (what a
+Delete Space of the earlier layout left when it was cut short between its two
+removals), and removes the `space-revocations/` root. It refuses, with
+`StoreVersionError`, a Space that holds records in both places, which only a
+hand-edited store can, and a root holding an entry that is neither a Space's
+tree nor a staging temp file, before anything is moved. A Space dir the step
+cannot read fails the step rather than reading as gone. A run repeated after a
+kill finds the moved trees gone from the root. The Postgres backend has no
+counterpart: its revocations are rows keyed by Space id.
 
 ## The origin id and the clock mark
 
@@ -216,15 +238,14 @@ fixed order, and no tombstone is left for the read to find.
 
 ### Delete Space
 
-Delete Space removes the Space dir first, then the Space's revocation dir under
-`space-revocations/`. A process killed between the two leaves a revocation dir
-with no Space. It denies nothing, since no Space stands for a grant to be
-invoked against, and a retried delete of the id, a create of a Space under the
-id, or the next boot removes it, so a re-created Space does not inherit the old
-life's revocations. A Space stands for the boot sweep when its Metadata file
-does, so a Space dir a kill mid-`rm` left with no Metadata file counts as gone.
-The other order would leave a live Space with its revocations gone, so a revoked
-grant verified again.
+Delete Space is one `rm` of the Space dir, which holds the Space's revocation
+records in its `.revocations/` subdirectory, so the Space and its revocations go
+together. A process killed mid-`rm` leaves a Space dir with or without its
+Metadata file. With it, the Space stands whole, revocations included, and the
+next delete finishes the removal. Without it, the dir reads as absent
+everywhere, a repeat delete removes it, and a create under the id removes it
+before making the new Space, so a re-created Space starts with no revocation and
+no Collection of the old life.
 
 ### Delete Chunk
 

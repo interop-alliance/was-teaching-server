@@ -154,12 +154,17 @@ Collection therefore checks its Resources as a live write is checked.
 
 ## Archived revocations
 
-The archive carries the Space-scoped zcap revocation records. Import Space
-installs them last, one by one through `insertRevocation`, after the backend's
-`importSpace` has written the rest of the archive. A chain may carry a link
-signed by a `did:webvh` whose history log the archive itself restores, so a
-chain verified before that write would not resolve. The restored data is
-therefore readable before its revocations land.
+The archive carries the Space-scoped zcap revocation records as the
+`space/<spaceId>/.revocations/<digest>.json` entries, one flat file per record,
+packed by the same Space-tree walk as every other Space-level entry. The import
+walk never takes the directory for a Collection, since `.revocations` is a
+reserved Collection id, and the provenance statements cover none of the records,
+which are not stored objects. Import Space installs them last, one by one
+through `insertRevocation`, after the backend's `importSpace` has written the
+rest of the archive. A chain may carry a link signed by a `did:webvh` whose
+history log the archive itself restores, so a chain verified before that write
+would not resolve. The restored data is therefore readable before its
+revocations land.
 
 On a restore into a server that holds no record of a revocation, a revoked grant
 whose chain still verifies can read for the moment the installation takes. It

@@ -83,7 +83,10 @@ describe('assertValidId', () => {
     'linkset',
     'policy',
     'query',
-    'quotas'
+    'quotas',
+    // The system Collection the filesystem backend keeps a Space's
+    // revocations in, not a route.
+    '.revocations'
   ]
   for (const id of reservedCollectionIds) {
     it(`rejects reserved collection id "${id}" with a typed 409`, () => {

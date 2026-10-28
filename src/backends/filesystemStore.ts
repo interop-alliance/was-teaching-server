@@ -5,8 +5,8 @@
  * records the layout version the directory is at, the store's origin id (see
  * `lib/originId.ts`), and the high-water mark of the store's hybrid logical
  * clock (`clockHighWater`, epoch milliseconds; see `lib/hlc.ts`). It sits
- * beside `spaces/`, `keystores/` and `space-revocations/`, so no Space or
- * Collection id can collide with it.
+ * beside `spaces/` and `keystores/`, so no Space or Collection id can collide
+ * with it.
  *
  * The runner runs inside the server process at startup. It must not run from a
  * Fly `release_command`, since Fly runs that command in a temporary machine
@@ -20,6 +20,8 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
+  rm,
   stat,
   unlink,
   utimes
@@ -29,11 +31,13 @@ import type { Dirent } from 'node:fs'
 import type { FastifyBaseLogger } from 'fastify'
 import { isWriteStamp } from '@interop/storage-core'
 import {
+  ARCHIVE_REVOCATIONS_DIR,
   COLLECTION_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
   SPACE_POLICY_FILE_NAME,
   parseMetaSidecarFileName,
-  parseResourcePolicyFileName
+  parseResourcePolicyFileName,
+  spaceMetadataFileName
 } from '@interop/space-archive'
 import {
   TEMP_FILE_PREFIX,
@@ -117,7 +121,15 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // there is no stamping step: a store holding one is refused, every boot,
   // until it is wiped or the registration is made again. A store with none
   // passes and is stamped at this version.
-  refuseUnstampedReplicas
+  refuseUnstampedReplicas,
+  // v8: a Space's zcap revocation records live in the `.revocations/`
+  // subdirectory of its Space dir, a reserved Collection id, so the one `rm`
+  // of Delete Space removes them with the Space. The step moves each
+  // `space-revocations/<spaceId>/` tree of the earlier layout into its Space
+  // dir, drops the tree of a Space that is gone (what a Delete Space the
+  // earlier layout cut short left), and removes the `space-revocations/`
+  // root. It refuses a root holding an entry it does not recognize.
+  moveSpaceRevocationsIntoSpaceDirs
 ]
 
 /**
@@ -306,6 +318,79 @@ async function refuseUnstampedReplicas({
 }
 
 /**
+ * The layout step that moves each Space's revocation records from the
+ * `space-revocations/<spaceId>/` tree of the earlier layout into the
+ * `.revocations/` subdirectory of its Space dir, and removes the
+ * `space-revocations/` root. A tree whose Space has no Metadata file is an
+ * orphan of a Delete Space the earlier layout cut short, and is dropped. The
+ * root holds Space trees and the staging temp files (`TEMP_FILE_PREFIX`) a
+ * killed write left, which go with the root; any other entry is refused
+ * before anything is moved, since the new layout stores nothing there and
+ * the step would otherwise remove it unseen. The step is idempotent: a tree
+ * is moved by one `rename`, and a run repeated after a kill finds the moved
+ * trees gone from the root. A Space that holds records in both layouts is
+ * refused too. A Space dir that cannot be read (a permission fault) fails the
+ * step rather than reading as gone, so no live Space loses its records.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @param options.logger {FastifyBaseLogger}
+ * @returns {Promise<void>}
+ */
+async function moveSpaceRevocationsIntoSpaceDirs({
+  dataDir,
+  logger
+}: {
+  dataDir: string
+  logger: FastifyBaseLogger
+}): Promise<void> {
+  const root = path.join(dataDir, 'space-revocations')
+  const spacesDir = path.join(dataDir, 'spaces')
+  const entries = await readDirEntries(root)
+  const stray = entries.find(
+    entry =>
+      !entry.isDirectory() &&
+      !(entry.isFile() && entry.name.startsWith(TEMP_FILE_PREFIX))
+  )
+  if (stray !== undefined) {
+    throw new StoreVersionError({
+      detail:
+        `${path.join(root, stray.name)} is neither a Space's revocation ` +
+        'directory nor a staging temp file. Move it out of the data dir by ' +
+        'hand; the directory is removed by this layout step.'
+    })
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue
+    }
+    const spaceId = entry.name
+    const source = path.join(root, spaceId)
+    const spaceDir = path.join(spacesDir, spaceId)
+    if (
+      !(await fileExists(path.join(spaceDir, spaceMetadataFileName(spaceId))))
+    ) {
+      logger.warn(
+        { spaceId },
+        'Dropping the revocations of a Space that is gone, left by an interrupted delete'
+      )
+      await rm(source, { recursive: true, force: true })
+      continue
+    }
+    const target = path.join(spaceDir, ARCHIVE_REVOCATIONS_DIR)
+    if (await fileExists(target)) {
+      throw new StoreVersionError({
+        detail:
+          `${target} exists beside ${source}; the revocation records of ` +
+          `Space '${spaceId}' are in both layouts. Merge the two directories ` +
+          'by hand and remove the old one.'
+      })
+    }
+    await rename(source, target)
+  }
+  await rm(root, { recursive: true, force: true })
+}
+
+/**
  * The layout step that refuses a store holding a changes-feed counter file
  * (`.feed.<collectionId>.json`) or a Collection- or Resource-level policy
  * file (`.collection.policy.json`, `.r.<resourceId>.policy.json`) in any
@@ -408,7 +493,8 @@ async function holdsTombstone(filePath: string): Promise<boolean> {
  * Walks every Collection dir under a store's `spaces` dir, for the layout
  * steps that inspect each one: its id, its path, and its listing. Staging
  * temp files left by a killed process (`TEMP_FILE_PREFIX`) are not Spaces or
- * Collections, and neither is any other non-directory entry.
+ * Collections, a Space's revocation dir is not one either, and neither is any
+ * other non-directory entry.
  * @param spacesDir {string}
  * @returns {AsyncGenerator<{ collectionId: string, collectionDir: string,
  *   children: Dirent[] }>}
@@ -424,10 +510,7 @@ async function* collectionDirs(spacesDir: string): AsyncGenerator<{
     }
     const spaceDir = path.join(spacesDir, space.name)
     for (const collection of await readDirEntries(spaceDir)) {
-      if (
-        !collection.isDirectory() ||
-        collection.name.startsWith(TEMP_FILE_PREFIX)
-      ) {
+      if (!collection.isDirectory() || !isCollectionDirName(collection.name)) {
         continue
       }
       const collectionDir = path.join(spaceDir, collection.name)
@@ -457,6 +540,38 @@ export async function readDirEntries(dir: string): Promise<Dirent[]> {
   } catch (err) {
     if (isEnoent(err)) {
       return []
+    }
+    throw err
+  }
+}
+
+/**
+ * Whether a subdirectory of a Space dir is a Collection dir, by its name:
+ * every subdirectory but the Space's revocation dir
+ * (`ARCHIVE_REVOCATIONS_DIR`) and a staging temp name (`TEMP_FILE_PREFIX`).
+ * The one predicate every walk of a Space dir's Collections applies.
+ * @param name {string}
+ * @returns {boolean}
+ */
+export function isCollectionDirName(name: string): boolean {
+  return !name.startsWith(TEMP_FILE_PREFIX) && name !== ARCHIVE_REVOCATIONS_DIR
+}
+
+/**
+ * Whether a file or directory exists. `ENOENT` (and `ENOTDIR`, a missing
+ * parent) resolve `false`; any other error is rethrown, so an unreadable
+ * entry is never taken for an absent one.
+ * @param filePath {string}
+ * @returns {Promise<boolean>}
+ */
+export async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath)
+    return true
+  } catch (err) {
+    const { code } = err as NodeJS.ErrnoException
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return false
     }
     throw err
   }

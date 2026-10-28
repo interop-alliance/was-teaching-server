@@ -63,9 +63,10 @@ import {
   parseResourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionLogFileName
+  collectionLogFileName,
+  ARCHIVE_REVOCATIONS_DIR
 } from '@interop/space-archive'
-import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
+import type { ArchiveEntry } from '@interop/space-archive'
 import {
   newerSidecar,
   parseSidecarBytes,
@@ -101,6 +102,8 @@ import {
 import {
   applyStoreMigrations,
   feedCounterFileName,
+  fileExists,
+  isCollectionDirName,
   isPolicyFileName,
   readDirEntries,
   writeClockHighWater
@@ -279,8 +282,7 @@ import type {
   ReplicaLoopState,
   StoredReplica,
   ChunkStagingRun,
-  StagedChunk,
-  SpaceExportEntries
+  StagedChunk
 } from '../types.js'
 
 /**
@@ -470,25 +472,6 @@ async function digestOfStream({
  * below every stamp a clock mints.
  */
 const EPOCH_ISO_STRING = new Date(0).toISOString()
-
-/**
- * Whether a file exists. `ENOENT` (and `ENOTDIR`, a missing parent) resolve
- * `false`; any other error is rethrown.
- * @param filePath {string}
- * @returns {Promise<boolean>}
- */
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fsStat(filePath)
-    return true
-  } catch (err) {
-    const { code } = err as NodeJS.ErrnoException
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return false
-    }
-    throw err
-  }
-}
 
 /**
  * The options `FileSystemBackend.open()` takes (documented there).
@@ -822,8 +805,8 @@ async function removeDirIfEmpty(dir: string): Promise<void> {
 
 export class FileSystemBackend implements StorageBackend {
   /**
-   * The data root: `spaces/`, `keystores/` and `space-revocations/` sit under
-   * it, beside the `store.json` layout version stamp.
+   * The data root: `spaces/` and `keystores/` sit under it, beside the
+   * `store.json` layout version stamp.
    */
   dataDir: string
   spacesDir: string
@@ -833,16 +816,6 @@ export class FileSystemBackend implements StorageBackend {
    * (own route family, own storage tree).
    */
   keystoresDir: string
-  /**
-   * Root of the Space zcap revocation tree (`data/space-revocations/<spaceId>/`),
-   * a sibling of `spacesDir` rather than a subdirectory of each Space. Space
-   * revocations deliberately live OUTSIDE the Space's own directory because
-   * `listCollections` treats every subdirectory of a Space dir as a
-   * Collection -- a `revocations/` dir nested inside a Space would
-   * surface as a phantom Collection (and could collide with a real one), so it
-   * gets its own root.
-   */
-  spaceRevocationsDir: string
   logger: FastifyBaseLogger
   /**
    * Per-Space storage capacity, in bytes (spec "Quotas"). `undefined` means no
@@ -1152,8 +1125,8 @@ export class FileSystemBackend implements StorageBackend {
    * Opens a filesystem backend over `dataDir`: brings the data dir to the
    * current storage layout version and settles the store's origin id (see
    * `filesystemStore.ts`), then removes the staging temp files a killed
-   * process left behind at the data root and under the Space, keystore, and
-   * revocation trees. Only temp files untouched for an hour are removed, since
+   * process left behind at the data root and under the Space and keystore
+   * trees. Only temp files untouched for an hour are removed, since
    * another process sharing the data directory may still be writing a fresher
    * one. A failure to read or remove an entry is logged and does not stop the
    * open. The constructor is protected, so this is the only way to obtain a
@@ -1203,10 +1176,6 @@ export class FileSystemBackend implements StorageBackend {
     this.dataDir = dataDir
     this.spacesDir = path.join(dataDir, 'spaces')
     this.keystoresDir = path.join(dataDir, 'keystores')
-    // A sibling of spacesDir, NOT nested under each Space: a `revocations/` dir
-    // inside a Space dir would be mistaken for a Collection (see the
-    // `spaceRevocationsDir` property doc).
-    this.spaceRevocationsDir = path.join(dataDir, 'space-revocations')
     this.logger = logger ?? silentLogger
     this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // Normalize the per-upload cap so every downstream guard keeps its plain
@@ -1283,8 +1252,8 @@ export class FileSystemBackend implements StorageBackend {
         logger: this.logger,
         recursive: false
       }),
-      ...[this.spacesDir, this.keystoresDir, this.spaceRevocationsDir].map(
-        root => sweepTempFiles({ root, logger: this.logger })
+      ...[this.spacesDir, this.keystoresDir].map(root =>
+        sweepTempFiles({ root, logger: this.logger })
       )
     ])
     const removed = removedPerRoot.reduce((sum, count) => sum + count, 0)
@@ -1299,13 +1268,6 @@ export class FileSystemBackend implements StorageBackend {
       this.logger.warn(
         { finished },
         'Finished Collection deletes interrupted by a previous shutdown'
-      )
-    }
-    const orphanRevocationDirs = await this.#removeOrphanRevocationDirs()
-    if (orphanRevocationDirs > 0) {
-      this.logger.warn(
-        { removed: orphanRevocationDirs },
-        'Removed the revocations of Spaces whose delete a previous shutdown interrupted'
       )
     }
     // After the cascades, which remove a deleted Collection's staging with
@@ -1334,9 +1296,7 @@ export class FileSystemBackend implements StorageBackend {
         continue
       }
       const spaceId = spaceEntry.name
-      const collectionIds = (await readDirEntries(this.#spaceDir(spaceId)))
-        .filter(entry => entry.isDirectory())
-        .map(entry => entry.name)
+      const collectionIds = await this.#collectionIds({ spaceId })
       // Each Collection is independent, so they are checked in batches.
       const outcomes = await mapInBatches({
         items: collectionIds,
@@ -1395,8 +1355,10 @@ export class FileSystemBackend implements StorageBackend {
    * and a per-Collection breakdown in one pass. `du -d 1 -B 1` (GNU coreutils)
    * reports each immediate subdirectory (one per Collection) plus the Space dir
    * itself (the total, which also covers top-level Space files such as the
-   * `.space.` / policy documents), all in bytes. An absent Space dir (ENOENT
-   * before the dir is provisioned) reports zero usage rather than throwing.
+   * `.space.` / policy documents and the Space's revocation records under
+   * `ARCHIVE_REVOCATIONS_DIR`, which is no Collection), all in bytes. An
+   * absent Space dir (ENOENT before the dir is provisioned) reports zero usage
+   * rather than throwing.
    * @param spaceDir {string}
    * @returns {Promise<{ total: number, byCollection: CollectionUsage[] }>}
    */
@@ -1437,8 +1399,9 @@ export class FileSystemBackend implements StorageBackend {
       if (path.resolve(entryPath) === rootResolved) {
         // The summary line for the Space dir itself is the grand total.
         total = usageBytes
-      } else {
-        // Every immediate subdirectory is a Collection (see `listCollections`).
+      } else if (path.basename(entryPath) !== ARCHIVE_REVOCATIONS_DIR) {
+        // Every other immediate subdirectory is a Collection (see
+        // `listCollections`).
         byCollection.push({ id: path.basename(entryPath), usageBytes })
       }
     }
@@ -1449,9 +1412,10 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Measures the bytes this Space consumes on disk for the Space Quota report
    * (spec "Quotas"). `usageBytes` is the `du` total under the Space dir
-   * (Collection dirs plus top-level Space files); `usageByCollection` breaks the
-   * per-Collection totals out (they sum to slightly less than `usageBytes`,
-   * since the Space-level files belong to no Collection).
+   * (Collection dirs, top-level Space files and the revocation records);
+   * `usageByCollection` breaks the per-Collection totals out (they sum to
+   * slightly less than `usageBytes`, since the Space-level files and the
+   * revocation records belong to no Collection).
    *
    * The per-Collection `usageByCollection` breakdown is included only when
    * `includeCollections` is set -- the spec's `?include=collections` opt-in (see
@@ -1741,16 +1705,33 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * The directory holding one Space's zcap revocation records, under the
-   * sibling `spaceRevocationsDir` root (see that property's doc for why it is
-   * not inside the Space dir), guarded against escaping it.
+   * The directory holding one Space's zcap revocation records, the
+   * `ARCHIVE_REVOCATIONS_DIR` subdirectory of its Space dir
+   * (`spaces/<spaceId>/.revocations/<file>.json`), the name the export
+   * archive gives the same directory. It sits inside the Space dir so the one
+   * `rm` of Delete Space removes the Space and its revocations together. The
+   * name is a reserved Collection id (`RESERVED_COLLECTION_IDS`), so no
+   * Collection dir can take it, and the Collection listing and the cascade
+   * sweeps skip it by name; its bytes count toward the Space's usage.
    * @param spaceId {string}
    * @returns {string}
    */
   #spaceRevocationDir(spaceId: string): string {
-    const dir = path.join(this.spaceRevocationsDir, spaceId)
-    this.#assertContained(dir, this.spaceRevocationsDir)
-    return dir
+    return path.join(this.#spaceDir(spaceId), ARCHIVE_REVOCATIONS_DIR)
+  }
+
+  /**
+   * The ids of the Collection dirs under a Space dir, in code-unit order
+   * (`subdirectoryNames`): every subdirectory `isCollectionDirName` admits.
+   * An absent Space dir holds none.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<string[]>}
+   */
+  async #collectionIds({ spaceId }: { spaceId: string }): Promise<string[]> {
+    return (await subdirectoryNames(this.#spaceDir(spaceId))).filter(
+      isCollectionDirName
+    )
   }
 
   #collectionDir({
@@ -2486,11 +2467,14 @@ export class FileSystemBackend implements StorageBackend {
     const { generation } = validator
 
     if (prior === undefined) {
-      // A create under an id whose Delete Space was killed after the Space
-      // dir's removal: the old life's revocation dir still stands, and it
-      // must not deny the new life's grants. Under the Space gate, so no
-      // revocation of the new life can land before it.
-      await this.#removeSpaceRevocations({ spaceId })
+      // A create. A Space dir standing with no Metadata file is what a Delete
+      // Space killed mid-`rm` left: the old life's revocation records or
+      // Collection dirs, which the new life must not inherit. It is removed
+      // whole before the new dir is made. Under the Space gate and the lock,
+      // so nothing of the new life can land in between; and no write of the
+      // old life is in flight, since each re-checks the Metadata file under
+      // the gate.
+      await this.#removeSpaceDir({ spaceId })
     }
     await this.#ensureSpaceDir({ spaceId })
     await this.#persistSpace({ spaceId, body: stamped, generation, local: 0 })
@@ -2609,14 +2593,15 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Removes a Space and everything scoped to it. The Space's zcap revocations
-   * live in a sibling root (`spaceRevocationsDir`), not under the Space dir, so
-   * they are removed explicitly here rather than falling out of the Space dir
-   * rm. The Space dir goes first: a process killed between the two removals
-   * then leaves a revocation dir with no Space, which denies nothing and
-   * which the next delete of the id, a create under the id (`writeSpace`)
-   * or the next boot removes (`#removeOrphanRevocationDirs`). The other
-   * order would leave a live Space whose revoked grants verify again.
+   * Removes a Space and everything scoped to it, its zcap revocations
+   * included, since they live under the Space dir
+   * (`ARCHIVE_REVOCATIONS_DIR`): one `rm` of the Space dir is the whole
+   * delete. A process killed mid-`rm` leaves a Space dir with or without its
+   * Metadata file. With it, the Space stands whole and the next delete
+   * finishes the removal. Without it, the dir reads as absent everywhere, a
+   * repeat delete removes it, and a create under the id removes it before
+   * making the new Space (`#writeSpaceLocked`), so the new life inherits
+   * nothing of the old.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<void>}
@@ -2633,70 +2618,27 @@ export class FileSystemBackend implements StorageBackend {
     return this.#underSpaceRemoval({
       spaceId,
       remove: () =>
-        this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () => {
-          // Freed bytes: drop the cached usage total so the next write
-          // re-measures.
-          this.#dropUsageCache({ spaceId })
-          // `force: true` keeps delete idempotent (the `StorageBackend` contract):
-          // removing an absent Space resolves rather than rejecting with `ENOENT`.
-          await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
-          this.#forgetStagingCredits({ under: this.#spaceDir(spaceId) })
-          // Then this Space's revocations, which sit outside the Space dir.
-          await this.#removeSpaceRevocations({ spaceId })
-        })
+        this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), () =>
+          this.#removeSpaceDir({ spaceId })
+        )
     })
   }
 
   /**
-   * Removes a Space's revocation dir, absent or not.
+   * Removes a Space dir, absent or not, with the in-memory state kept about
+   * it: the cached usage total (freed bytes, so the next write re-measures)
+   * and the staging credits of its Collections. `force: true` keeps the
+   * removal idempotent (the `StorageBackend` contract): removing an absent
+   * Space resolves rather than rejecting with `ENOENT`. The caller holds the
+   * Space gate and the Space Metadata lock.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<void>}
    */
-  async #removeSpaceRevocations({
-    spaceId
-  }: {
-    spaceId: string
-  }): Promise<void> {
-    await rm(this.#spaceRevocationDir(spaceId), {
-      recursive: true,
-      force: true
-    })
-  }
-
-  /**
-   * Removes, at boot, every Space revocation dir whose Space is gone: what a
-   * Delete Space killed after the Space dir's removal leaves behind. A Space
-   * scope's revocation is only ever inserted under a Space that exists, so a
-   * revocation dir with no Space is an orphan. A Space stands when its
-   * Metadata file does, the predicate every read and write uses; a Space dir
-   * a torn `rm` left with Collection dirs but no Metadata file is no Space.
-   * No request is in flight yet, so no gate is taken. An absent revocation
-   * root holds none. A failure on one dir is logged and does not stop the
-   * open.
-   * @returns {Promise<number>}   how many dirs were removed
-   */
-  async #removeOrphanRevocationDirs(): Promise<number> {
-    let removed = 0
-    for (const entry of await readDirEntries(this.spaceRevocationsDir)) {
-      if (!entry.isDirectory()) {
-        continue
-      }
-      const spaceId = entry.name
-      try {
-        if (await fileExists(this.#spaceMetadataPath(spaceId))) {
-          continue
-        }
-        await this.#removeSpaceRevocations({ spaceId })
-        removed += 1
-      } catch (err) {
-        this.logger.error(
-          { err, spaceId },
-          'Failed to remove the revocations of a deleted Space'
-        )
-      }
-    }
-    return removed
+  async #removeSpaceDir({ spaceId }: { spaceId: string }): Promise<void> {
+    this.#dropUsageCache({ spaceId })
+    await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
+    this.#forgetStagingCredits({ under: this.#spaceDir(spaceId) })
   }
 
   /**
@@ -2758,7 +2700,7 @@ export class FileSystemBackend implements StorageBackend {
   > {
     // Code-unit order is the SAME ordering the cursor seek
     // (`collectionId > after`) uses, so the keyset stays consistent.
-    const ids = await subdirectoryNames(this.#spaceDir(spaceId))
+    const ids = await this.#collectionIds({ spaceId })
     // Each Metadata file is an independent read, so they are read in
     // batches; the order is kept.
     return mapInBatches({
@@ -2927,14 +2869,8 @@ export class FileSystemBackend implements StorageBackend {
     service?: ServiceDescription
     attestor?: ExportAttestor
   }): Promise<Readable> {
-    const { entries, revocations } = await this.exportSpaceEntries({ spaceId })
-    return packExportArchive({
-      spaceId,
-      entries,
-      revocations,
-      service,
-      attestor
-    })
+    const entries = await this.exportSpaceEntries({ spaceId })
+    return packExportArchive({ spaceId, entries, service, attestor })
   }
 
   /**
@@ -2946,7 +2882,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.serverBackends] {BackendDescriptor[]}   the
    *   server-managed entries of the archived Space Metadata object's
    *   backends listing; defaults to this backend's descriptor
-   * @returns {Promise<SpaceExportEntries>}
+   * @returns {Promise<ArchiveEntry[]>}
    */
   async exportSpaceEntries({
     spaceId,
@@ -2954,7 +2890,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     serverBackends?: BackendDescriptor[]
-  }): Promise<SpaceExportEntries> {
+  }): Promise<ArchiveEntry[]> {
     const spaceMetadata = await this.getSpaceMetadata({ spaceId })
     if (!spaceMetadata) {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
@@ -2988,6 +2924,31 @@ export class FileSystemBackend implements StorageBackend {
     const archiveEntries: ArchiveEntry[] = []
     for (const entry of spaceEntries) {
       const entryPath = path.join(sourceSpaceDir, entry.name)
+
+      if (entry.isDirectory() && entry.name === ARCHIVE_REVOCATIONS_DIR) {
+        // The Space's zcap revocation records travel as the archive's
+        // `.revocations/` directory, one flat file per record. A directory
+        // holding none (every record pruned) is left out, as the Postgres
+        // backend leaves it out when it has no row.
+        let records: fs.Dirent[]
+        try {
+          records = await readDirEntries(entryPath)
+        } catch (err) {
+          throw new StorageError({ cause: err as Error })
+        }
+        const files = records
+          .filter(child => child.isFile() && child.name.endsWith('.json'))
+          .map(child => child.name)
+          .sort((a, b) => a.localeCompare(b))
+          .map(name => ({
+            name,
+            read: () => fs.promises.readFile(path.join(entryPath, name))
+          }))
+        if (files.length > 0) {
+          archiveEntries.push({ name: entry.name, files })
+        }
+        continue
+      }
 
       if (entry.isDirectory()) {
         // The Metadata file is read here, once, and the same bytes decide
@@ -3146,30 +3107,11 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
-    // Space-scoped zcap revocations travel with the export. They live in the
-    // sibling `spaceRevocationsDir` root (see that property's doc), so the
-    // Space-dir walk above never sees them; they pack under a top-level
-    // `revocations/` dir -- outside `space/<spaceId>/`, where a subdirectory
-    // would read as a Collection on import.
-    const revocationsDir = this.#spaceRevocationDir(spaceId)
-    let revocations: ArchiveFile[]
-    try {
-      revocations = (await readDirEntries(revocationsDir))
-        .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
-        .map(entry => entry.name)
-        .sort((a, b) => a.localeCompare(b))
-        .map(name => ({
-          name,
-          read: () => fs.promises.readFile(path.join(revocationsDir, name))
-        }))
-    } catch (err) {
-      throw new StorageError({ cause: err as Error })
-    }
-
-    // A tombstone's file sorts among the Space-level files by its own name,
-    // the order the Postgres backend packs in.
+    // A tombstone's file, and the revocations directory, sort among the
+    // Space-level files by their own names, the order the Postgres backend
+    // packs in.
     archiveEntries.sort((left, right) => left.name.localeCompare(right.name))
-    return { entries: archiveEntries, revocations }
+    return archiveEntries
   }
 
   /**
@@ -10386,7 +10328,7 @@ export class FileSystemBackend implements StorageBackend {
     const collectionIds =
       collectionId !== undefined
         ? [collectionId]
-        : await subdirectoryNames(this.#spaceDir(spaceId))
+        : await this.#collectionIds({ spaceId })
     for (const stagedCollectionId of collectionIds) {
       const collectionDir = this.#collectionDir({
         spaceId,
@@ -11098,9 +11040,7 @@ export class FileSystemBackend implements StorageBackend {
   }> {
     const totals = { finished: 0, removed: 0, stranded: 0 }
     for (const spaceId of await subdirectoryNames(this.spacesDir)) {
-      for (const collectionId of await subdirectoryNames(
-        this.#spaceDir(spaceId)
-      )) {
+      for (const collectionId of await this.#collectionIds({ spaceId })) {
         try {
           const { finished, removed } = await this.#reclaimStagingIn({
             spaceId,
@@ -11428,9 +11368,8 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * The file holding one zcap revocation record. For a keystore scope it lives
-   * in that keystore's `revocations/` subdirectory; for a Space scope it lives
-   * under the sibling `spaceRevocationsDir` root (NOT inside the Space dir --
-   * see the `spaceRevocationsDir` property doc). The file name folds the
+   * in that keystore's `revocations/` subdirectory; for a Space scope in the
+   * Space dir's `ARCHIVE_REVOCATIONS_DIR` subdirectory. The file name folds the
    * `(delegator, capabilityId)` unique key into a SHA-256 digest (the shared
    * `revocationFileName` codec).
    * @param options {object}
@@ -11468,10 +11407,10 @@ export class FileSystemBackend implements StorageBackend {
    * A Space-scoped insert runs on the Space gate's shared side and re-checks
    * the Space Metadata object there (`SpaceNotFoundError`, 404). A Delete
    * Space therefore lands wholly before the insert, which is then refused, or
-   * wholly after it, and removes the record. The record's directory sits
-   * outside the Space dir, so without the gate the insert's `mkdir` could
-   * recreate it behind the delete, and the record would apply to the next
-   * Space created under the same id.
+   * wholly after it, and removes the record. Without the gate the insert's
+   * `mkdir` of the record's directory could land mid-`rm` and recreate the
+   * Space dir behind the delete, leaving a Space dir with no Metadata file
+   * and one record in it.
    * @param options {object}
    * @param options.scope {RevocationScope}   the owning keystore or Space
    * @param options.record {RevocationRecord}   the revocation to store
@@ -11510,7 +11449,13 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * `insertRevocation`'s write, for a caller that has already checked the
-   * scope exists (and, for a Space, holds the Space gate).
+   * scope exists (and, for a Space, holds the Space gate). A Space-scoped
+   * record's bytes count toward the Space's usage, so the write drops the
+   * Space's cached usage total and the next Resource write re-measures. The
+   * insert is not refused at capacity: a revocation withdraws a grant, and a
+   * Space over its quota that could not revoke one would leave a leaked
+   * capability valid. A record is a few hundred bytes, and the quota is a
+   * soft limit.
    * @param options {object}
    * @param options.scope {RevocationScope}   the owning keystore or Space
    * @param options.record {RevocationRecord}   the revocation to store
@@ -11542,6 +11487,9 @@ export class FileSystemBackend implements StorageBackend {
         throw new DuplicateRevocationError()
       }
       throw new StorageError({ cause: err as Error })
+    }
+    if ('spaceId' in scope) {
+      this.#dropUsageCache({ spaceId: scope.spaceId })
     }
   }
 
@@ -11586,6 +11534,10 @@ export class FileSystemBackend implements StorageBackend {
         const record = JSON.parse(raw.toString('utf8')) as RevocationRecord
         if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
           await rm(revocationFile, { force: true })
+          if ('spaceId' in scope) {
+            // Freed bytes: the next write re-measures the Space's usage.
+            this.#dropUsageCache({ spaceId: scope.spaceId })
+          }
           return false
         }
         return true

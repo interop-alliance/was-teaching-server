@@ -15,6 +15,7 @@
  */
 import { Readable } from 'node:stream'
 import {
+  ARCHIVE_REVOCATIONS_DIR,
   collectionMetadataFileName,
   packSpaceArchive
 } from '@interop/space-archive'
@@ -37,8 +38,6 @@ import type { ServiceDescription, StorageBackend } from '../types.js'
  * @param options.spaceId {string}
  * @param options.entries {ArchiveEntry[]}   the Space's top-level entries,
  *   in pack order
- * @param options.revocations {ArchiveFile[]}   the Space's zcap revocation
- *   records
  * @param [options.service] {ServiceDescription}   written verbatim as the
  *   archive's `service.json`; absent when the caller had none to declare
  * @param [options.attestor] {ExportAttestor}   the server's signing
@@ -49,13 +48,11 @@ import type { ServiceDescription, StorageBackend } from '../types.js'
 export async function packExportArchive({
   spaceId,
   entries,
-  revocations,
   service,
   attestor
 }: {
   spaceId: string
   entries: ArchiveEntry[]
-  revocations: ArchiveFile[]
   service?: ServiceDescription
   attestor?: ExportAttestor
 }): Promise<Readable> {
@@ -68,7 +65,6 @@ export async function packExportArchive({
   const pack = await packSpaceArchive({
     spaceId,
     entries,
-    revocations,
     service,
     provenance,
     didLog: attestor?.didLog
@@ -171,7 +167,7 @@ export async function exportSpaceArchive({
   attestor?: ExportAttestor
 }): Promise<Readable> {
   const control = serverBackends.controlPlane
-  const { entries, revocations } = await control.exportSpaceEntries({
+  const entries = await control.exportSpaceEntries({
     spaceId,
     serverBackends: serverBackends.describeAll()
   })
@@ -181,22 +177,21 @@ export async function exportSpaceArchive({
   const treeOf = (backend: StorageBackend): Promise<ArchiveEntry[]> => {
     let tree = trees.get(backend)
     if (tree === undefined) {
-      tree = backend.exportSpaceEntries({ spaceId }).then(
-        exported => exported.entries,
-        err => {
-          if (err instanceof SpaceNotFoundError) {
-            return []
-          }
-          throw err
+      tree = backend.exportSpaceEntries({ spaceId }).catch(err => {
+        if (err instanceof SpaceNotFoundError) {
+          return []
         }
-      )
+        throw err
+      })
       trees.set(backend, tree)
     }
     return tree
   }
   const composed: ArchiveEntry[] = []
   for (const entry of entries) {
-    if (!('files' in entry)) {
+    // A Space-level file, and the revocations directory, which only the
+    // control plane holds, travel as they are.
+    if (!('files' in entry) || entry.name === ARCHIVE_REVOCATIONS_DIR) {
       composed.push(entry)
       continue
     }
@@ -205,11 +200,5 @@ export async function exportSpaceArchive({
     )
     composed.push(await completedFromBackend({ entry, backend, treeOf }))
   }
-  return packExportArchive({
-    spaceId,
-    entries: composed,
-    revocations,
-    service,
-    attestor
-  })
+  return packExportArchive({ spaceId, entries: composed, service, attestor })
 }

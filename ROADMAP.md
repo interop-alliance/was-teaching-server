@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 231
+nextAvailableId: 233
 
 <!-- roadmap-order:index:start -->
 
@@ -125,7 +125,8 @@ Ready:
 - WAS-210 [L] (*) One function decides where a `did:webvh` resolves from
 - WAS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
   with `LruCache`
-- WAS-230 [L] (fs) Keep Space revocations inside the Space dir
+- WAS-232 [L] (*) Classify every entry of the import plan through
+  `parseArchivePath`
 
 **Someday / Maybe**
 
@@ -2302,45 +2303,40 @@ Steps:
 
 ---
 
-### WAS-230: [L] (fs) Keep Space revocations inside the Space dir
+### WAS-232: [L] (*) Classify every entry of the import plan through `parseArchivePath`
 
 - status: todo
 - priority: low
-- backend: fs
-- labels: filesystem-backend, zcap, cleanup
-- discovered-from: WAS-180 simplify review (2026-10-27)
-- touches:
-  - `src/backends/filesystem.ts` (`spaceRevocationsDir`, `#spaceRevocationDir`,
-    `listCollections` and the quota measurement that treat every subdirectory of
-    a Space dir as a Collection, `deleteSpace`, `writeSpace`,
-    `#removeOrphanRevocationDirs`)
-  - `src/backends/filesystemStore.ts` (a layout step that moves the existing
-    `space-revocations/<spaceId>/` trees into their Space dirs)
-  - `docs/filesystem-layout.md` ("Delete Space" and the layout listing)
+- backend: *
+- labels: import-export, cleanup
+- discovered-from: simplify review of the Space revocations move (2026-10-27)
 - acceptance:
-  - [ ] A Space's zcap revocations live in a dot-prefixed subdirectory of its
-        Space dir, which the Collection listing and the quota measurement skip
-        as they skip the Space's dotfiles, so the `rm` of the Space dir removes
-        the Space and its revocations in one step
-  - [ ] The three recovery sites a torn Delete Space needed (the retried delete,
-        the create over the id in `writeSpace`, and the boot sweep) are gone,
-        with the "Delete Space" paragraph of the layout doc that describes them
-  - [ ] The layout step moves an existing store's revocation trees in, and a
-        store at the new version has no `space-revocations/` root
-  - [ ] The Delete Space tests assert the one-step removal, and the torn-delete
-        cases are dropped with the window they covered
+  - [ ] `buildImportPlan` (`src/lib/importTar.ts`) finds the source Space id and
+        sorts entries into Collections through `parseArchivePath`, with no regex
+        over entry names left in the file
+  - [ ] An entry the package parses as `other` (a path deeper than the layout, a
+        directory inside a chunk directory or inside the revocations directory)
+        is refused as `invalid-import` at the plan stage, and a case in
+        `test/importTar.test.ts` pins it
+  - [ ] A Collection's files stay keyed by their path relative to the Collection
+        directory, chunk files under their `.chunks.<encId>/` segment, so
+        `importedCollectionFiles` and the chunk plan are unchanged
+  - [ ] The `.revocations` exclusion in the Collection loop goes, since the
+        classifier places those entries as `revocations`
 
-Context. Space revocations sit in a sibling root,
-`space-revocations/<spaceId>/`, because `listCollections` takes every
-subdirectory of a Space dir for a Collection. The sibling root is why Delete
-Space is two removals, and why a kill between them needs recovery at three sites
-(the retried delete, the create over the id, and the boot sweep). A dot-prefixed
-subdirectory inside the Space dir, in the convention the `.space.<id>.json`,
-`.meta.<id>.json` and `.tombstone.<id>.json` files already use, removes with the
-Space dir and needs none of them. The Postgres backend has no such window, since
-its revocations are rows keyed by Space id in the same store. The
-`insertRevocation` gate checkbox of WAS-135 (a revocation racing Delete Space)
-stays with that item.
+Context: the import plan reads one archive with two parsers. Its tombstone and
+revocation passes classify each entry through the archive package's
+`parseArchivePath`, while the source-Space lookup and the Collection loop match
+two hand regexes over the entry name. The package owns the layout and its
+classifier is exhaustive, so each addition to the layout (the `.revocations`
+directory was the last) needs a matching exclusion in the regex loop or it is
+keyed into a Collection's files. The regex also admits what the classifier
+refuses: a path deeper than the layout parses as `other` in the package but is
+appended to a Collection's file list here, and is refused later, per file, if at
+all. One classifier makes the plan refuse those where it refuses everything
+else. Nothing is wrong today, which keeps the item low.
+
+---
 
 ## Someday / Maybe
 

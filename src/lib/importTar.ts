@@ -17,7 +17,8 @@ import {
   COLLECTION_LOG_FILE_PREFIX,
   collectionTombstoneFromFile,
   isCollectionTombstone,
-  parseArchivePath
+  parseArchivePath,
+  ARCHIVE_REVOCATIONS_DIR
 } from '@interop/space-archive'
 import { parseCollectionMetadataBody } from './collectionMetadataBody.js'
 import { IMPORT_MAX_REVOCATIONS } from '../config.default.js'
@@ -676,9 +677,11 @@ function importedCollectionMetadata({
  * - provenance.jsonl and did.jsonl (the exporting server's signed statements
  *   and its DID history log snapshot; optional, and judged by
  *   `applyImportProvenance` rather than by this walk)
- * - revocations/<digest>.json (Space-scoped zcap revocations; optional)
  * - space/
  * - space/<sourceSpaceId>/
+ * - space/<sourceSpaceId>/.revocations/<digest>.json (Space-scoped zcap
+ *   revocations; optional, and read by `archivedRevocations` rather than by
+ *   this walk, which never takes the directory for a Collection)
  * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (the Space Metadata
  *   object; only its user-writable `type` and `name` are carried on the plan,
  *   and they are restored only under a root invocation)
@@ -747,7 +750,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     }
     const match = name.slice(prefix.length).match(/^([^/]+)\//)
     const collectionId = match?.[1]
-    if (!collectionId) {
+    if (!collectionId || collectionId === ARCHIVE_REVOCATIONS_DIR) {
       continue
     }
     // Reject a path-traversal / non-URL-safe id parsed from the archive
@@ -1210,13 +1213,8 @@ export async function assertImportBodiesFit({
 }
 
 /**
- * Prefix of the archive's Space-scoped revocation entries.
- */
-const REVOCATIONS_PREFIX = 'revocations/'
-
-/**
  * Reads the capabilities the archive's Space-scoped zcap revocation records
- * name (top-level `revocations/<digest>.json` entries; see
+ * name (the `space/<spaceId>/.revocations/<digest>.json` entries; see
  * `revocationFileName`). Only each record's `capability` is read. Its `meta`
  * is the exporting server's and is rebuilt by the importing one, so the
  * import does not check it. Archives from servers that predate revocation
@@ -1235,11 +1233,7 @@ export function archivedRevocations(
   const capabilities: RevocationRecord['capability'][] = []
   for (const [entryName, entry] of entries) {
     const body = fileBody(entry)
-    if (
-      !entryName.startsWith(REVOCATIONS_PREFIX) ||
-      !body ||
-      entryName.slice(REVOCATIONS_PREFIX.length).includes('/')
-    ) {
+    if (!body || parseArchivePath(entryName).area !== 'revocations') {
       continue
     }
     if (capabilities.length >= IMPORT_MAX_REVOCATIONS) {

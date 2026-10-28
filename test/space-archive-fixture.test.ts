@@ -7,8 +7,8 @@
  * `FileSystemBackend`'s on-disk layout, runs the server's real `exportSpace`
  * path over it, and asserts the bytes are identical. So the two parties to the
  * dialect -- the package's writer and this server's entry-tree construction
- * (its directory walk, sort order, chunk-directory handling and the sibling
- * revocations directory) -- are pinned to one byte sequence.
+ * (its directory walk, sort order, chunk-directory handling and the
+ * `.revocations/` directory) -- are pinned to one byte sequence.
  *
  * The tree has the layout this server writes and exports. The two Metadata
  * files, the governing history log record and the Resource sidecar each carry
@@ -121,8 +121,8 @@ const FIXTURE_STAMP = {
  * Writes the fixture's entry tree into a `FileSystemBackend`'s layout: the
  * Space directory with its Metadata dot-file, one Collection directory holding
  * its Metadata, its governing history log, a Resource representation and that
- * Resource's metadata sidecar, and one record in the sibling per-Space
- * revocations directory.
+ * Resource's metadata sidecar, and one record in the Space's `.revocations/`
+ * directory.
  * @param dataDir {string}
  * @returns {void}
  */
@@ -185,7 +185,7 @@ function stageFixtureTree(dataDir: string): void {
     JSON.stringify({ note: 'hello' })
   )
 
-  const revocationsDir = path.join(dataDir, 'space-revocations', SPACE_ID)
+  const revocationsDir = path.join(spaceDir, '.revocations')
   fs.mkdirSync(revocationsDir, { recursive: true })
   fs.writeFileSync(
     path.join(revocationsDir, 'urn%3Auuid%3Afixture-revocation.json'),

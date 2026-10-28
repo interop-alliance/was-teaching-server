@@ -723,7 +723,8 @@ describe('Export/Import Space API (wire level)', () => {
       return [...entries]
         .filter(
           ([entryName, entry]) =>
-            entryName.startsWith('revocations/') && entry.type === 'file'
+            entryName.startsWith(`space/${spaceId}/.revocations/`) &&
+            entry.type === 'file'
         )
         .map(([, entry]) => JSON.parse(entry.body!.toString('utf8')))
     }
@@ -788,7 +789,7 @@ describe('Export/Import Space API (wire level)', () => {
           entryName,
           entry.type === 'directory' ? null : entry.body!.toString('utf8')
         ]),
-        ['revocations/forged.json', JSON.stringify(forged)]
+        [`space/${spaceId}/.revocations/forged.json`, JSON.stringify(forged)]
       ])
 
       // A fresh Space has another root, so the chain does not verify there
@@ -835,7 +836,10 @@ describe('Export/Import Space API (wire level)', () => {
           entryName,
           entry.type === 'directory' ? null : entry.body!.toString('utf8')
         ]),
-        ['revocations/named.json', JSON.stringify({ capability })]
+        [
+          `space/${spaceId}/.revocations/named.json`,
+          JSON.stringify({ capability })
+        ]
       ])
     }
 

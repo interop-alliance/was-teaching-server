@@ -311,11 +311,96 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, seven, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 7)
+  it('stamps an empty store at the current version, eight, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 8)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 7)
+    assert.equal(await storedVersion(dataDir), 8)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
+  })
+
+  /**
+   * Stages a layout-7 store: a Space with one revocation record under the
+   * `space-revocations/` root, and the revocation tree of a Space that is
+   * gone, as an interrupted Delete Space of that layout left it.
+   */
+  async function stageLayout7Revocations(): Promise<{
+    spaceDir: string
+    oldRoot: string
+  }> {
+    await stamp(dataDir, 7)
+    const spaceDir = path.join(dataDir, 'spaces', 'some-space')
+    await mkdir(spaceDir, { recursive: true })
+    await writeFile(
+      path.join(spaceDir, '.space.some-space.json'),
+      JSON.stringify({ id: 'some-space', type: ['Space'] })
+    )
+    const oldRoot = path.join(dataDir, 'space-revocations')
+    await mkdir(path.join(oldRoot, 'some-space'), { recursive: true })
+    await writeFile(path.join(oldRoot, 'some-space', 'one.json'), '{}')
+    await mkdir(path.join(oldRoot, 'gone-space'), { recursive: true })
+    await writeFile(path.join(oldRoot, 'gone-space', 'two.json'), '{}')
+    // A staging temp file a killed write left goes with the root.
+    await writeFile(path.join(oldRoot, '.tmp-abandoned'), 'x')
+    return { spaceDir, oldRoot }
+  }
+
+  it("moves a layout-7 store's revocation trees into the Space dirs and drops the root", async () => {
+    const { spaceDir, oldRoot } = await stageLayout7Revocations()
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 8)
+    assert.deepEqual(await readdir(path.join(spaceDir, '.revocations')), [
+      'one.json'
+    ])
+    await assert.rejects(readdir(oldRoot), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(path.join(dataDir, 'spaces')), [
+      'some-space'
+    ])
+  })
+
+  it('repeats the layout-8 step after a run cut short before its stamp', async () => {
+    const { spaceDir } = await stageLayout7Revocations()
+    await applyStoreMigrations({ dataDir, logger })
+    await stamp(dataDir, 7)
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 8)
+    assert.deepEqual(await readdir(path.join(spaceDir, '.revocations')), [
+      'one.json'
+    ])
+  })
+
+  it('refuses a layout-7 store whose revocation root holds a stray file, before moving anything', async () => {
+    const { spaceDir, oldRoot } = await stageLayout7Revocations()
+    await writeFile(path.join(oldRoot, 'note'), 'x')
+    await assert.rejects(
+      FileSystemBackend.open({ dataDir }),
+      (err: Error) =>
+        err instanceof StoreVersionError && err.message.includes('note')
+    )
+    assert.equal(await storedVersion(dataDir), 7)
+    assert.deepEqual(await readdir(path.join(oldRoot, 'some-space')), [
+      'one.json'
+    ])
+    await assert.rejects(readdir(path.join(spaceDir, '.revocations')), {
+      code: 'ENOENT'
+    })
+  })
+
+  it('refuses a layout-7 store whose Space holds revocations in both layouts', async () => {
+    const { spaceDir } = await stageLayout7Revocations()
+    await mkdir(path.join(spaceDir, '.revocations'))
+    await assert.rejects(
+      FileSystemBackend.open({ dataDir }),
+      (err: Error) =>
+        err instanceof StoreVersionError && err.message.includes('both layouts')
+    )
+    assert.equal(await storedVersion(dataDir), 7)
+  })
+
+  it('stamps a layout-7 store with no revocation root at layout 8', async () => {
+    await stamp(dataDir, 7)
+    await mkdir(path.join(dataDir, 'spaces', 'some-space'), { recursive: true })
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 8)
   })
 
   it('refuses a layout-6 store that holds an unstamped registration file, on every boot', async () => {
@@ -350,7 +435,7 @@ describe('Filesystem store version', () => {
     }
   })
 
-  it('stamps a layout-6 store holding a stamped registration file at layout 7', async () => {
+  it('stamps a layout-6 store holding a stamped registration file at the current layout', async () => {
     await stamp(dataDir, 6)
     const spaceDir = path.join(dataDir, 'spaces', 'some-space')
     await mkdir(spaceDir, { recursive: true })
@@ -372,7 +457,7 @@ describe('Filesystem store version', () => {
     // A file that does not parse is not a registration.
     await writeFile(path.join(spaceDir, '.replica.bad.json'), '{not json')
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 7)
+    assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
   it('refuses a layout-1 store that holds a Space, on every boot', async () => {
@@ -503,7 +588,7 @@ describe('Filesystem store version', () => {
     }
   })
 
-  it('stamps a layout-4 store holding live sidecars and a damaged one at layout 5', async () => {
+  it('stamps a layout-4 store holding live sidecars and a damaged one at the current layout', async () => {
     await stamp(dataDir, 4)
     const collectionDir = path.join(dataDir, 'spaces', 'some-space', 'col')
     await mkdir(collectionDir, { recursive: true })
@@ -527,7 +612,7 @@ describe('Filesystem store version', () => {
       '{"deleted":true,"feedPosition":2}'
     )
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 7)
+    assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
   it('refuses a store.json with no integer version', async () => {

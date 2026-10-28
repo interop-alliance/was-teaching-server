@@ -1,6 +1,6 @@
 /**
  * Import Space's gate on archived zcap revocation records. An archive's
- * `revocations/` entries are installed in the destination Space's revocation
+ * `.revocations/` entries are installed in the destination Space's revocation
  * store one by one, after the rest of the archive is written, and each only
  * when two checks pass. The record's capability chain verifies under the
  * destination Space, through the same `verifyRevocationChain` the revocation
