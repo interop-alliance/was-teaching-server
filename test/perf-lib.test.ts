@@ -64,6 +64,10 @@ describe('nonNegativeInteger', () => {
   it('rejects a negative value', () => {
     assert.throws(() => nonNegativeInteger('-1'), /non-negative integer/)
   })
+
+  it('rejects a blank value', () => {
+    assert.throws(() => nonNegativeInteger(' '), /non-negative integer/)
+  })
 })
 
 describe('parseSizes', () => {

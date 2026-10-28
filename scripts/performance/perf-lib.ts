@@ -29,8 +29,10 @@ export function positiveInteger(value: string): number {
  * @returns {number}
  */
 export function nonNegativeInteger(value: string): number {
-  const number = Number(value.trim())
-  if (!Number.isInteger(number) || number < 0) {
+  const trimmed = value.trim()
+  const number = Number(trimmed)
+  // `Number('')` is 0, so a blank value has to be refused before the check.
+  if (trimmed === '' || !Number.isInteger(number) || number < 0) {
     throw new Error(`Expected a non-negative integer, got "${value}".`)
   }
   return number
