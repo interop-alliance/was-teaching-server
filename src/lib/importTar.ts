@@ -18,7 +18,7 @@ import {
   collectionTombstoneFromFile,
   isCollectionTombstone,
   parseArchivePath,
-  ARCHIVE_REVOCATIONS_DIR
+  type ArchivePath
 } from '@interop/space-archive'
 import { parseCollectionMetadataBody } from './collectionMetadataBody.js'
 import { IMPORT_MAX_REVOCATIONS } from '../config.default.js'
@@ -708,15 +708,13 @@ function importedCollectionMetadata({
 export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   validateManifest(entries)
 
-  let sourceSpaceId: string | undefined
-  for (const name of entries.keys()) {
-    const match = name.match(/^space\/([^/]+)\//)
-    if (match) {
-      sourceSpaceId = match[1]
-      break
-    }
-  }
-  if (!sourceSpaceId) {
+  const placed = placeEntries(entries)
+  const sourceSpaceId = placed
+    .map(({ position }) =>
+      'spaceId' in position ? position.spaceId : undefined
+    )
+    .find(spaceId => spaceId !== undefined)
+  if (sourceSpaceId === undefined) {
     throw new InvalidImportError({
       message: 'Archive does not contain space data.'
     })
@@ -740,19 +738,21 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       })
     : undefined
   // One pass over the archive: the Collection ids its directories name, and
-  // each Collection's file entries, in archive order, keyed by their name
-  // relative to the Collection directory.
+  // each Collection's file entries, in archive order, keyed by their path
+  // relative to the Collection directory (a chunk file keeps its
+  // `.chunks.<encId>/` segment). The parser places a Collection entry as
+  // `collection` or `chunk`; the Space's own files, its tombstones and its
+  // revocation records sit in other areas and never reach a Collection.
   const collectionIds = new Set<string>()
   const collectionFiles = new Map<string, Array<[string, Buffer]>>()
-  for (const [name, entry] of entries) {
-    if (!name.startsWith(prefix)) {
+  for (const { name, entry, position } of placed) {
+    if (
+      (position.area !== 'collection' && position.area !== 'chunk') ||
+      position.spaceId !== sourceSpaceId
+    ) {
       continue
     }
-    const match = name.slice(prefix.length).match(/^([^/]+)\//)
-    const collectionId = match?.[1]
-    if (!collectionId || collectionId === ARCHIVE_REVOCATIONS_DIR) {
-      continue
-    }
+    const { collectionId } = position
     // Reject a path-traversal / non-URL-safe id parsed from the archive
     // before it is used to build a destination path.
     assertImportId(collectionId, 'collection')
@@ -942,11 +942,36 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     spacePolicy,
     collections,
     collectionTombstones: collectionTombstones({
-      entries,
+      placed,
       sourceSpaceId,
       collectionIds
     })
   }
+}
+
+/**
+ * Places every archive entry in the layout through the package's parser, the
+ * one classifier the plan reads the archive with. An entry the layout holds
+ * nowhere (`other`: a path deeper than the layout goes, a directory inside a
+ * chunk directory or inside the revocations directory, a file where the
+ * layout holds a directory) refuses the import (`InvalidImportError`, 400)
+ * here, before anything is keyed into a Collection.
+ * @param entries {Map<string, TarEntry>}
+ * @returns {Array<{ name: string, entry: TarEntry, position: ArchivePath }>}
+ *   in archive order
+ */
+function placeEntries(
+  entries: Map<string, TarEntry>
+): Array<{ name: string; entry: TarEntry; position: ArchivePath }> {
+  return [...entries].map(([name, entry]) => {
+    const position = parseArchivePath(name)
+    if (position.area === 'other') {
+      throw new InvalidImportError({
+        message: `Archive entry "${name}" has no place in the archive layout.`
+      })
+    }
+    return { name, entry, position }
+  })
 }
 
 /**
@@ -955,24 +980,24 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
  * also carries as a Collection directory, or whose body is not a tombstone,
  * refuses the import (`InvalidImportError`, 400) before anything is written.
  * @param options {object}
- * @param options.entries {Map<string, TarEntry>}
+ * @param options.placed {Array<{ entry: TarEntry, position: ArchivePath }>}
+ *   the archive's entries, placed by {@link placeEntries}
  * @param options.sourceSpaceId {string}
  * @param options.collectionIds {Set<string>}   the ids the archive carries as
  *   Collection directories
  * @returns {ImportPlanCollectionTombstone[]}   sorted by id
  */
 function collectionTombstones({
-  entries,
+  placed,
   sourceSpaceId,
   collectionIds
 }: {
-  entries: Map<string, TarEntry>
+  placed: Array<{ entry: TarEntry; position: ArchivePath }>
   sourceSpaceId: string
   collectionIds: Set<string>
 }): ImportPlanCollectionTombstone[] {
   const tombstones: ImportPlanCollectionTombstone[] = []
-  for (const [name, entry] of entries) {
-    const parsed = parseArchivePath(name)
+  for (const { entry, position: parsed } of placed) {
     const body = fileBody(entry)
     if (
       parsed.area !== 'collectionTombstone' ||

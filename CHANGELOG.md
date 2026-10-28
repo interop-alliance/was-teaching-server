@@ -78,6 +78,12 @@
 
 ### Changed
 
+- Import Space places every archive entry through the archive package's path
+  classifier. An entry the layout holds nowhere (a path deeper than the layout
+  goes, a directory inside a chunk directory or inside the revocations
+  directory) is refused as `invalid-import` (400) when the plan is built, where
+  it was previously ignored or keyed into a Collection and refused per file. The
+  plan itself is unchanged.
 - A replica registration is a versioned record. It carries `updatedAt`,
   `updatedAtCounter` and `originId`, and its `ETag` is the four-segment
   `"<generation>.<ms>.<counter>.<originId>"` instead of the generation alone.

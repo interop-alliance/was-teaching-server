@@ -345,12 +345,43 @@ describe('buildImportPlan', () => {
   it('rejects a path-traversal collection id parsed from the archive', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
-      ['space/S1/../evil/.collection.x.json', fileEntry('{}')]
+      ['space/S1/../.collection.x.json', fileEntry('{}')]
     ])
     assert.throws(
       () => buildImportPlan(entries),
       (err: Error) => err instanceof InvalidCollectionIdError
     )
+  })
+
+  it('throws InvalidImportError on an entry the archive layout holds nowhere', () => {
+    // The package's classifier places every entry; one it places as `other`
+    // refuses the plan, so a stray path is never keyed into a Collection's
+    // files and refused later, per file, if at all.
+    const strays = [
+      // Deeper than the layout goes.
+      'space/S1/colA/nested/r.res9.text%2Fplain.txt',
+      // A directory inside a chunk directory.
+      'space/S1/colA/.chunks.res1/sub/',
+      // A directory inside the revocations directory.
+      'space/S1/.revocations/sub/',
+      // A file where the layout holds the `space/` directory.
+      'space'
+    ]
+    for (const name of strays) {
+      const entries = validSpaceEntries()
+      entries.set(
+        name,
+        name.endsWith('/') ? { type: 'directory' } : fileEntry('x')
+      )
+      assert.throws(
+        () => buildImportPlan(entries),
+        (err: Error) =>
+          err instanceof InvalidImportError &&
+          err.message.includes(name) &&
+          /no place in the archive layout/i.test(err.message),
+        name
+      )
+    }
   })
 
   it('rejects a non-URL-safe resource id parsed from the archive', () => {

@@ -125,8 +125,6 @@ Ready:
 - WAS-210 [L] (*) One function decides where a `did:webvh` resolves from
 - WAS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
   with `LruCache`
-- WAS-232 [L] (*) Classify every entry of the import plan through
-  `parseArchivePath`
 
 **Someday / Maybe**
 
@@ -2300,41 +2298,6 @@ Steps:
    so a test that wants to expire the entry must advance that clock (or use a
    `ttl` of its own), not spy on `Date.now`.
 6. `reportUsage` always re-measures and does not read the cache; leave it.
-
----
-
-### WAS-232: [L] (*) Classify every entry of the import plan through `parseArchivePath`
-
-- status: todo
-- priority: low
-- backend: *
-- labels: import-export, cleanup
-- discovered-from: simplify review of the Space revocations move (2026-10-27)
-- acceptance:
-  - [ ] `buildImportPlan` (`src/lib/importTar.ts`) finds the source Space id and
-        sorts entries into Collections through `parseArchivePath`, with no regex
-        over entry names left in the file
-  - [ ] An entry the package parses as `other` (a path deeper than the layout, a
-        directory inside a chunk directory or inside the revocations directory)
-        is refused as `invalid-import` at the plan stage, and a case in
-        `test/importTar.test.ts` pins it
-  - [ ] A Collection's files stay keyed by their path relative to the Collection
-        directory, chunk files under their `.chunks.<encId>/` segment, so
-        `importedCollectionFiles` and the chunk plan are unchanged
-  - [ ] The `.revocations` exclusion in the Collection loop goes, since the
-        classifier places those entries as `revocations`
-
-Context: the import plan reads one archive with two parsers. Its tombstone and
-revocation passes classify each entry through the archive package's
-`parseArchivePath`, while the source-Space lookup and the Collection loop match
-two hand regexes over the entry name. The package owns the layout and its
-classifier is exhaustive, so each addition to the layout (the `.revocations`
-directory was the last) needs a matching exclusion in the regex loop or it is
-keyed into a Collection's files. The regex also admits what the classifier
-refuses: a path deeper than the layout parses as `other` in the package but is
-appended to a Collection's file list here, and is refused later, per file, if at
-all. One classifier makes the plan refuse those where it refuses everything
-else. Nothing is wrong today, which keeps the item low.
 
 ---
 
