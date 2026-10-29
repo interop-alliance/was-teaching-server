@@ -3,7 +3,8 @@
  * `pnpm perf:pg` and `pnpm perf:remote` (`scripts/performance/perf-lib.ts`):
  * CLI argument parsing, the backend split and its Collection pool, the
  * run-length estimate, the Markdown table formatting, the load-aggregation
- * harnesses, and the network-fault retry and error description. The subprocess/k6/WasClient wiring itself is
+ * harnesses, the network-fault retry and error description, and the parts of
+ * a run record. The subprocess/k6/WasClient wiring itself is
  * verified by running `pnpm perf:fs` once end to end, not by unit tests.
  */
 import { describe, it } from 'vitest'
@@ -23,19 +24,24 @@ import {
   formatProgressLine,
   formatRetries,
   formatScalingSummary,
+  healthBuild,
   k6Measurement,
   load,
   missingBackends,
   parseLoadSettings,
+  parseRunner,
   parseSizes,
   parseSplit,
   pivotRows,
   positiveInteger,
+  recordPath,
   retriedFaultCounts,
   retryOnNetworkFault,
   nonNegativeInteger,
+  runResults,
   seedResourceCount,
-  serialWriteLoad
+  serialWriteLoad,
+  sizeTestId
 } from '../scripts/performance/perf-lib.js'
 
 describe('positiveInteger', () => {
@@ -1115,6 +1121,221 @@ describe('formatMatrixTable', () => {
         '',
         'Failures: none'
       ].join('\n')
+    )
+  })
+})
+
+describe('sizeTestId', () => {
+  it('kebab-cases a size test label', () => {
+    assert.equal(sizeTestId('Public read'), 'public-read')
+    assert.equal(sizeTestId('Signed delete'), 'signed-delete')
+  })
+
+  it('names the serial-write test without its --writes count', () => {
+    assert.equal(sizeTestId('Write, 1 client (100 in a row)'), 'serial-write')
+    assert.equal(sizeTestId('Write, 1 client (300 in a row)'), 'serial-write')
+  })
+})
+
+describe('runResults', () => {
+  const splitRead = {
+    test: 'Signed read',
+    size: 500,
+    result: {
+      rate: 212.4,
+      avgMs: 23.4,
+      failed: 0,
+      byBackend: {
+        postgres: { rate: 107.9, avgMs: 23.1, failed: 0 },
+        fs: { rate: 104.5, avgMs: 23.8, failed: 0 }
+      }
+    }
+  }
+
+  it('gives the whole test, then each named backend part, in order', () => {
+    assert.deepEqual(
+      runResults({
+        rows: [splitRead],
+        matrixRows: [],
+        backends: ['postgres', 'fs']
+      }),
+      [
+        {
+          suite: 'sizes',
+          test: 'signed-read',
+          size: 500,
+          backend: 'all',
+          rate: 212.4,
+          avg_ms: 23.4,
+          failed: 0
+        },
+        {
+          suite: 'sizes',
+          test: 'signed-read',
+          size: 500,
+          backend: 'postgres',
+          rate: 107.9,
+          avg_ms: 23.1,
+          failed: 0
+        },
+        {
+          suite: 'sizes',
+          test: 'signed-read',
+          size: 500,
+          backend: 'fs',
+          rate: 104.5,
+          avg_ms: 23.8,
+          failed: 0
+        }
+      ]
+    )
+  })
+
+  it('gives only the whole test when no backend is named, as on a one-backend run', () => {
+    assert.deepEqual(
+      runResults({ rows: [splitRead], matrixRows: [] }).map(
+        ({ backend }) => backend
+      ),
+      ['all']
+    )
+  })
+
+  it('records a skipped test as one entry with its reason', () => {
+    assert.deepEqual(
+      runResults({
+        rows: [{ test: 'Public read', size: 1, result: 'skipped (no k6)' }],
+        matrixRows: []
+      }),
+      [
+        {
+          suite: 'sizes',
+          test: 'public-read',
+          size: 1,
+          backend: 'all',
+          skipped: 'skipped (no k6)'
+        }
+      ]
+    )
+  })
+
+  it('records a test whose every call failed with a null average', () => {
+    const [entry] = runResults({
+      rows: [
+        {
+          test: 'Signed write',
+          size: 1,
+          result: { rate: 0, avgMs: undefined, failed: 12 }
+        }
+      ],
+      matrixRows: []
+    })
+    assert.equal(entry?.avg_ms, null)
+    assert.equal(entry?.failed, 12)
+  })
+
+  it('puts the matrix after the size tests, each cell read before write', () => {
+    const results = runResults({
+      rows: [{ test: 'Signed read', size: 1, result: { rate: 1, failed: 0 } }],
+      matrixRows: [
+        {
+          category: 'encrypted',
+          payload: 'small',
+          read: { rate: 31.2, avgMs: 158, failed: 0 },
+          write: { rate: 18.2, avgMs: 271, failed: 1 }
+        }
+      ]
+    })
+    assert.deepEqual(
+      results.map(({ suite, test, category, payload }) => ({
+        suite,
+        test,
+        category,
+        payload
+      })),
+      [
+        {
+          suite: 'sizes',
+          test: 'signed-read',
+          category: undefined,
+          payload: undefined
+        },
+        {
+          suite: 'matrix',
+          test: 'read',
+          category: 'encrypted',
+          payload: 'small'
+        },
+        {
+          suite: 'matrix',
+          test: 'write',
+          category: 'encrypted',
+          payload: 'small'
+        }
+      ]
+    )
+    assert.equal(results[2]?.failed, 1)
+  })
+})
+
+describe('healthBuild', () => {
+  it("reads a built server's version and build time", () => {
+    assert.deepEqual(
+      healthBuild({
+        status: 'pass',
+        version: '0.42.3',
+        commit: null,
+        builtAt: '2026-10-29T16:17:29.739Z'
+      }),
+      { version: '0.42.3', builtAt: '2026-10-29T16:17:29.739Z' }
+    )
+  })
+
+  it('gives null for what a body leaves out, or a body that is not JSON', () => {
+    assert.deepEqual(healthBuild({ status: 'pass' }), {
+      version: null,
+      builtAt: null
+    })
+    assert.deepEqual(healthBuild(undefined), { version: null, builtAt: null })
+  })
+})
+
+describe('parseRunner', () => {
+  it('accepts a name that is one safe path segment', () => {
+    assert.equal(parseRunner('fly-iad'), 'fly-iad')
+    assert.equal(parseRunner('laptop_omar.m3'), 'laptop_omar.m3')
+  })
+
+  it('rejects a name that could leave its folder', () => {
+    assert.throws(() => parseRunner('../ops'), /--runner/)
+    assert.throws(() => parseRunner('fly/iad'), /--runner/)
+    assert.throws(() => parseRunner(''), /--runner/)
+  })
+})
+
+describe('recordPath', () => {
+  const startedAt = new Date('2026-10-29T16:40:02.118Z')
+
+  it('files a run under its runner, then its host, named by its start', () => {
+    assert.equal(
+      recordPath({
+        dir: 'perf-results',
+        runner: 'fly-iad',
+        serverUrl: 'https://staging.freewallet.me',
+        startedAt
+      }),
+      'perf-results/fly-iad/staging.freewallet.me/2026-10-29T164002Z.json'
+    )
+  })
+
+  it('puts the port after a dash, so the folder name has no colon', () => {
+    assert.equal(
+      recordPath({
+        dir: 'perf-results',
+        runner: 'laptop-omar',
+        serverUrl: 'http://localhost:4455',
+        startedAt
+      }),
+      'perf-results/laptop-omar/localhost-4455/2026-10-29T164002Z.json'
     )
   })
 })

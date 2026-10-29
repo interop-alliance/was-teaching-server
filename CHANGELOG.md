@@ -84,6 +84,15 @@
   `Retries of untimed requests after a network fault: 37 (21 timed out, 14 never connected, 2 dropped)`,
   so two runs over the same path can be compared for how much the network got in
   the way.
+- `pnpm perf:remote --record <dir> --runner <name>` also writes a completed run
+  as a JSON run record at `<dir>/<runner>/<host>/<stamp>.json`: the run's start,
+  the target, the server version and build time its `/health` reports, the
+  runner and its machine, `--label`, the tooling versions, the load settings,
+  and one entry per measurement, the whole test and, on a run split across two
+  backends, each backend's part. Size tests are named by stable ids
+  (`serial-write` rather than `Write, 1 client (100 in a row)`), so changing
+  `--writes` doesn't split a series. A run that fails or is interrupted records
+  nothing, and an existing record is never replaced.
 - The perf runs' public read and list tests discard the response bodies k6
   reads, so reading the 10 MiB file no longer runs k6 out of memory on a small
   machine; the measured rates are unchanged, since each body is still read in
