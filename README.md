@@ -612,6 +612,22 @@ slow uplink stops while filling, with
 `Request to ".../space/perf-matrix-read/public-postgres-0/large" timed out.`,
 and deletes the Spaces it created so far.
 
+`--record <dir>` with `--runner <name>` also writes the run as a JSON run
+record, at `<dir>/<runner>/<host>/<stamp>.json`, once the run completes: its
+start, the target, the version and build time the target's `/health` reports,
+the runner and its machine, the settings, and every measurement. A run that
+fails or is interrupted records nothing, and an existing record is never
+replaced. The runner names the machine, so the records under one runner and host
+form one series. They are kept in the `perf-results/` folder of the
+[ops repo](https://github.com/interop-alliance/ops), whose README describes the
+format and lists the runners:
+
+```bash
+# Record the run in an ops checkout next to this repo:
+pnpm perf:remote --url https://staging.freewallet.me \
+  --record ../ops/perf-results --runner laptop-omar
+```
+
 The ballast, seeded by `pnpm perf:pg:seed` only, is extra 10 MiB files in a
 `perf-ballast` Space that no test reads. It grows the database past what
 Postgres keeps in its own cache, so the binary reads aren't served purely from

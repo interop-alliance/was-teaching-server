@@ -3,11 +3,14 @@
  * `pnpm perf:pg` and `pnpm perf:remote` (`perf-fs.ts`, `perf-pg.ts`,
  * `perf-remote.ts`) and their seed scripts: CLI argument parsing, the backend
  * split and the Collection pool it needs, the run-length estimate, the
- * Markdown table formatting, the load-aggregation harnesses, and the
- * Collection-size seeding over an injected backend. Kept free of side effects
- * at import time so it can be unit tested without spawning a server, k6, or
- * any network request.
+ * Markdown table formatting, the load-aggregation harnesses, the
+ * Collection-size seeding over an injected backend, and the parts of a run
+ * record (`pnpm perf:remote --record`). Kept free of side effects at import
+ * time so it can be unit tested without spawning a server, k6, or any network
+ * request.
  */
+import { join } from 'node:path'
+
 import type { StorageBackend } from '../../src/types.js'
 
 /**
@@ -1681,4 +1684,194 @@ export async function seedSizeSpaces({
       })
     }
   }
+}
+
+/**
+ * The shape version of a run record, raised when the shape changes, so a
+ * file written before the change can be told apart.
+ */
+export const runRecordSchema = 1
+
+/**
+ * One measurement in a run record: a size test at one Collection size, or a
+ * payload-matrix read or write, either as the whole test (`backend: 'all'`)
+ * or as one backend's part of it. A skipped test carries the skip reason
+ * instead of numbers.
+ */
+export interface RunResult {
+  suite: 'sizes' | 'matrix'
+  test: string
+  size?: number
+  category?: MatrixCategory
+  payload?: MatrixPayload
+  backend: 'all' | ServerBackendId
+  rate?: number
+  avg_ms?: number | null
+  failed?: number
+  skipped?: string
+}
+
+/**
+ * The id a run record names a size test by: its report label in kebab case
+ * (`Signed read` is `signed-read`), except the serial-write test, whose label
+ * carries the `--writes` count (`Write, 1 client (100 in a row)`). Its id
+ * leaves the count to the record's settings, so changing the flag doesn't
+ * split the test's series in two.
+ * @param test {string}   the report label
+ * @returns {string}
+ */
+export function sizeTestId(test: string): string {
+  return test.startsWith('Write, 1 client')
+    ? 'serial-write'
+    : test.toLowerCase().replaceAll(' ', '-')
+}
+
+/**
+ * One test's result as run-record entries: the whole test, then the part of
+ * each of `backends` that answered any of its requests, each carrying
+ * `fields`. A skipped test is one entry.
+ * @param options {object}
+ * @param options.fields {Pick<RunResult, 'suite' | 'test' | 'size' | 'category' | 'payload'>}
+ * @param options.result {Measurement | string}
+ * @param options.backends {ServerBackendId[]}
+ * @returns {RunResult[]}
+ */
+function resultEntries({
+  fields,
+  result,
+  backends
+}: {
+  fields: Pick<RunResult, 'suite' | 'test' | 'size' | 'category' | 'payload'>
+  result: Measurement | string
+  backends: ServerBackendId[]
+}): RunResult[] {
+  if (typeof result === 'string') {
+    return [{ ...fields, backend: 'all', skipped: result }]
+  }
+  const entry = (
+    backend: RunResult['backend'],
+    { rate, avgMs, failed }: Measurement
+  ): RunResult => ({ ...fields, backend, rate, avg_ms: avgMs ?? null, failed })
+  return [
+    entry('all', result),
+    ...backends.flatMap(backend => {
+      const part = result.byBackend?.[backend]
+      return part === undefined ? [] : [entry(backend, part)]
+    })
+  ]
+}
+
+/**
+ * A run's measurements as the `results` of its run record, in the order the
+ * run made them: the size tests, then the payload matrix, each cell's read
+ * before its write. Each gets an entry per backend in `backends`, as the
+ * report gets a table per backend: a run on one backend has none, since its
+ * part would repeat the whole test.
+ * @param options {object}
+ * @param options.rows {Row[]}
+ * @param options.matrixRows {MatrixRow[]}
+ * @param [options.backends] {ServerBackendId[]}   the backends to give
+ *   entries of their own, in order; none by default
+ * @returns {RunResult[]}
+ */
+export function runResults({
+  rows,
+  matrixRows,
+  backends = []
+}: {
+  rows: Row[]
+  matrixRows: MatrixRow[]
+  backends?: ServerBackendId[]
+}): RunResult[] {
+  return [
+    ...rows.flatMap(({ test, size, result }) =>
+      resultEntries({
+        fields: { suite: 'sizes', test: sizeTestId(test), size },
+        result,
+        backends
+      })
+    ),
+    ...matrixRows.flatMap(({ category, payload, read, write }) => [
+      ...resultEntries({
+        fields: { suite: 'matrix', test: 'read', category, payload },
+        result: read,
+        backends
+      }),
+      ...resultEntries({
+        fields: { suite: 'matrix', test: 'write', category, payload },
+        result: write,
+        backends
+      })
+    ])
+  ]
+}
+
+/**
+ * The server version and build time a `/health` body reports
+ * (`{ status, version, commit, builtAt }`), each null when it is absent: a
+ * server with version disclosure off (`WAS_DISCLOSE_VERSION`) reports
+ * neither, and one running from source, with no `dist/build-info.json`, has
+ * no build time.
+ * @param body {unknown}   the parsed body, or undefined if it wasn't JSON
+ * @returns {{ version: string | null, builtAt: string | null }}
+ */
+export function healthBuild(body: unknown): {
+  version: string | null
+  builtAt: string | null
+} {
+  const field = (name: string): string | null => {
+    const value =
+      typeof body === 'object' && body !== null
+        ? (body as Record<string, unknown>)[name]
+        : undefined
+    return typeof value === 'string' ? value : null
+  }
+  return { version: field('version'), builtAt: field('builtAt') }
+}
+
+/**
+ * Checks a `--runner` value, which names the folder its run records go in:
+ * letters, digits, `.`, `_` and `-`, starting with a letter or digit, so it
+ * is one path segment on every filesystem.
+ * @param value {string}
+ * @returns {string}
+ */
+export function parseRunner(value: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+    throw new Error(
+      `--runner "${value}" must be letters, digits, ".", "_" and "-", ` +
+        'starting with a letter or digit, e.g. fly-iad.'
+    )
+  }
+  return value
+}
+
+/**
+ * Where a run record goes under `--record`'s dir:
+ * `<runner>/<host>/<stamp>.json`. The host is `serverUrl`'s, with its port
+ * after a `-` (`localhost-4455`), and the stamp is the run's start in UTC
+ * with the colons dropped (`2026-10-29T164002Z`), so the names in a folder
+ * sort by time and are valid on every filesystem.
+ * @param options {object}
+ * @param options.dir {string}
+ * @param options.runner {string}
+ * @param options.serverUrl {string}
+ * @param options.startedAt {Date}
+ * @returns {string}
+ */
+export function recordPath({
+  dir,
+  runner,
+  serverUrl,
+  startedAt
+}: {
+  dir: string
+  runner: string
+  serverUrl: string
+  startedAt: Date
+}): string {
+  const { hostname, port } = new URL(serverUrl)
+  const host = port === '' ? hostname : `${hostname}-${port}`
+  const stamp = `${startedAt.toISOString().slice(0, 19).replaceAll(':', '')}Z`
+  return join(dir, runner, host, `${stamp}.json`)
 }

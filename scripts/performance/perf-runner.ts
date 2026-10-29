@@ -229,7 +229,7 @@ export function findK6({
  * Describes the checked-out commit, marking uncommitted changes.
  * @returns {string}
  */
-function describeCommit(): string {
+export function describeCommit(): string {
   const head = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
     encoding: 'utf8'
   })
@@ -248,7 +248,7 @@ function describeCommit(): string {
  * for a matching environment at a glance.
  * @returns {string}
  */
-function describeMachine(): string {
+export function describeMachine(): string {
   const [cpu] = cpus()
   return formatMachine({
     cpuModel: cpu?.model ?? 'unknown CPU',
@@ -265,24 +265,28 @@ function describeMachine(): string {
  * @param options.k6Version {string | undefined}
  * @param options.settings {LoadSettings}
  * @param [options.extraLines] {string[]}   more `- ...` lines, last
+ * @param [options.startedAt] {Date}   the date the header shows; now by
+ *   default
  * @returns {string[]}
  */
 export function reportHeader({
   title,
   k6Version,
   settings,
-  extraLines = []
+  extraLines = [],
+  startedAt = new Date()
 }: {
   title: string
   k6Version: string | undefined
   settings: LoadSettings
   extraLines?: string[]
+  startedAt?: Date
 }): string[] {
   return [
     `## ${title}`,
     '',
     `- Commit: ${describeCommit()}`,
-    `- Date: ${new Date().toISOString()}`,
+    `- Date: ${startedAt.toISOString()}`,
     `- Node ${process.version}, ${k6Version ?? 'k6 not installed'}`,
     `- ${describeMachine()}`,
     `- ${settings.clients} clients, ${settings.durationSeconds} s per load test` +
