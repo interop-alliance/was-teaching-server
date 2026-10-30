@@ -163,12 +163,15 @@ describe('Delegation-proof cryptosuites', () => {
 
   describe('a chain mixing the two suites', () => {
     it('verifies an old-suite parent with a new-suite child', async () => {
+      // One `expires` for both links: a child minted a moment after its
+      // parent would otherwise outlive it by that moment and be refused.
+      const expires = anHourFromNow()
       const parent = await legacyClient({ signer: alice.signer }).delegate({
         capability: rootCapabilityId(spaceUrl),
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'HEAD'],
-        expires: anHourFromNow()
+        expires
       })
       const child = await jcsClient({
         signer: aliceDelegatedApp.signer
@@ -176,7 +179,7 @@ describe('Delegation-proof cryptosuites', () => {
         capability: parent,
         controller: bob.did,
         allowedActions: ['GET'],
-        expires: anHourFromNow()
+        expires
       })
 
       const response = await readDoc({ capability: child, signer: bob.signer })
@@ -184,12 +187,15 @@ describe('Delegation-proof cryptosuites', () => {
     })
 
     it('verifies a new-suite parent with an old-suite child', async () => {
+      // One `expires` for both links: a child minted a moment after its
+      // parent would otherwise outlive it by that moment and be refused.
+      const expires = anHourFromNow()
       const parent = await jcsClient({ signer: alice.signer }).delegate({
         capability: rootCapabilityId(spaceUrl),
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'HEAD'],
-        expires: anHourFromNow()
+        expires
       })
       const child = await legacyClient({
         signer: aliceDelegatedApp.signer
@@ -197,7 +203,7 @@ describe('Delegation-proof cryptosuites', () => {
         capability: parent,
         controller: bob.did,
         allowedActions: ['GET'],
-        expires: anHourFromNow()
+        expires
       })
 
       const response = await readDoc({ capability: child, signer: bob.signer })
