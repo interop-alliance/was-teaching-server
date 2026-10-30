@@ -823,14 +823,13 @@ async function migrateUnderLock({
       stored: record.originId,
       configured: configuredOriginId
     })
-    if (record.originId === undefined) {
-      // Written before any step runs, so a run killed mid-migration keeps it.
-      record = { ...record, originId }
-      await writeStoreRecord({ dataDir, record })
-    }
+    const originIdUnstamped = record.originId === undefined
+    record = { ...record, originId }
     // Every pending refuse step first, over the store as the earlier release
     // left it, so a refusal writes nothing and that release boots on the
-    // store again. Then the convert steps, each followed by its stamp.
+    // store again. Then the origin id, written before any convert step so a
+    // run killed mid-migration keeps it, and the convert steps, each
+    // followed by its stamp.
     const pending = []
     for (
       let version = record.version + 1;
@@ -844,6 +843,9 @@ async function migrateUnderLock({
         logger.info({ version }, 'Checking the filesystem store layout')
         await step.run({ dataDir, logger })
       }
+    }
+    if (originIdUnstamped) {
+      await writeStoreRecord({ dataDir, record })
     }
     for (const { version, step } of pending) {
       if (step.kind === 'convert') {

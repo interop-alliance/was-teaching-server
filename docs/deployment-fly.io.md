@@ -433,8 +433,11 @@ nothing.
   volume (`fly volumes snapshots list <volume-id>`, then
   `fly volumes create <name> --snapshot-id <snapshot-id>`), attach it to the
   machine in place of the current one, and dispatch the workflow on the previous
-  tag. If the data is disposable, wipe the volume instead, as the staging
-  workflow's `wipe_data` option does, and re-run the failed deploy.
+  tag. If the data is disposable, create an empty volume instead
+  (`fly volumes create <name> --region <region> --size <gb>`), attach it in
+  place of the current one, and re-run the failed deploy. The staging workflow's
+  `wipe_data` option is no help here: it runs `fly machine exec`, which needs a
+  running machine.
 
 Read the machine's log first (`fly logs --app <app> --no-tail`): a
 `StoreVersionError` names the layout version `store.json` carries and the one
