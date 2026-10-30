@@ -2,6 +2,17 @@
 
 ## 0.44.0 - TBD
 
+### Added
+
+- The production Deploy workflow snapshots the app's data volume before each
+  deploy, and docs/deployment-fly.io.md gains a "Rolling back" section: when a
+  dispatch on the previous tag is enough, and when the snapshot restore or a
+  wipe is the way back.
+- A `pnpm perf:remote --record` run record carries `finished_at`, when the run's
+  measurements ended, before it deletes its Spaces, so the minutes from
+  `datetime` to it are how long the run took. The record stays `schema` 1:
+  `finished_at` is a new member, absent in records made before it.
+
 ### Changed
 
 - **Breaking (`/service` wire change):** the `instance` member advertises the
@@ -11,12 +22,13 @@
   The identity module's signing-key record carries the new field name too; the
   plugin options are unchanged.
 
-### Added
+### Fixed
 
-- A `pnpm perf:remote --record` run record carries `finished_at`, when the run's
-  measurements ended, before it deletes its Spaces, so the minutes from
-  `datetime` to it are how long the run took. The record stays `schema` 1:
-  `finished_at` is a new member, absent in records made before it.
+- A filesystem layout step that refuses the store (one with no conversion) now
+  runs before any pending converting step writes, so a refused boot leaves
+  `store.json` and the data dir as the previous release wrote them, and that
+  release boots on them again. Before, the converting steps ahead of the refusal
+  were applied and stamped first, and the store then booted on neither release.
 
 ## 0.43.0 - 2026-10-29
 

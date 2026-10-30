@@ -37,6 +37,21 @@ jobs:
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
+      # A restore point from before the roll. Fly replaces the one machine in
+      # place, so a deploy whose health check fails leaves it on the new image
+      # with no automatic rollback (docs/deployment-fly.io.md, "Rolling
+      # back"). Skipped when the app mounts no volume (the Postgres backend).
+      - name: Snapshot data volume
+        run: |
+          volume="$(flyctl volumes list --app "$FLY_APP" --json | jq -r '.[0].id // empty')"
+          if [ -z "$volume" ]; then
+            echo "No volume to snapshot."
+            exit 0
+          fi
+          flyctl volumes snapshots create "$volume" --app "$FLY_APP"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
       # Builds the Dockerfile on Fly's remote builder and rolls the machine.
       - name: Deploy
         run: >-

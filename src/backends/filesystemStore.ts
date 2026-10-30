@@ -60,13 +60,25 @@ import {
 } from '../errors.js'
 
 /**
- * One layout migration. It must be idempotent: a run interrupted before its
- * version stamp is written is repeated in full on the next boot.
+ * One layout step. A `refuse` step only inspects the store and throws
+ * `StoreVersionError` when it holds what the layout has no conversion for; a
+ * `convert` step rewrites the store. `run` must be idempotent: a run
+ * interrupted before its version stamp is written is repeated in full on the
+ * next boot.
+ *
+ * The runner runs every pending refuse step before any pending convert step
+ * writes, so a refusal leaves the store as the earlier release wrote it, and
+ * that release boots on it again. A refuse step therefore inspects the store
+ * as that release left it, and must tolerate the layout of each convert step
+ * pending before it.
  */
-export type StoreMigration = (options: {
-  dataDir: string
-  logger: FastifyBaseLogger
-}) => Promise<void>
+export type StoreMigration = {
+  kind: 'refuse' | 'convert'
+  run: (options: {
+    dataDir: string
+    logger: FastifyBaseLogger
+  }) => Promise<void>
+}
 
 /**
  * Ordered layout migrations. Version `n` is `STORE_MIGRATIONS[n - 1]`. New
@@ -76,20 +88,20 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // v1: the baseline layout, the one every data dir written before `store.json`
   // existed is already in. An unstamped dir that holds data starts at version
   // 0, so this step is what stamps it; it has nothing to convert.
-  async () => {},
+  { kind: 'convert', run: async () => {} },
   // v2: every versioned record carries a write stamp in place of a version
   // counter. A record written at an earlier layout carries none, and there is
   // no stamping step: a store holding any Space is refused, every boot, until
   // it is wiped or restored from an archive (whose records an import
   // re-stamps). An empty store passes and is stamped at this version.
-  refuseUnstampedSpaces,
+  { kind: 'refuse', run: refuseUnstampedSpaces },
   // v3: an access-control policy is a versioned record, with a write stamp
   // and a generation, and its delete leaves a tombstone. A policy file
   // written at an earlier layout carries neither, and there is no stamping
   // step: a store holding any policy file is refused, every boot, until it
   // is wiped or restored from an archive (whose policies an import
   // re-stamps). A store with no policy passes and is stamped at this version.
-  refuseUnstampedPolicies,
+  { kind: 'refuse', run: refuseUnstampedPolicies },
   // v4: a Collection's changes-feed counter holds the positions of its
   // Collection-level records in one `records` map, and a Collection or
   // Resource policy carries its own position in its policy file, so the
@@ -99,7 +111,7 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // store holding either is refused, every boot, until it is wiped or
   // restored from an archive (an import assigns fresh positions). A store
   // with neither passes and is stamped at this version.
-  refuseFeedCountersWithPolicyPositions,
+  { kind: 'refuse', run: refuseFeedCountersWithPolicyPositions },
   // v5: a Resource tombstone is stored under its own name,
   // `.tombstone.<resourceId>.json`, so a directory listing tells it from a
   // live sidecar (`.meta.<resourceId>.json`) by name, and the live Resource
@@ -108,7 +120,7 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // holding one is refused, every boot, until it is wiped or restored from
   // an archive (an import writes each tombstone under its own name). A store
   // with none passes and is stamped at this version.
-  refuseTombstonesUnderLiveName,
+  { kind: 'refuse', run: refuseTombstonesUnderLiveName },
   // v6: a Collection dir may hold a chunk staging directory,
   // `.staging.chunks.<encodedResourceId>/`, beside a Resource's chunk
   // directory: what a pull loop staged for the Resource's chunk set, and the
@@ -116,14 +128,14 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // earlier layout holds none, so there is nothing to convert. The step
   // exists so that a server built before this layout, which neither
   // reclaims staging nor finishes a torn swap, refuses the store.
-  async () => {},
+  { kind: 'convert', run: async () => {} },
   // v7: a replica registration is a versioned record, with a write stamp on
   // its record file, and `PUT` at its URL replaces it in place. A
   // registration file written at an earlier layout carries no stamp, and
   // there is no stamping step: a store holding one is refused, every boot,
   // until it is wiped or the registration is made again. A store with none
   // passes and is stamped at this version.
-  refuseUnstampedReplicas,
+  { kind: 'refuse', run: refuseUnstampedReplicas },
   // v8: a Space's zcap revocation records live in the `.revocations/`
   // subdirectory of its Space dir, a reserved Collection id, so the one `rm`
   // of Delete Space removes them with the Space. The step moves each
@@ -131,7 +143,7 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // dir, drops the tree of a Space that is gone (what a Delete Space the
   // earlier layout cut short left), and removes the `space-revocations/`
   // root. It refuses a root holding an entry it does not recognize.
-  moveSpaceRevocationsIntoSpaceDirs,
+  { kind: 'convert', run: moveSpaceRevocationsIntoSpaceDirs },
   // v9: the Space Metadata file is `.space.meta.<spaceId>.json` and the
   // Collection Metadata file (live in its Collection dir, or a tombstone in
   // the Space dir) is `.collection.meta.<collectionId>.json`, the names of
@@ -141,7 +153,7 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // is no conversion step: a store holding one is refused, every boot, until
   // it is wiped or restored from an archive (an import writes the new
   // names). A store with none passes and is stamped at this version.
-  refuseMetadataUnderOldNames
+  { kind: 'refuse', run: refuseMetadataUnderOldNames }
 ]
 
 /**
@@ -816,16 +828,31 @@ async function migrateUnderLock({
       record = { ...record, originId }
       await writeStoreRecord({ dataDir, record })
     }
+    // Every pending refuse step first, over the store as the earlier release
+    // left it, so a refusal writes nothing and that release boots on the
+    // store again. Then the convert steps, each followed by its stamp.
+    const pending = []
     for (
       let version = record.version + 1;
       version <= currentVersion;
       version++
     ) {
-      logger.info(
-        { from: version - 1, to: version },
-        'Migrating filesystem store'
-      )
-      await migrations[version - 1]!({ dataDir, logger })
+      pending.push({ version, step: migrations[version - 1]! })
+    }
+    for (const { version, step } of pending) {
+      if (step.kind === 'refuse') {
+        logger.info({ version }, 'Checking the filesystem store layout')
+        await step.run({ dataDir, logger })
+      }
+    }
+    for (const { version, step } of pending) {
+      if (step.kind === 'convert') {
+        logger.info(
+          { from: version - 1, to: version },
+          'Migrating filesystem store'
+        )
+        await step.run({ dataDir, logger })
+      }
       record = { ...record, version }
       await writeStoreRecord({ dataDir, record })
     }

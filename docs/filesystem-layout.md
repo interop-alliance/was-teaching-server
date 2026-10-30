@@ -13,11 +13,20 @@ The `src/backends/filesystemStore.ts` module holds the filesystem backend's
 storage layout version. The data root holds `store.json`, whose integer
 `version` names the layout, beside `spaces/` and `keystores/`.
 
-`STORE_MIGRATIONS` is an ordered, append-only list of migration functions,
-version `n` being entry `n - 1`, like `MIGRATIONS` in `postgresSchema.ts`. The
-backend's async factory, `FileSystemBackend.open()`, applies pending steps in
-order under a lock and rewrites `store.json` after each one, so every step must
-be idempotent.
+`STORE_MIGRATIONS` is an ordered, append-only list of layout steps, version `n`
+being entry `n - 1`, like `MIGRATIONS` in `postgresSchema.ts`. A step is either
+a refusing step, which only inspects the store and throws `StoreVersionError`
+when the store holds what the layout has no conversion for, or a converting
+step, which rewrites it. The backend's async factory,
+`FileSystemBackend.open()`, runs the pending steps under a lock: every pending
+refusing step first, over the store as the earlier release left it, then each
+pending converting step, and rewrites `store.json` after each version. A refusal
+therefore writes nothing, and the earlier release boots on the store again,
+which is what a rollback after a failed deploy needs. A refusing step must
+tolerate the layout of each converting step pending before it. Every step must
+be idempotent, since a run interrupted before a version stamp is repeated. The
+Postgres runner needs no such ordering: its migrations run in one transaction,
+so a refusal there rolls back the whole run.
 
 Each runner creates its own `store.lock.<nonce>` file and withdraws if it then
 sees another live one. A lock file whose heartbeat stopped, or whose holder is
