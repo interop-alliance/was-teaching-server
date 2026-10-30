@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 243
+nextAvailableId: 244
 
 <!-- roadmap-order:index:start -->
 
@@ -38,6 +38,8 @@ Ready:
 
 Ready:
 
+- WAS-243 [M] (*) List the Portable Wallet Profile entry in the service
+  description
 - WAS-142 [M] (*) Problem documents on every route, and Fastify's own errors
   typed
 - WAS-66 [M] (*) Accept ids beyond the unreserved charset (percent-encoding on
@@ -47,11 +49,6 @@ Ready:
   hosted elsewhere
 - WAS-194 [M] (*) `encryption` is declared only when the Collection is created
 - WAS-219 [L] (*) Changing a Collection's `backend.id` once it holds Resources
-
-Waiting on another repo:
-
-- WAS-235 [M] (*) Rename `instance.exportSigningKey` to `exportSigningMethod` on
-  `/service` (after SC-12)
 
 **Features**
 
@@ -608,6 +605,51 @@ orders by content stamps would not see that change as a content revision.
 
 ## Spec and protocol
 
+### WAS-243: [M] (*) List the Portable Wallet Profile entry in the service description
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: service-description, wallet-profile, wire-contract
+- discovered-from: portable-wallet-profile-spec PWP-1 (archived 2026-10-30)
+- touches:
+  - portable-wallet-profile-spec: PWP-1. SHIPPED (2026-09-16): identifier
+    `https://w3id.org/pws/wallet-profile`, version `0.1`, entry members
+    exactly `version` and an optional `url`
+    (`https://interop-alliance.github.io/portable-wallet-profile-spec/`), no
+    `features`. A server MUST NOT list the entry unless its PWS `0.5` entry
+    carries `listing`, `collection-management`, `space-management`, `policy`,
+    `export`, `encryption`, `changes-query` and its PWS-EC `0.1` entry carries
+    `blinded-index-query`, `governed-history-logs`
+  - was-conformance-suite: PWSCS-33 verifies the listing against the required
+    tokens once this ships (the pair rule of LEARNINGS.md applies)
+  - was-client: WCL-146 reads the entry
+- acceptance:
+  - [ ] `SERVICE_FEATURES` (`src/serviceDescription.ts:74`) gains the
+        `encryption` token. The server already implements the Collection
+        `encryption` member (set-once, served from the governed log's head)
+        but does not advertise it, and the wallet profile requires the token.
+        Verify the PWS spec's definition of the token is met in full before
+        adding it
+  - [ ] `WALLET_PROFILE_IDENTIFIER`, `WALLET_PROFILE_VERSION` (`'0.1'`) and
+        `WALLET_PROFILE_URL` constants in `src/config.default.ts`, documented
+        like the authz and EC profile constants beside them
+  - [ ] The service description lists the entry under its identifier with
+        `version` and `url` only
+  - [ ] A test asserts the listing, and a test asserts the invariant the
+        profile states: every token the profile requires is present in the
+        PWS and PWS-EC entries this server serves, so the entry can never be
+        listed while a required token is missing
+  - [ ] ARCHITECTURE.md's service description section names the profile among
+        the `specs` keys the server lists
+  - [ ] CHANGELOG entry
+
+Filed 2026-10-30 from portable-wallet-profile-spec PWP-1, whose spec text
+shipped 2026-09-16; this is the server half it named. Listing the entry is a
+conformance claim and adds no route. The one substantive change is the
+missing `encryption` token, without which the server does not satisfy the
+profile and may not list it.
+
 Conformance gaps against the spec, spec-side proposals this server would
 implement once decided, and research that may end in either.
 
@@ -794,47 +836,6 @@ gone. WAS-173 shipped the `revisions` half of the rule. This item is the
 `encryption` half. It removes a path was-client and was-react still use as
 fallbacks, so it lands with their removal. The App Connect flow already creates
 its Collections encrypted from birth.
-
-### WAS-235: [M] (*) [after SC-12] Rename `instance.exportSigningKey` to `exportSigningMethod` on `/service`
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: wire-contract, service-description, server-identity
-- discovered-from: portable-web-spaces-spec WASS-7 (2026-10-29)
-- blocked-by: SC-12
-- touches:
-  - was-teaching-server (this repo): `src/serviceDescription.ts` (the `instance`
-    member it composes), `src/lib/serverIdentity.ts` (the field on the
-    signing-key record and the identity log entry it writes), `src/plugin.ts`
-    (the option it threads through), the two server-identity tests, README.md
-    (the `WAS_SERVER_KEY_SEED` row), ARCHITECTURE.md (the service description
-    and server identity paragraphs), `docs/admin-guide.md` (provisioning and
-    rotation steps, the `jq` line), `docs/server-identity-and-provenance.md`,
-    `docs/service-description.md`, CHANGELOG.md
-  - storage-core: SC-12 (the type the member is read from)
-  - portable-web-spaces-spec: resolved 2026-10-29 -- the Instance Disclosure
-    list and the Archive provenance section use the new name
-  - was-conformance-suite: unaffected (nothing in it reads the member)
-- acceptance:
-  - [ ] `/service` carries `instance.exportSigningMethod` with the value
-        `exportSigningKey` carried, and no `exportSigningKey` member
-  - [ ] the identity module's record field and the `serverSigningKey` plugin
-        option use the new name
-  - [ ] the server-identity API and runbook tests assert the new member
-  - [ ] README, ARCHITECTURE.md and the three docs name the member by its new
-        name, including the admin guide's `jq` read and rotation step
-  - [ ] CHANGELOG entry names the rename as a wire change to `/service`
-
-Context: the service description advertises the key the server signs its Space
-archive exports with, under `instance.exportSigningKey`. The value is a
-`did:key`, which identifies a verification method rather than carrying key
-material, so the PWS spec renamed the member to `exportSigningMethod` on
-2026-10-29. This server is the one writer of the member and its docs are the
-operator's guide to provisioning the identity, so the rename reaches the service
-description, the identity module, the tests and every doc that tells an
-administrator to read the value off `/service`. No alias for the old name is
-served.
 
 ### WAS-219: [L] (*) Changing a Collection's `backend.id` once it holds Resources
 

@@ -6893,3 +6893,44 @@ and `peerLogFetcher` as plugin options (`src/plugin.ts:255-272`), but the
 transport that routes one server's pulls to another through `fastify.inject`
 lives in the test helpers, outside the published entry. `injectPeerFetch` routes
 GET only, which is all a pull sends.
+
+### WAS-235: [M] (*) [after SC-12] Rename `instance.exportSigningKey` to `exportSigningMethod` on `/service`
+
+- status: done (2026-10-30)
+- priority: medium
+- backend: *
+- labels: wire-contract, service-description, server-identity
+- discovered-from: portable-web-spaces-spec WASS-7 (2026-10-29)
+- touches:
+  - was-teaching-server (this repo): `src/serviceDescription.ts` (the `instance`
+    member it composes), `src/lib/serverIdentity.ts` (the field on the
+    signing-key record and the identity log entry it writes), `src/plugin.ts`
+    (the option it threads through), the two server-identity tests, README.md
+    (the `WAS_SERVER_KEY_SEED` row), ARCHITECTURE.md (the service description
+    and server identity paragraphs), `docs/admin-guide.md` (provisioning and
+    rotation steps, the `jq` line), `docs/server-identity-and-provenance.md`,
+    `docs/service-description.md`, CHANGELOG.md
+  - storage-core: shipped 2026-10-30 -- SC-12 (the type the member is read
+    from), published as 0.43.0
+  - portable-web-spaces-spec: resolved 2026-10-29 -- the Instance Disclosure
+    list and the Archive provenance section use the new name
+  - was-conformance-suite: unaffected (nothing in it reads the member)
+- acceptance:
+  - [x] `/service` carries `instance.exportSigningMethod` with the value
+        `exportSigningKey` carried, and no `exportSigningKey` member
+  - [x] the identity module's signing-key record field uses the new name (the
+        plugin options are unchanged)
+  - [x] the server-identity API and runbook tests assert the new member
+  - [x] README, ARCHITECTURE.md and the three docs name the member by its new
+        name, including the admin guide's `jq` read and rotation step
+  - [x] CHANGELOG entry names the rename as a wire change to `/service`
+
+Context: the service description advertises the key the server signs its Space
+archive exports with, under `instance.exportSigningKey`. The value is a
+`did:key`, which identifies a verification method rather than carrying key
+material, so the PWS spec renamed the member to `exportSigningMethod` on
+2026-10-29. This server is the one writer of the member and its docs are the
+operator's guide to provisioning the identity, so the rename reaches the service
+description, the identity module, the tests and every doc that tells an
+administrator to read the value off `/service`. No alias for the old name is
+served.

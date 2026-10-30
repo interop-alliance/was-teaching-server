@@ -64,7 +64,7 @@ client-annex clause.
 One predicate, `signingKeyRelationshipProblem`, decides this for `/service`, the
 export snapshot check and the import statement check. See
 [service-description.md](service-description.md) for how `/service` advertises
-the result as `exportSigningKey` and `serverDid`.
+the result as `exportSigningMethod` and `serverDid`.
 
 A log that is absent, does not verify, or lists the key otherwise leaves
 `serverDid` off `/service` with a `warn` line, logged once per log version

@@ -1,7 +1,7 @@
 /**
  * Server identity tests (Vitest): the `server` Space provisioned at boot
  * under the admin DID, the export-signing key derived from the seed and
- * advertised on `/service` as `instance.exportSigningKey`, and the
+ * advertised on `/service` as `instance.exportSigningMethod`, and the
  * `instance.serverDid` member that
  * appears only once the admin's history log at `server/id/did.jsonl` lists
  * that key under `assertionMethod`, optionally beside `capabilityInvocation`
@@ -65,7 +65,7 @@ describe('Server identity', () => {
     admin: Awaited<ReturnType<typeof adminIdentity>>,
     alice: any,
     seed: Uint8Array,
-    exportSigningKey: string,
+    exportSigningMethod: string,
     serverKeyMultibase: string,
     log: DIDLog,
     did: string
@@ -100,7 +100,7 @@ describe('Server identity', () => {
     admin = await adminIdentity({ keyPair: adminKeyPair, baseServerUrl })
     ;({ alice } = await zcapClients({ baseServerUrl }))
     const signingKey = await createServerSigningKey({ seed })
-    exportSigningKey = signingKey.exportSigningKey
+    exportSigningMethod = signingKey.exportSigningMethod
     serverKeyMultibase = signingKey.keyPair.publicKeyMultibase
   })
   afterAll(async () => {
@@ -205,13 +205,13 @@ describe('Server identity', () => {
   describe('the export-signing key', () => {
     it('is derived deterministically from the seed', async () => {
       const again = await createServerSigningKey({ seed })
-      assert.equal(again.exportSigningKey, exportSigningKey)
-      assert.match(exportSigningKey, /^did:key:z6Mk/)
+      assert.equal(again.exportSigningMethod, exportSigningMethod)
+      assert.match(exportSigningMethod, /^did:key:z6Mk/)
     })
 
     it('is advertised on /service before any log exists, with no `did`', async () => {
       const { entry } = await serviceEntry()
-      assert.equal(entry.exportSigningKey, exportSigningKey)
+      assert.equal(entry.exportSigningMethod, exportSigningMethod)
       assert.equal(entry.serverDid, undefined)
     })
   })
@@ -242,7 +242,7 @@ describe('Server identity', () => {
 
       const { entry, etag } = await serviceEntry()
       assert.equal(entry.serverDid, did)
-      assert.equal(entry.exportSigningKey, exportSigningKey)
+      assert.equal(entry.exportSigningMethod, exportSigningMethod)
       assert.notEqual(etag, etagBefore)
     })
 
@@ -290,7 +290,7 @@ describe('Server identity', () => {
 
       const { entry } = await serviceEntry()
       assert.equal(entry.serverDid, undefined)
-      assert.equal(entry.exportSigningKey, exportSigningKey)
+      assert.equal(entry.exportSigningMethod, exportSigningMethod)
     })
 
     it('returns once a later entry drops the refused relationship', async () => {
@@ -471,7 +471,7 @@ describe('Server identity without a seed', () => {
   it('serves neither identity member', async () => {
     const response = await fetch(`${baseServerUrl}service`)
     const document = (await response.json()) as any
-    assert.equal('exportSigningKey' in document.instance, false)
+    assert.equal('exportSigningMethod' in document.instance, false)
     assert.equal('serverDid' in document.instance, false)
   })
 

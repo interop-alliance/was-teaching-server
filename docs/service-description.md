@@ -83,8 +83,9 @@ The document's `instance` member is the operator's disclosure of the deployed
 software. It also carries the instance's identity when the server has one (see
 [server-identity-and-provenance.md](server-identity-and-provenance.md)).
 
-- `exportSigningKey` is the `did:key` of the key the server will sign export
-  archives with. It is present whenever `WAS_SERVER_KEY_SEED` is set.
+- `exportSigningMethod` is the verification method the server will sign export
+  archives with, as a `did:key`. It is present whenever `WAS_SERVER_KEY_SEED` is
+  set.
 - `serverDid` is the server's own self-hosted `did:webvh`. It is present only
   once the resolved current document of the log at `server/id/did.jsonl` lists
   that key under `assertionMethod`, and under `capabilityInvocation` at most.

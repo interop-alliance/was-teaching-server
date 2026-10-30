@@ -9,8 +9,9 @@
  * server's key as a verification method under `assertionMethod`, and under
  * `capabilityInvocation` too when the server is to sign sync invocations. The
  * server's part is to provision that Space at boot, advertise its key on
- * `/service` as `exportSigningKey`, and advertise the DID as `serverDid` once the
- * resolved current document lists the key. Until then it signs nothing.
+ * `/service` as `exportSigningMethod`, and advertise the DID as `serverDid`
+ * once the resolved current document lists the key. Until then it signs
+ * nothing.
  *
  * Resolution goes through the same self-hosted `did:webvh` resolver every
  * Space controller goes through (`webvhController.ts`), so the log gets the
@@ -58,7 +59,7 @@ export const SERVER_IDENTITY_COLLECTION_ID = 'id'
 export interface ServerSigningKey {
   keyPair: Ed25519VerificationKey
   /** `did:key:` + the key's `publicKeyMultibase`, the `/service` member */
-  exportSigningKey: string
+  exportSigningMethod: string
 }
 
 /**
@@ -74,7 +75,10 @@ export async function createServerSigningKey({
   seed: Uint8Array
 }): Promise<ServerSigningKey> {
   const keyPair = await Ed25519VerificationKey.generate({ seed })
-  return { keyPair, exportSigningKey: `did:key:${keyPair.publicKeyMultibase}` }
+  return {
+    keyPair,
+    exportSigningMethod: `did:key:${keyPair.publicKeyMultibase}`
+  }
 }
 
 /**
@@ -354,7 +358,7 @@ async function resolveServerDidUncached({
   })
   if (problem !== undefined) {
     logger.warn(
-      { did, exportSigningKey: signingKey.exportSigningKey },
+      { did, exportSigningMethod: signingKey.exportSigningMethod },
       `${problem} The server identity is not advertised.`
     )
     return undefined

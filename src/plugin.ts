@@ -214,7 +214,7 @@ export interface FastifyWasOptions {
   /**
    * The 32-byte Ed25519 seed the server's export-signing key is derived from
    * (config `WAS_SERVER_KEY_SEED`). The key is advertised on `/service` as
-   * `exportSigningKey`. `undefined` means no signing key: exports are
+   * `exportSigningMethod`. `undefined` means no signing key: exports are
    * unsigned and neither identity member is served.
    */
   serverKeySeed?: Uint8Array
@@ -505,7 +505,7 @@ async function wasPlugin(
       })
       if (did === undefined) {
         fastify.log.warn(
-          { exportSigningKey: serverSigningKey.exportSigningKey },
+          { exportSigningMethod: serverSigningKey.exportSigningMethod },
           'No server DID lists the export-signing key yet; exports are ' +
             'unsigned until the admin writes the server history log.'
         )
