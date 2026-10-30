@@ -366,6 +366,8 @@ async function main(): Promise<void> {
         record: {
           schema: runRecordSchema,
           datetime: startedAt.toISOString(),
+          // The measurements' end: the Spaces are deleted after it.
+          finished_at: new Date().toISOString(),
           spaces_url: serverUrl,
           server_version: health.version,
           server_built_at: health.builtAt,
