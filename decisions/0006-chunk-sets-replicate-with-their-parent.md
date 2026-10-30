@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-10-25
 - Driving work: chunk replication for the pull loop
-  (`designs/WAS-14-chunk-replication.md`, approved 2026-10-25). The pull loop
+  (`designs/WSS-14-chunk-replication.md`, approved 2026-10-25). The pull loop
   replicated a chunked Resource's parent envelope and left its chunk bytes
   behind, so a replica server served an envelope it could not decrypt.
 - Affects: was-teaching-server (`src/sync/replication.ts`, the chunk pull;

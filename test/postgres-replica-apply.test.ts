@@ -52,7 +52,7 @@ function peerStamp(offset: number, counter = 0): WriteStamp {
 const registration = {
   id: replicaId,
   fromSpace: 'https://peer.example/space/space-9/',
-  toSpace: 'https://was.example/space/space-1/',
+  toSpace: 'https://pws.example/space/space-1/',
   capability: { id: 'urn:uuid:pull' },
   role: 'source'
 } as unknown as ReplicaRegistration

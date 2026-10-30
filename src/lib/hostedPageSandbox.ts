@@ -1,6 +1,6 @@
 /**
  * The sandbox policy for hosted pages: the `Content-Security-Policy` header
- * every response on a WAS or `/kms` route carries, except a PDF. A Resource of
+ * every response on a PWS or `/kms` route carries, except a PDF. A Resource of
  * type `text/html` opened in a browser is a page hosted on this server's
  * origin, and a deployment may serve that origin as a wallet's own. The sandbox gives each such page an opaque origin, so its scripts
  * cannot read the origin's storage, cookies, or key material.

@@ -160,9 +160,9 @@ export function isSafeMethod(method: string): boolean {
  * MissingAuthError (401) when `Authorization` or `Capability-Invocation` is
  * absent. For route groups where every operation, reads included, is
  * privileged: the WebKMS `/kms` group uses it (every webkms route is
- * zcap-invoked; the protocol has no public reads). No WAS group qualifies --
+ * zcap-invoked; the protocol has no public reads). No PWS group qualifies --
  * even the SpacesRepository group lets anonymous List Spaces reads through,
- * answered with the spec's empty-items 200. Individual WAS routes whose reads
+ * answered with the spec's empty-items 200. Individual PWS routes whose reads
  * are privileged (the policy GETs) install it as a route-level `onRequest`
  * hook on top of their group's relaxed one.
  * @param request {import('fastify').FastifyRequest}

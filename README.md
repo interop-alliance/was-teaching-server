@@ -1,9 +1,9 @@
-# WAS Teaching Server (_was-teaching-server_)
+# Web Spaces Server (_@interop/web-spaces-server_)
 
-[![Node.js CI](https://github.com/interop-alliance/was-teaching-server/workflows/CI/badge.svg)](https://github.com/interop-alliance/was-teaching-server/actions?query=workflow%3A%22CI%22)
+[![Node.js CI](https://github.com/interop-alliance/web-spaces-server/workflows/CI/badge.svg)](https://github.com/interop-alliance/web-spaces-server/actions?query=workflow%3A%22CI%22)
 
 > A basic
-> [Wallet Attached Storage](https://w3c-ccg.github.io/portable-web-spaces-spec/)
+> [Portable Web Spaces](https://w3c-ccg.github.io/portable-web-spaces-spec/)
 > Server used to demonstrate the specification
 
 ## Table of Contents
@@ -18,12 +18,12 @@
 
 See:
 
-- [Wallet Attached Storage Specification](https://w3c-ccg.github.io/portable-web-spaces-spec/)
+- [Portable Web Spaces Specification](https://w3c-ccg.github.io/portable-web-spaces-spec/)
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- request flow, domain model, and ZCap
   authorization structure
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- code style and contribution conventions
 - [ROADMAP.md](ROADMAP.md) -- spec-gap analysis and tracked work items
-  (structured `WAS-N` entries with status, priority, and acceptance criteria)
+  (structured `WSS-N` entries with status, priority, and acceptance criteria)
 
 ### Supported Features
 
@@ -142,7 +142,7 @@ future, separate tier.
 A transient rendezvous for cross-device flows: one page creates an exchange
 holding an opaque request, shows its URL as a QR code, and polls it until
 another device (a phone wallet, say) posts the answer back. This is not part of
-the WAS protocol; it is a small convenience facet the teaching server hosts
+the PWS protocol; it is a small convenience facet the teaching server hosts
 alongside it.
 
 - `POST /workflows/ephemeral/exchanges` — body `{ "request": <opaque JSON> }`;
@@ -211,12 +211,12 @@ not forward it.
 
 ### Using as a Library
 
-The WAS protocol surface is also exported as a registerable Fastify plugin,
+The PWS protocol surface is also exported as a registerable Fastify plugin,
 `fastifyWas`, so a downstream server can compose it with its own persistence
 backend and security plugins. See
 [Consuming the Server as a Library](docs/consuming-server-as-library.md). A
 consumer's tests can boot the server in-process through the
-`was-teaching-server/testing` entry point.
+`@interop/web-spaces-server/testing` entry point.
 
 ### Environment Variables
 
@@ -403,7 +403,7 @@ reusable.
 
 Protocol conformance testing lives in its own package,
 [`@interop/pws-conformance-suite`](https://github.com/interop-alliance/pws-conformance-suite),
-which ships a `pws-conformance` CLI that runs against any WAS server by URL
+which ships a `pws-conformance` CLI that runs against any PWS server by URL
 (installed here as a devDependency). The URL passed to the CLI and the server's
 `SERVER_URL` **must be byte-for-byte identical** (including host and port) —
 ZCap `invocationTarget` URLs embed the full host:port, so even `localhost` vs
@@ -426,13 +426,13 @@ pnpm conformance:local --grep chunk --reporter json
 
 # Against an already-running or external server. Start it with a matching
 # SERVER_URL, then in another shell:
-pnpm conformance https://was.example.com
+pnpm conformance https://pws.example.com
 
 # With an onboarding token, for servers that require one for POST /spaces/:
-pnpm conformance https://was.example.com --token abc123
+pnpm conformance https://pws.example.com --token abc123
 
 # TEST_SERVER_URL / TEST_ONBOARDING_TOKEN env vars still work as fallbacks:
-TEST_SERVER_URL=https://was.example.com pnpm conformance
+TEST_SERVER_URL=https://pws.example.com pnpm conformance
 ```
 
 Useful CLI options: `-s/--suite <id>`, `-g/--grep <pattern>`,

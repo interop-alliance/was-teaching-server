@@ -1,7 +1,7 @@
 /**
  * One-shot local conformance runner.
  *
- * Spins up the WAS server on a fixed local URL, waits until it answers, runs
+ * Spins up the PWS server on a fixed local URL, waits until it answers, runs
  * the `@interop/pws-conformance-suite` CLI (`pws-conformance`) against it, then
  * tears the server down (even if the suite fails). This guarantees the
  * `SERVER_URL` / conformance-target match that ZCap `invocationTarget`

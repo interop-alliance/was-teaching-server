@@ -275,22 +275,22 @@ describe('Service description API', () => {
       const app = createApp({
         backend: await FileSystemBackend.open({ dataDir: backend.dataDir }),
         logger: false,
-        serverUrl: 'https://was.example'
+        serverUrl: 'https://pws.example'
       })
       app.get('/test-links', async (request, reply) => {
         return reply
           .header(
             'link',
-            '<https://was.example/a?cursor=1>; rel="next", ' +
-              '<https://was.example/a>; rel="first"'
+            '<https://pws.example/a?cursor=1>; rel="next", ' +
+              '<https://pws.example/a>; rel="first"'
           )
           .send({})
       })
       const response = await app.inject({ method: 'GET', url: '/test-links' })
       expect(response.headers.link).toBe(
-        '<https://was.example/a?cursor=1>; rel="next", ' +
-          '<https://was.example/a>; rel="first", ' +
-          '<https://was.example/service>; rel="service"'
+        '<https://pws.example/a?cursor=1>; rel="next", ' +
+          '<https://pws.example/a>; rel="first", ' +
+          '<https://pws.example/service>; rel="service"'
       )
       await app.close()
     })

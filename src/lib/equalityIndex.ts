@@ -25,7 +25,7 @@
  * Matching is strict JSON equality: values compare by type and value with no
  * coercion (`"1"` does not match `1`; `true` does not match `"true"`); a
  * multi-valued (array) attribute matches when any of its elements equals the
- * queried value. Pagination reuses WAS's opaque cursor convention
+ * queried value. Pagination reuses PWS's opaque cursor convention
  * (`lib/cursor.ts`), keyset-ordered by ascending `resourceId`.
  */
 import type {

@@ -503,7 +503,7 @@ export function client({ signer }: { signer: ISigner }): ZcapClient {
 }
 
 /**
- * Builds a high-level WAS client wrapping a ZcapClient for the given signer.
+ * Builds a high-level PWS client wrapping a ZcapClient for the given signer.
  *
  * @param options {object}
  * @param options.signer {ISigner}
@@ -1107,12 +1107,12 @@ export function replicaRegistration({
   return {
     id,
     fromSpace,
-    toSpace: `https://was.example/space/${spaceId}/`,
+    toSpace: `https://pws.example/space/${spaceId}/`,
     capability: {
       '@context': ['https://w3id.org/zcap/v1'],
       id: REPLICA_CAPABILITY_ID,
       parentCapability: rootCapabilityId(fromSpace),
-      controller: 'did:webvh:scid:was.example:space:server:id',
+      controller: 'did:webvh:scid:pws.example:space:server:id',
       invocationTarget: fromSpace,
       allowedAction: ['GET', 'HEAD'],
       expires: '2099-01-01T00:00:00Z',

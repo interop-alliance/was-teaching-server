@@ -1,8 +1,8 @@
 /**
  * Hosted-page sandbox integration tests (Vitest, in-process): every response on
- * a WAS route carries the `Content-Security-Policy: sandbox ...` header, so a
+ * a PWS route carries the `Content-Security-Policy: sandbox ...` header, so a
  * stored HTML page runs with an opaque origin. A PDF, and the routes outside
- * the WAS route groups (the welcome page, the service description), carry
+ * the PWS route groups (the welcome page, the service description), carry
  * none.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'

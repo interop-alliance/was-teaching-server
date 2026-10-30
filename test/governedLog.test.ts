@@ -11,7 +11,7 @@ import { deriveGovernedDescriptors } from '../src/lib/governedLog.js'
 import { StorageError } from '../src/errors.js'
 
 describe('deriveGovernedDescriptors', () => {
-  const logUrl = 'https://was.example/space/s/c/meta/log'
+  const logUrl = 'https://pws.example/space/s/c/meta/log'
 
   it('derives the head state with history stamped on', () => {
     const body =

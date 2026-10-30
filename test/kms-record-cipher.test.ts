@@ -45,7 +45,7 @@ function ed25519Record(): KmsKeyRecord {
     },
     key: {
       '@context': 'https://w3id.org/security/suites/ed25519-2020/v1',
-      id: 'https://was.example/kms/keystores/ks1/keys/key1',
+      id: 'https://pws.example/kms/keystores/ks1/keys/key1',
       type: 'Ed25519VerificationKey2020',
       publicKeyMultibase: 'z6MkpublicExample',
       privateKeyMultibase: 'zPRIVATEsecretExample',
@@ -66,7 +66,7 @@ function hmacRecord(): KmsKeyRecord {
     },
     key: {
       '@context': 'https://w3id.org/security/suites/hmac-2019/v1',
-      id: 'https://was.example/kms/keystores/ks1/keys/key2',
+      id: 'https://pws.example/kms/keystores/ks1/keys/key2',
       type: 'Sha256HmacKey2019',
       secret: randomBytes(32).toString('base64url')
     }

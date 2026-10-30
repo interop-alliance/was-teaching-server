@@ -7,6 +7,6 @@ convention and the record template are canonical in
 copy its `TEMPLATE.md` for a new record (`NNNN-kebab-case-slug.md`, zero-padded,
 sequential, never renumbered).
 
-Note the protocol itself is owned by the WAS spec and its companion specs;
+Note the protocol itself is owned by the PWS spec and its companion specs;
 records here cover only contracts this server is the source of (e.g. its own
 HTTP facets not yet homed in a spec).

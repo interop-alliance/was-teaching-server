@@ -3117,7 +3117,7 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Merges a WAS space-export tarball into an existing Space (collections and
+   * Merges a PWS space-export tarball into an existing Space (collections and
    * resources that already exist are skipped, not overwritten).
    * @param options {object}
    * @param options.spaceId {string}

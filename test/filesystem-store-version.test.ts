@@ -540,7 +540,7 @@ describe('Filesystem store version', () => {
       JSON.stringify({
         id: 'peer',
         fromSpace: 'https://peer.example/space/s/',
-        toSpace: 'https://was.example/space/some-space/',
+        toSpace: 'https://pws.example/space/some-space/',
         capability: {},
         role: 'source',
         _generation: 'z1',
@@ -572,7 +572,7 @@ describe('Filesystem store version', () => {
       JSON.stringify({
         id: 'peer',
         fromSpace: 'https://peer.example/space/s/',
-        toSpace: 'https://was.example/space/some-space/',
+        toSpace: 'https://pws.example/space/some-space/',
         capability: {},
         role: 'source',
         updatedAt: '2026-01-01T00:00:00.000Z',

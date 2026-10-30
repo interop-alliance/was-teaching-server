@@ -39,7 +39,7 @@ did:webvh:<scid>:<host>:space:<spaceId>:<collectionId>
 
 Its history log is the `did.jsonl` Resource in that Collection of that Space.
 Any Collection may host one, as long as its name round-trips the DID path
-encoding. WAS Collection ids are restricted to the RFC 3986 unreserved charset,
+encoding. PWS Collection ids are restricted to the RFC 3986 unreserved charset,
 which needs no percent-encoding, so the rule is just that check. A final DID
 segment carrying `%` or another reserved character is refused by the parser.
 
@@ -167,7 +167,7 @@ Structure section. For the chain inspectors that run after verification, see
 ## Foreign invokers resolved over the network
 
 One bounded exception reaches the network. Any `did:webvh` on another host whose
-log this server does not store may invoke a delegated capability on the WAS
+log this server does not store may invoke a delegated capability on the PWS
 routes. That covers a peer server's DID,
 `did:webvh:<scid>:<host>:space:server:id`, and a service's or an agent's DID,
 under any path or none. It applies in `authorize()` and `fetchSpaceAndVerify()`.
@@ -195,7 +195,7 @@ Every refusal is the plain masked `not-found`.
 any DID on another host whose log this server does not store, with any path or
 none. It covers a peer server's own DID,
 `did:webvh:<scid>:<host>:space:server:id`, and a service's or an agent's DID. It
-resolves one only as the invoker of a delegated capability on the WAS routes.
+resolves one only as the invoker of a delegated capability on the PWS routes.
 
 - The log is fetched from the URL the did:webvh method maps the DID to
   (`https://<host>/<path>/did.jsonl`, or `https://<host>/.well-known/did.jsonl`

@@ -32,9 +32,9 @@ function harness() {
   } as unknown as FastifyBaseLogger
   const scope = {
     spaceId: 'S1',
-    rootTarget: 'https://was.example/space/S1/',
+    rootTarget: 'https://pws.example/space/S1/',
     rootController: 'did:key:z6MkController' as IDID,
-    webvh: { storage, serverBackends, serverUrl: 'https://was.example' },
+    webvh: { storage, serverBackends, serverUrl: 'https://pws.example' },
     invocation: { rootInvocation: true }
   }
   return { warnings, storage, logger, scope }

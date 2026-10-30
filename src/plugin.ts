@@ -1,7 +1,7 @@
 /**
- * The WAS protocol surface as a registerable Fastify plugin (`fastifyWas`):
+ * The PWS protocol surface as a registerable Fastify plugin (`fastifyWas`):
  * the storage/config decorations, CORS, multipart and content-type parsers,
- * and the route groups (the four WAS groups plus the WebKMS `/kms` facet) --
+ * and the route groups (the four PWS groups plus the WebKMS `/kms` facet) --
  * everything from routes.ts down, including the auth/digest hook chains and
  * the error handler those groups install.
  *
@@ -125,8 +125,8 @@ export interface FastifyWasOptions {
    * The `@fastify/cors` registration. `false` registers no CORS plugin, so a
    * composition can bring its own. An options object overrides `origin`
    * and/or `methods`. `undefined` keeps the default: `origin: '*'`, the
-   * methods the WAS routes serve, the exposed headers browser clients need,
-   * and a cached preflight. WAS authorization is signature-based rather than
+   * methods the PWS routes serve, the exposed headers browser clients need,
+   * and a cached preflight. PWS authorization is signature-based rather than
    * cookie-based, so a wide-open origin is the protocol-appropriate default.
    */
   cors?: false | Pick<FastifyCorsOptions, 'origin' | 'methods'>
@@ -279,7 +279,7 @@ export interface FastifyWasOptions {
 }
 
 /**
- * Decorates the instance with the WAS storage/config surface, registers the
+ * Decorates the instance with the PWS storage/config surface, registers the
  * protocol-level plugins and content-type parsers, and mounts the route groups.
  * @param fastify {import('fastify').FastifyInstance}
  * @param options {FastifyWasOptions}
@@ -547,7 +547,7 @@ async function wasPlugin(
   // `Allow` -- which RFC 9110 makes the whole point of the `405` a `PUT` at a
   // container URL answers, since it names the methods the container does
   // accept. `maxAge` lets browsers cache the preflight answer instead of
-  // re-asking before nearly every signed request. No WAS route serves
+  // re-asking before nearly every signed request. No PWS route serves
   // `PATCH`, so it is not offered.
   if (corsOptions !== false) {
     fastify.register(cors, {
@@ -591,7 +591,7 @@ async function wasPlugin(
   })
 
   // Parse every JSON media type (`application/json` and the structured-suffix
-  // `application/<suffix>+json`, e.g. `application/jose+json` for EDV-over-WAS
+  // `application/<suffix>+json`, e.g. `application/jose+json` for EDV-over-PWS
   // encrypted documents, `application/ld+json`, etc.) as JSON. Fastify's
   // built-in JSON parser is registered under the exact media type
   // `application/json`, and `getParser` resolves an exact media type ahead of

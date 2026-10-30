@@ -81,17 +81,17 @@ describe('parseSelfHostedWebvh', () => {
   })
 
   it('accepts a host with no port when the server has none', () => {
-    const did = `did:webvh:${scid}:was.example:space:${spaceId}:id`
+    const did = `did:webvh:${scid}:pws.example:space:${spaceId}:id`
     assert.deepEqual(
-      parseSelfHostedWebvh(did, { serverUrl: 'https://was.example' }),
+      parseSelfHostedWebvh(did, { serverUrl: 'https://pws.example' }),
       { scid, spaceId, collectionId: 'id' }
     )
   })
 
   it('compares the host case-insensitively', () => {
-    const did = `did:webvh:${scid}:WAS.Example:space:${spaceId}:id`
+    const did = `did:webvh:${scid}:PWS.Example:space:${spaceId}:id`
     assert.deepEqual(
-      parseSelfHostedWebvh(did, { serverUrl: 'https://was.example' }),
+      parseSelfHostedWebvh(did, { serverUrl: 'https://pws.example' }),
       { scid, spaceId, collectionId: 'id' }
     )
   })

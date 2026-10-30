@@ -62,7 +62,7 @@ describe('Collections API', () => {
   })
 
   it('POST /space/:spaceId/ should fail (NotFoundError) on not found space id', async () => {
-    // Adding a collection to a missing space is a write -- WAS does not
+    // Adding a collection to a missing space is a write -- PWS does not
     // auto-create parents, so it surfaces as NotFoundError (server 404).
     await assert.rejects(
       alice.was

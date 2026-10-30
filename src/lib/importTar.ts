@@ -577,7 +577,7 @@ export async function extractTarEntries(
 
 /**
  * Validates that the archive carries a well-formed UBC v0.1 `manifest.yml`
- * describing a WAS space export. Throws on any problem.
+ * describing a PWS space export. Throws on any problem.
  * @param entries {Map<string, TarEntry>}
  * @returns {void}
  */
@@ -607,7 +607,7 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
 
   if (!manifest.contents?.space) {
     throw new InvalidImportError({
-      message: 'Archive manifest does not describe a WAS space export.'
+      message: 'Archive manifest does not describe a PWS space export.'
     })
   }
 }
@@ -668,7 +668,7 @@ function importedCollectionMetadata({
 }
 
 /**
- * Build a merge plan from a WAS space export tarball.
+ * Build a merge plan from a PWS space export tarball.
  *
  * Expected archive layout (UBC v0.1, produced by exportSpace):
  * - manifest.yml

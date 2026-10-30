@@ -19,7 +19,7 @@
  * within each element's `{name: value}` pairs, scoped to the queried index's
  * entries; `has` requires every named attribute be present (value
  * irrelevant). Pagination replaces EDV's `limit`+`hasMore`-only story with
- * WAS's opaque cursor convention (`lib/cursor.ts`), closing the known EDV
+ * PWS's opaque cursor convention (`lib/cursor.ts`), closing the known EDV
  * protocol gap: `cursor` names the keyset position (ascending `resourceId`)
  * to resume from.
  */
@@ -76,7 +76,7 @@ interface IndexedAttribute {
  * (everything besides `profile`), throwing `invalid-request-body` (400) on a
  * malformed query. Mirrors the EDV query schema (`{index, equals | has,
  * count, limit}`, with `equals` and `has` mutually exclusive and exactly one
- * required) plus the WAS `cursor`. `limit` is coerced leniently like the
+ * required) plus the PWS `cursor`. `limit` is coerced leniently like the
  * `changes` profile (a non-numeric or `< 1` value falls back to the default;
  * the backend clamps an oversized one), and the opaque `cursor` is validated
  * by the backend's cursor decode (`invalid-cursor` 400).

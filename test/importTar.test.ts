@@ -98,7 +98,7 @@ describe('validateManifest', () => {
       () => validateManifest(entries),
       (err: Error) =>
         err instanceof InvalidImportError &&
-        /does not describe a WAS space export/i.test(err.message)
+        /does not describe a PWS space export/i.test(err.message)
     )
   })
 })
@@ -256,7 +256,7 @@ describe('buildImportPlan', () => {
       ['manifest.yml', entries.get('manifest.yml')!],
       [
         'service.json',
-        fileEntry(JSON.stringify({ url: 'https://was.example/service' }))
+        fileEntry(JSON.stringify({ url: 'https://pws.example/service' }))
       ],
       ...entries
     ])
@@ -407,7 +407,7 @@ describe('buildImportPlan', () => {
       capability: { id: 'urn:zcap:delegated-1' },
       meta: {
         delegator: 'did:key:z6MkDelegator',
-        rootTarget: 'https://was.example/space/S1',
+        rootTarget: 'https://pws.example/space/S1',
         created: '2026-07-01T00:00:00.000Z'
       }
     }

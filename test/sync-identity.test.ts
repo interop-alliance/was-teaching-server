@@ -83,7 +83,7 @@ const RELATIONSHIP_CASES: {
 ]
 
 describe('Server key relationships', () => {
-  const serverUrl = 'https://was.example'
+  const serverUrl = 'https://pws.example'
 
   for (const { purpose, advertised, invocation } of RELATIONSHIP_CASES) {
     describe(`with the key under ${purpose.join(' + ')}`, () => {

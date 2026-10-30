@@ -63,7 +63,7 @@ async function getSpaceMetadataOrThrow({
 
 /**
  * Loads a Space Metadata object by its URL param, masking an unknown (or
- * non-URL-safe) id as the 404 `SpaceNotFoundError` -- the WAS
+ * non-URL-safe) id as the 404 `SpaceNotFoundError` -- the PWS
  * existence-masking convention. The verification-free half of
  * `fetchSpaceAndVerify`, for handlers that need the controller before they can
  * build their expected values (the revocation route, whose invocation verifies

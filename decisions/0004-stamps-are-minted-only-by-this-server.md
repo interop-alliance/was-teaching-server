@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-10-02
 - Driving work: the multi-primary Spaces design
-  (`designs/WAS-96-multi-primary-spaces.md`, approved 2026-10-02). The design
+  (`designs/WSS-96-multi-primary-spaces.md`, approved 2026-10-02). The design
   replaces the per-record version counters with an origin stamp (a hybrid
   logical clock plus an origin id) that peers compare to pick the winning write,
   so where a stamp may come from decides whether replicas converge.

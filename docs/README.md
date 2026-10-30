@@ -8,7 +8,7 @@ Operations:
   Docker image, what a reverse proxy in front of the server must do, and an
   example Fly.io deployment
 - [Consuming the Server as a Library](consuming-server-as-library.md) -- using
-  the exported `fastifyWas` plugin to compose your own WAS server
+  the exported `fastifyWas` plugin to compose your own PWS server
 
 Behavior, one topic per file. [ARCHITECTURE.md](../ARCHITECTURE.md) is the map
 and names which of these applies to each module:

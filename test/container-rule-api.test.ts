@@ -62,7 +62,7 @@ const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
 /** The auxiliary Space's full type array, as a wallet would send it. */
 const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 
-/** The closed WAS verb vocabulary a generation delegation carries. */
+/** The closed PWS verb vocabulary a generation delegation carries. */
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 describe('container rule (unsafe methods at a container URL)', () => {
@@ -258,7 +258,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
   describe('a Space-subtree grant with the full verb set', () => {
     /**
      * The generation-delegation shape: the trailing-slash Space URL with the
-     * whole WAS verb vocabulary, delegated to Bob.
+     * whole PWS verb vocabulary, delegated to Bob.
      *
      * @param space {TestSpace}
      * @returns {Promise<any>}
@@ -758,7 +758,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
      * The generation delegation as a wallet mints it by default: signed by an
      * ENROLLED CLIENT's key (published under all four relations, so not a
      * ladder VM), targeting the account Space's items subtree with the whole
-     * WAS verb vocabulary, controlled by the annex DID.
+     * PWS verb vocabulary, controlled by the annex DID.
      *
      * @returns {Promise<any>}
      */

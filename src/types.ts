@@ -1,8 +1,8 @@
 /**
- * Shared domain types for the WAS server.
+ * Shared domain types for the PWS server.
  *
  * Re-exports the relevant `@interop/data-integrity-core` types (DIDs, zCaps,
- * document-loader, verifier / key material) and the shared WAS wire model from
+ * document-loader, verifier / key material) and the shared PWS wire model from
  * `@interop/storage-core` so the rest of the codebase imports them from a
  * single place, and defines the server-local domain shapes (the parsed-zcap
  * request shape, the transport-neutral resource input, the get-resource result)
@@ -58,7 +58,7 @@ import type {
   NormalizedIndexDeclaration
 } from './lib/equalityIndex.js'
 
-// The shared WAS wire model now lives in `@interop/storage-core`. Import the
+// The shared PWS wire model now lives in `@interop/storage-core`. Import the
 // shapes referenced by the `StorageBackend` contract below, and re-export the
 // whole data-model surface so the rest of the server keeps importing it from
 // this one module.
@@ -114,7 +114,7 @@ export type {
   IDocumentLoader
 }
 
-// Re-export the shared WAS wire model from `@interop/storage-core`.
+// Re-export the shared PWS wire model from `@interop/storage-core`.
 export type {
   SpaceMetadata,
   BackendReference,
@@ -430,7 +430,7 @@ export interface KmsKeyDescription {
 
 /**
  * The object a revocation aggregates under, and the unit a revocation lookup
- * is scoped to: a keystore (the `/kms` route family) or a Space (the WAS route
+ * is scoped to: a keystore (the `/kms` route family) or a Space (the PWS route
  * families). A revocation stored under one scope has no effect on the other --
  * a chain rooted in a Space is only ever inspected against that Space's store.
  */
@@ -2317,7 +2317,7 @@ declare module 'fastify' {
     /**
      * The resolver for a peer server's `did:webvh`, the one foreign DID the
      * capability verifier may fetch over the network (see
-     * `lib/peerWebvh.ts`). Passed to `handleZcapVerify` by the WAS route
+     * `lib/peerWebvh.ts`). Passed to `handleZcapVerify` by the PWS route
      * families. Set by `fastify.decorate` in plugin.ts.
      */
     peerWebvh: PeerWebvhResolver

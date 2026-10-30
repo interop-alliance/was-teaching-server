@@ -150,7 +150,7 @@ describe('did:webvh Space controller', () => {
    * Publishes a history log as `did.jsonl` in a Collection of a Space.
    *
    * @param options {object}
-   * @param options.signerClient {any}   the WAS client authorized to write
+   * @param options.signerClient {any}   the PWS client authorized to write
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}   defaults to `id`
    * @param options.jsonl {string}   the JSON Lines log
@@ -234,7 +234,7 @@ describe('did:webvh Space controller', () => {
    * object, authorized by whichever client currently controls it.
    *
    * @param options {object}
-   * @param options.signerClient {any}   the authorized WAS client
+   * @param options.signerClient {any}   the authorized PWS client
    * @param options.spaceId {string}
    * @param options.controller {string}   the proposed controller DID
    * @returns {Promise<any>}

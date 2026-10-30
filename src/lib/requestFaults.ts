@@ -1,6 +1,6 @@
 /**
  * Request-level fault injection for tests, reachable only through the
- * `was-teaching-server/testing` entry point. Records every request, and lets a
+ * `@interop/web-spaces-server/testing` entry point. Records every request, and lets a
  * test refuse a chosen request before any handler runs, drop the response of
  * one that was applied, or hold one until the test releases it. An armed fault
  * fires on the first request that matches it, once unless `times` says more.

@@ -9,7 +9,7 @@
  * presentation request and a presentation). Every exchange is in-memory only,
  * bounded in count, and expires roughly ten minutes after creation -- nothing
  * is persisted, and a server restart drops all live exchanges. This facet is
- * deliberately outside the WAS zcap authorization model; it holds no wallet
+ * deliberately outside the PWS zcap authorization model; it holds no wallet
  * data and grants no access to any Space.
  */
 import { randomUUID } from 'node:crypto'
@@ -72,7 +72,7 @@ function isBeginBody(body: unknown): boolean {
 /**
  * Registers the ephemeral exchange routes under
  * `/workflows/ephemeral/exchanges`. Deliberately unauthenticated: these routes
- * install none of the WAS auth/digest hook chains, exactly like the CORS proxy
+ * install none of the PWS auth/digest hook chains, exactly like the CORS proxy
  * facet, and their only access control is the unguessable exchange URL.
  *
  * Each registration owns its own store (rather than a module-global one), so

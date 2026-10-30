@@ -415,7 +415,7 @@ export function quotaPath({
 
 /**
  * `/space/:spaceId/:collectionId/query` -- the reserved `query` endpoint for a
- * Collection (spec "Collection-level reserved endpoints"). The WAS server serves
+ * Collection (spec "Collection-level reserved endpoints"). The PWS server serves
  * the replication change feed as the `changes` profile of this endpoint.
  * @param options {object}
  * @param options.spaceId {string}
@@ -457,7 +457,7 @@ export function linksetPath({
 /**
  * `/kms/keystores` -- the WebKMS keystores collection (create/list target; the
  * `/kms` facet) or one of its member keystores
- * (`/kms/keystores/:keystoreId`). Unlike the WAS builders there is no
+ * (`/kms/keystores/:keystoreId`). Unlike the PWS builders there is no
  * trailing-slash container form: the webkms protocol
  * (`@interop/webkms-client`) posts to the bare collection path.
  * @param options {object}

@@ -345,7 +345,7 @@ function revocationRecord({
 /**
  * The server URL the revocation import cases root their capability chains in.
  */
-const REVOCATION_SERVER_URL = 'https://was.example'
+const REVOCATION_SERVER_URL = 'https://pws.example'
 
 /**
  * A Space's canonical trailing-slash URL under {@link REVOCATION_SERVER_URL}.
@@ -10577,7 +10577,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
     describe('Space deletion racing a write', () => {
       // Whichever of the two lands first, the other must resolve as itself or
-      // as a WAS error -- never as a raw storage fault, which carries no
+      // as a PWS error -- never as a raw storage fault, which carries no
       // `type` and so renders a 500. The pair contends over the same records:
       // a write provisions the Space and its Collection, and the delete
       // removes the Space and everything under it. The filesystem backend
@@ -11770,7 +11770,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       let harness: BackendHarness
       let attestor: ExportAttestor
       const spaceId = 'space-provenance'
-      const serverUrl = 'https://was.example'
+      const serverUrl = 'https://pws.example'
 
       /**
        * Exports the Space and opens the archive, collecting every content
@@ -11982,7 +11982,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       let harness: BackendHarness
       let archiveBytes: Buffer
       const sourceSpaceId = 'space-attested'
-      const serverUrl = 'https://was.example'
+      const serverUrl = 'https://pws.example'
       const FORGER = 'did:key:z6MkContractSuiteForger' as IDID
       const warnings: { msg: string; ids?: string[]; count?: number }[] = []
       let importCount = 0

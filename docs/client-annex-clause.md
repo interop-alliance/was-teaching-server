@@ -45,7 +45,7 @@ for the target-and-verb predicate this family of shapes rests on.
   the delegator's own history log: the trailing-slash Space URL, or any path
   under it, except the Space Metadata URL `/space/<S>/meta` and anything under
   it.
-- Its `allowedAction` is present, non-empty, and drawn from the closed WAS verb
+- Its `allowedAction` is present, non-empty, and drawn from the closed PWS verb
   vocabulary {GET, HEAD, POST, PUT, DELETE}.
 
 The whole vocabulary is admitted rather than a chosen subset, because the

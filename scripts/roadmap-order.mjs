@@ -2,7 +2,7 @@
 /**
  * Orders and annotates the open roadmap from its dependency fields.
  *
- * Reads `ROADMAP.md` and `archived-roadmap.md`, then for every `### WAS-N`
+ * Reads `ROADMAP.md` and `archived-roadmap.md`, then for every `### WSS-N`
  * item:
  *
  *   - resolves `blocked-by` (and `depends-on`, where present) against the open
@@ -15,7 +15,7 @@
  *     number instead;
  *   - rewrites the computed title markers: the priority tag `[H]`/`[M]`/`[L]`
  *     read off the `priority` field, the backend code `(fs)`/`(pg)`/`(*)`
- *     read off the `backend` field, then `[blocks N]` and `[after WAS-X]`;
+ *     read off the `backend` field, then `[blocks N]` and `[after WSS-X]`;
  *   - regenerates the index block under the H1.
  *
  * Anything it cannot resolve (an unknown id, a cycle, an item with no field
@@ -56,7 +56,7 @@ const PRIORITY_TAG = { high: 'H', medium: 'M', low: 'L' }
 const BACKEND_CODES = new Set(['fs', 'pg', '*'])
 const EXTERNAL_ID = /\b(?:WASS|WC|FW|DCW|WBU|WR|WSR|SC|ECS|PWSCS)-\d+\b/g
 const ITEM_HEADING =
-  /^### (WAS-\d+):\s*((?:(?:\[[^\]]*\]|\((?:fs|pg|\*)\))\s*)*)(.*)$/
+  /^### (WSS-\d+):\s*((?:(?:\[[^\]]*\]|\((?:fs|pg|\*)\))\s*)*)(.*)$/
 
 const problems = []
 const satisfied = []
@@ -97,7 +97,7 @@ function parseRoadmap(text) {
       sections.push(current)
       continue
     }
-    if (/^### WAS-\d+/.test(line) && current) {
+    if (/^### WSS-\d+/.test(line) && current) {
       current.items.push({ heading: line, body: [] })
       continue
     }
@@ -139,7 +139,7 @@ function parseFields(body) {
 }
 
 function idsIn(value) {
-  return [...new Set(value.match(/\bWAS-\d+\b/g) ?? [])]
+  return [...new Set(value.match(/\bWSS-\d+\b/g) ?? [])]
 }
 
 function externalIdsIn(value) {
@@ -422,7 +422,7 @@ function main() {
   const original = fs.readFileSync(roadmapPath, 'utf8')
   const archiveText = fs.readFileSync(archivePath, 'utf8')
   const archivedIds = new Set(
-    archiveText.match(/^### (WAS-\d+)/gm)?.map(line => line.slice(4)) ?? []
+    archiveText.match(/^### (WSS-\d+)/gm)?.map(line => line.slice(4)) ?? []
   )
 
   const { preamble, sections } = parseRoadmap(original)

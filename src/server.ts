@@ -1,6 +1,6 @@
 /**
  * App factory: createApp() is the community-edition composition. It builds the
- * Fastify instance, registers the `fastifyWas` plugin (the whole WAS protocol
+ * Fastify instance, registers the `fastifyWas` plugin (the whole PWS protocol
  * surface -- see plugin.ts), and adds the teaching-server extras around it:
  * static assets, the Handlebars-rendered welcome page, the `/health` probe,
  * and the CORS proxy.
@@ -22,7 +22,7 @@ import { BUILD_INFO, SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 /**
  * Builds the Fastify instance: registers the `fastifyWas` protocol plugin
- * (which carries the storage/config decorations and all WAS + WebKMS routes;
+ * (which carries the storage/config decorations and all PWS + WebKMS routes;
  * options are passed through -- see {@link FastifyWasOptions}), then the
  * teaching-server extras (static files, welcome page, health probe, CORS
  * proxy).
@@ -86,7 +86,7 @@ export function composeApp({
   // the welcome page, `/health`, and the service description (in the plugin).
   const version = options.discloseVersion === false ? undefined : SERVER_VERSION
 
-  // The WAS protocol surface (decorations, parsers, WAS + WebKMS route groups)
+  // The PWS protocol surface (decorations, parsers, PWS + WebKMS route groups)
   fastify.register(fastifyWas, options)
 
   // Serve static files from the /common folder
@@ -112,7 +112,7 @@ export function composeApp({
     })
   })
 
-  // Operational liveness probe (not a WAS protocol feature). Public,
+  // Operational liveness probe (not a PWS protocol feature). Public,
   // unauthenticated, and side-effect-free so load balancers, uptime monitors,
   // and orchestrators can poll it cheaply. Body follows the
   // `application/health+json` shape from the IETF `draft-inadarei-api-health-check`

@@ -6,7 +6,7 @@
  * `capabilityDelegation`, absent from `capabilityInvocation`. A delegation it
  * signs is admitted only when it names the account document's annex DID as its
  * sole controller with a target inside the account Space's items subtree (the
- * Space Metadata URL excluded) and actions within the closed WAS verb
+ * Space Metadata URL excluded) and actions within the closed PWS verb
  * vocabulary, when its target is bridge-shaped (the account's own history log
  * with `PUT`, or the canonical URL of a delegated-clients bookkeeping Space
  * with `GET`/`PUT`), or when it is target-exact and single-verb: the canonical
@@ -63,7 +63,7 @@ const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
 /** The auxiliary Space's full type array, as a wallet would send it. */
 const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 
-/** The closed WAS verb vocabulary a generation delegation carries. */
+/** The closed PWS verb vocabulary a generation delegation carries. */
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 describe('client-annex clause (ladder-VM delegation bounds)', () => {
@@ -248,7 +248,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('admits the generation-delegation shape on the Space subtree', async () => {
       // The shape a wallet actually mints: the trailing-slash account Space
-      // URL with the full closed WAS verb vocabulary, granted to the annex
+      // URL with the full closed PWS verb vocabulary, granted to the annex
       // DID. Both a read and a write under it land.
       const delegated = await delegate({
         signer: account.ladderKeyPair.signer(),
@@ -544,7 +544,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(err.status, 404)
     })
 
-    it('refuses an action outside the WAS verb vocabulary (404)', async () => {
+    it('refuses an action outside the PWS verb vocabulary (404)', async () => {
       const delegated = await delegate({
         signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),

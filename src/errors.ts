@@ -97,7 +97,7 @@ function maskedTitle({ requestName }: { requestName?: string }): string {
 
 /**
  * 404 -- shared base for the `*NotFoundError` family: an entity does not exist,
- * or the caller is not authorized (the WAS existence-masking convention). The
+ * or the caller is not authorized (the PWS existence-masking convention). The
  * exported subclasses are thin `instanceof` markers; they carry no entity noun
  * on the wire, because naming one ("Space not found...") would tell an
  * unauthorized caller which layer of the URL exists. The body is byte-identical
@@ -1546,7 +1546,7 @@ export class UnsupportedOperationError extends ProblemError {
 }
 
 /**
- * 400 — the uploaded archive is not a valid WAS space export.
+ * 400 — the uploaded archive is not a valid PWS space export.
  * @param options {object}
  * @param [options.message] {string}   detail message describing the problem
  * @param [options.cause] {Error}   the underlying error, when wrapping one
@@ -1557,7 +1557,7 @@ export class InvalidImportError extends ProblemError {
       type: ProblemTypes.INVALID_IMPORT,
       title: 'Invalid space import',
       detail:
-        message || 'The uploaded archive is not a valid WAS space export.',
+        message || 'The uploaded archive is not a valid PWS space export.',
       statusCode: 400,
       cause
     })
@@ -1566,12 +1566,12 @@ export class InvalidImportError extends ProblemError {
 
 // WebKMS facet errors (`/kms`). The webkms
 // protocol is status-code driven -- `@interop/webkms-client` distinguishes
-// only 404 and 409 -- so these reuse the nearest WAS problem-kind URIs rather
-// than minting a parallel registry for a non-WAS route family.
+// only 404 and 409 -- so these reuse the nearest PWS problem-kind URIs rather
+// than minting a parallel registry for a non-PWS route family.
 
 /**
  * 404 — the requested keystore does not exist, or the caller is not
- * authorized (the WAS existence-masking convention, kept for consistency
+ * authorized (the PWS existence-masking convention, kept for consistency
  * within this server).
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
@@ -1608,7 +1608,7 @@ export class KeystoreControllerMismatchError extends ControllerMismatchError {
  * is not exactly the stored sequence + 1, or the immutable `kmsModule` does
  * not match. One merged conflict kind; the client distinguishes only the 409
  * status.
- * `ID_CONFLICT` is the nearest WAS problem kind (a 409 state conflict on an
+ * `ID_CONFLICT` is the nearest PWS problem kind (a 409 state conflict on an
  * identified record) -- the webkms protocol has no type registry of its own.
  */
 export class KeystoreStateConflictError extends ProblemError {

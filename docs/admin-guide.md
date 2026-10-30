@@ -1,6 +1,6 @@
 # Administrator's Guide
 
-Operational guidance for deploying and running `was-teaching-server`. The
+Operational guidance for deploying and running `@interop/web-spaces-server`. The
 README's "Environment variables" table is the reference for every config knob;
 this document covers the procedures that span more than one variable or more
 than one restart.

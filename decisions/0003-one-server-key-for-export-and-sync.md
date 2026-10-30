@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-10-02
 - Driving work: the multi-primary Spaces design
-  (`designs/WAS-96-multi-primary-spaces.md`, approved 2026-10-02). A replica
+  (`designs/WSS-96-multi-primary-spaces.md`, approved 2026-10-02). A replica
   pulls its peer's Space under a delegated capability, so the pulling server
   needs a signing identity a controller can delegate to, and the server already
   held one key for export provenance.

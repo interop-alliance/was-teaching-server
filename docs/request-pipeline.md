@@ -173,7 +173,7 @@ The refusal closes the connection.
 
 `src/lib/hostedPageSandbox.ts` is an `onSend` hook that every route group
 installs (`installGroupHooks`). It stamps `Content-Security-Policy: sandbox ...`
-on every response in the WAS and `/kms` groups, 304s, redirects and errors
+on every response in the PWS and `/kms` groups, 304s, redirects and errors
 included. A stored HTML page then runs with an opaque origin and cannot read the
 storage of the origin serving it. This matters when a wallet serves this server
 on its own origin. The hook is group-wide so that a new route serving stored
