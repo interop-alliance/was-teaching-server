@@ -22,7 +22,12 @@ import {
 } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertCreatableSpaceId, assertValidId } from '../lib/validateId.js'
-import { absoluteUrl, spacePath, spacesPath } from '../lib/paths.js'
+import {
+  absoluteSpaceUrl,
+  absoluteUrl,
+  spacePath,
+  spacesPath
+} from '../lib/paths.js'
 import { decodeCursor } from '../lib/cursor.js'
 import {
   compareCodeUnits,
@@ -205,8 +210,8 @@ export class SpacesRepositoryRequest {
       // form (spec "Space Metadata Data Model").
       const item: SpaceSummary = {
         id: space.id,
-        url: spacePath({ spaceId: space.id, trailingSlash: true }),
-        type: space.type
+        url: spacePath({ spaceId: space.id }),
+        type: [...space.type].sort()
       }
       if (space.name !== undefined) {
         item.name = space.name
@@ -339,10 +344,7 @@ export class SpacesRepositoryRequest {
 
     // `Location` names the Space that was created, in its canonical
     // trailing-slash (container) form (spec "Create Space").
-    const createdSpaceUrl = absoluteUrl({
-      path: spacePath({ spaceId, trailingSlash: true }),
-      serverUrl
-    })
+    const createdSpaceUrl = absoluteSpaceUrl({ spaceId, serverUrl })
     reply.header('Location', createdSpaceUrl)
     // Surface the Metadata object's ETag so a client can chain a conditional
     // Update Space (read-modify-CAS on the Space Metadata object).

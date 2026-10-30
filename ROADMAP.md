@@ -118,8 +118,6 @@ Ready:
 - WSS-47 [M] (*) Cover `start.ts` and the untested config parsers
 - WSS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 - WSS-10 [M] (*) Open the upstream `edv-client` truncation issue
-- WSS-103 [L] (*) Make `spacePath` / `collectionPath` return the canonical
-  container URL by default
 - WSS-168 [L] (*) `SERVER_URL` move runbook for the server DID log (portable
   domain move)
 - WSS-202 [L] (*) Pull-loop tests beyond the two-server filesystem case
@@ -2099,35 +2097,6 @@ caller-supplied protected-header params"**
 
 ---
 
-### WSS-103: [L] (*) Make `spacePath` / `collectionPath` return the canonical container URL by default
-
-- status: todo
-- priority: low
-- backend: *
-- labels: cleanup, paths
-- discovered-from: simplify pass on the v0.5 route table (2026-09-12)
-- acceptance:
-  - [ ] `spacePath` and `collectionPath` in `src/lib/paths.ts` return the
-        trailing-slash container form with no option
-  - [ ] The no-slash base the sub-resource builders extend (`spaceMetaPath`,
-        `collectionMetaPath`, `policyPath`, `exportPath`, and so on) comes from
-        a separately named internal builder, not from a flag on the public one
-  - [ ] No call site in `src/` or `test/` passes `trailingSlash` any more
-  - [ ] Every `url`, `Location`, `targetPath` and root-capability target is
-        byte-identical before and after (the full `test/` run and the
-        conformance suite stay green)
-
-Context: v0.5 made the trailing-slash form the canonical address of a Space and
-a Collection, used for their `url` members, the `Location` of a create, the
-authorization `targetPath` of container operations, and the root capability's
-`invocationTarget`. The builders kept their v0.4 default of the no-slash form,
-so about 33 call sites outside `paths.ts` pass `trailingSlash: true`. Dropping
-the flag at any of them is not a type error and yields a URL that is wrong only
-by its last character, in exactly the members that need to be canonical. The
-no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
-sub-resource builders extend; about 9 external call sites use it, and each
-should move to the named base builder or a sub-resource builder.
-
 ### WSS-168: [L] (*) `SERVER_URL` move runbook for the server DID log (portable domain move)
 
 - status: todo
@@ -2301,8 +2270,8 @@ Steps:
 - acceptance:
   - [ ] The fixtures in `test/helpers.ts`, `test/importTar.test.ts`,
         `test/container-rule-api.test.ts`, `test/plugin-options.test.ts`,
-        `test/space-archive-fixture.test.ts`, and `test/etag-layout.test.ts`
-        use `PwsEpochConfiguration`
+        `test/space-archive-fixture.test.ts`, and `test/etag-layout.test.ts` use
+        `PwsEpochConfiguration`
   - [ ] `pnpm test-node` passes
   - [ ] Nothing under `src/` names the value (true today; keep it so)
 

@@ -35,7 +35,7 @@ import {
   clientAnnexChainInspector,
   composeChainInspectors
 } from '../lib/clientAnnexClause.js'
-import { absoluteUrl, spacePath } from '../lib/paths.js'
+import { absoluteSpaceUrl } from '../lib/paths.js'
 import {
   KMS_MAX_CHAIN_LENGTH,
   KMS_MAX_DELEGATION_TTL
@@ -346,10 +346,7 @@ export class RevocationRequest {
       scope: { spaceId },
       // The Space's root capability target is its canonical (trailing-slash)
       // container URL, the same root every space-family route accepts.
-      rootTarget: absoluteUrl({
-        path: spacePath({ spaceId, trailingSlash: true }),
-        serverUrl
-      }),
+      rootTarget: absoluteSpaceUrl({ spaceId, serverUrl }),
       rootController: spaceMetadata.controller,
       expectedAction: request.method,
       requestName

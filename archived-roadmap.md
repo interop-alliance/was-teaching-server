@@ -7158,3 +7158,39 @@ moves or is renamed).
 
 2026-10-30: implemented. `/service` serves `serverDid` on the core entry with no
 alias under `instance`, and the replication entry serves `url`; archived.
+
+### WSS-103: [L] (*) Make `spacePath` / `collectionPath` return the canonical container URL by default
+
+- status: done
+- done: 2026-10-30
+- priority: low
+- backend: *
+- labels: cleanup, paths
+- discovered-from: simplify pass on the v0.5 route table (2026-09-12)
+- acceptance:
+  - [x] `spacePath` and `collectionPath` in `src/lib/paths.ts` return the
+        trailing-slash container form with no option
+  - [x] The no-slash base the sub-resource builders extend (`spaceMetaPath`,
+        `collectionMetaPath`, `policyPath`, `exportPath`, and so on) comes from
+        a separately named internal builder, not from a flag on the public one
+  - [x] No call site in `src/` or `test/` passes `trailingSlash` any more
+  - [x] Every `url`, `Location`, `targetPath` and root-capability target is
+        byte-identical before and after (the full `test/` run and the
+        conformance suite stay green)
+
+Context: v0.5 made the trailing-slash form the canonical address of a Space and
+a Collection, used for their `url` members, the `Location` of a create, the
+authorization `targetPath` of container operations, and the root capability's
+`invocationTarget`. The builders kept their v0.4 default of the no-slash form,
+so about 33 call sites outside `paths.ts` pass `trailingSlash: true`. Dropping
+the flag at any of them is not a type error and yields a URL that is wrong only
+by its last character, in exactly the members that need to be canonical. The
+no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
+sub-resource builders extend; about 9 external call sites use it, and each
+should move to the named base builder or a sub-resource builder.
+
+2026-10-30: implemented. `spacePath` and `collectionPath` take no flag and
+return the container form, and the no-slash prefix lives in the unexported
+`spaceBase` and `collectionBase` inside `paths.ts`. The roughly 9 external
+no-slash call sites had already moved to sub-resource builders, so all 34 call
+sites only dropped the flag; archived.

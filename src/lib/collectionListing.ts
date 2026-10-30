@@ -136,11 +136,7 @@ export function collectionResourcesList({
   let next: string | undefined
   if (hasMore && lastItem !== undefined) {
     next = nextPageUrl({
-      path: collectionPath({
-        spaceId,
-        collectionId,
-        trailingSlash: true
-      }),
+      path: collectionPath({ spaceId, collectionId }),
       limit: pageSize,
       after: lastItem.id
     })
@@ -148,9 +144,9 @@ export function collectionResourcesList({
 
   return {
     id: collectionId,
-    url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+    url: collectionPath({ spaceId, collectionId }),
     name: collectionMetadata?.name ?? collectionId,
-    type: collectionMetadata?.type || ['Collection'],
+    type: [...(collectionMetadata?.type || ['Collection'])].sort(),
     totalItems,
     items,
     ...(next !== undefined && { next })
@@ -191,7 +187,7 @@ export function collectionsList({
   pageSize: number
   includeDeleted: boolean
 }): CollectionsList {
-  const url = spacePath({ spaceId, trailingSlash: true })
+  const url = spacePath({ spaceId })
   const lastItem = items[items.length - 1]
   let next: string | undefined
   if (hasMore && lastItem !== undefined) {

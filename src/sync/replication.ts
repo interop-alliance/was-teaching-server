@@ -2320,11 +2320,7 @@ export class ReplicationManager {
     document: Record<string, unknown>
   }): Promise<ChangeResult> {
     const collectionUrl = peerUrl(
-      collectionPath({
-        spaceId: peerSpaceId,
-        collectionId,
-        trailingSlash: true
-      })
+      collectionPath({ spaceId: peerSpaceId, collectionId })
     )
     const { id } = document
     if (typeof id !== 'string' || !id.startsWith(collectionUrl)) {

@@ -19,7 +19,7 @@ import { verifiedInvocation, verifyRequestZcap } from '../zcap.js'
 import type { VerifiedInvocation } from '../zcap.js'
 import type { ContainerRule } from '../lib/containerRule.js'
 import { authorize } from '../authorize.js'
-import { absoluteUrl, spacePath } from '../lib/paths.js'
+import { absoluteSpaceUrl, absoluteUrl } from '../lib/paths.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import {
   getCachedSpaceMetadata,
@@ -151,10 +151,7 @@ async function fetchSpaceContext({
     requestName
   })
   const allowedTarget = absoluteUrl({ path: targetPath, serverUrl })
-  const spaceRootTarget = absoluteUrl({
-    path: spacePath({ spaceId, trailingSlash: true }),
-    serverUrl
-  })
+  const spaceRootTarget = absoluteSpaceUrl({ spaceId, serverUrl })
   return { spaceMetadata, allowedTarget, spaceRootTarget }
 }
 

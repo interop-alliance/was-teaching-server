@@ -56,6 +56,7 @@ import {
   invalidateCollectionGovernedDescriptors
 } from '../lib/governedDescriptorsCache.js'
 import {
+  absoluteCollectionUrl,
   absoluteUrl,
   collectionPath,
   resourcePath,
@@ -154,11 +155,7 @@ export class CollectionRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: collectionPath({
-        spaceId,
-        collectionId,
-        trailingSlash: true
-      }),
+      targetPath: collectionPath({ spaceId, collectionId }),
       requestName
     })
 
@@ -584,12 +581,10 @@ export class CollectionRequest {
     }
     // Created: `Location` names the Collection (its canonical container URL),
     // not the Metadata object that was written (spec "Update Collection").
-    const collectionUrl = collectionPath({
-      spaceId,
-      collectionId,
-      trailingSlash: true
-    })
-    reply.header('Location', absoluteUrl({ path: collectionUrl, serverUrl }))
+    reply.header(
+      'Location',
+      absoluteCollectionUrl({ spaceId, collectionId, serverUrl })
+    )
     // The stored object as the write left it, through the projection Read
     // Collection Metadata serves, so the create response and a subsequent
     // read agree. A created Collection has no governing log yet, so no
@@ -1135,11 +1130,7 @@ export class CollectionRequest {
   }): Promise<FastifyReply> {
     // The feed a checkpoint is scoped to: this Collection's canonical
     // container URL on this server.
-    const feed = `${serverUrl}${collectionPath({
-      spaceId,
-      collectionId,
-      trailingSlash: true
-    })}`
+    const feed = absoluteCollectionUrl({ spaceId, collectionId, serverUrl })
 
     // Parse the optional checkpoint: absent = start of feed. A present one
     // must be a checkpoint this server issued for this Collection, under the
@@ -1218,11 +1209,14 @@ export class CollectionRequest {
         position
       })
     const containerRecordUrls = {
-      'collection-metadata': `${serverUrl}${collectionMetaPath({
-        spaceId,
-        collectionId
-      })}`,
-      log: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
+      'collection-metadata': absoluteUrl({
+        path: collectionMetaPath({ spaceId, collectionId }),
+        serverUrl
+      }),
+      log: absoluteUrl({
+        path: collectionLogPath({ spaceId, collectionId }),
+        serverUrl
+      })
     }
     // A Collection on another server backend is fed from there, where its
     // Metadata object and log are copies under that backend's own stamps;
@@ -1252,11 +1246,14 @@ export class CollectionRequest {
       if (doc.kind === 'policy') {
         return {
           kind: doc.kind,
-          id: `${serverUrl}${policyPath({
-            spaceId,
-            collectionId,
-            resourceId: doc.resourceId
-          })}`,
+          id: absoluteUrl({
+            path: policyPath({
+              spaceId,
+              collectionId,
+              resourceId: doc.resourceId
+            }),
+            serverUrl
+          }),
           deleted: doc.deleted,
           ...base
         }
@@ -1344,11 +1341,7 @@ export class CollectionRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: collectionPath({
-        spaceId,
-        collectionId,
-        trailingSlash: true
-      }),
+      targetPath: collectionPath({ spaceId, collectionId }),
       requestName,
       containerRule: 'controller-only'
     })
@@ -1446,11 +1439,7 @@ export class CollectionRequest {
       request,
       spaceId,
       collectionId,
-      targetPath: collectionPath({
-        spaceId,
-        collectionId,
-        trailingSlash: true
-      }),
+      targetPath: collectionPath({ spaceId, collectionId }),
       requestName,
       allowTargetQuery: true
     })

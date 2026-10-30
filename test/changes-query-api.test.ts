@@ -19,6 +19,9 @@ import { base64urlnopad } from '@scure/base'
 import type { Space } from '@interop/pws-client'
 import { isResourceChange } from '@interop/storage-core'
 
+import { createApp } from '../src/server.js'
+import { signedInject } from '../src/testing.js'
+import type { IDID } from '../src/types.js'
 import {
   entryLine,
   etagGeneration,
@@ -952,5 +955,66 @@ describe('Collection changes query profile', () => {
       })
       assert.deepEqual(whole.documents, pages)
     })
+  })
+})
+
+describe('Collection changes feed under a base URL ending in a slash', () => {
+  it('serves the absolute URLs a pull loop matches against', async () => {
+    // Accepted by the config check and kept byte for byte. A replica server
+    // builds the prefix it matches a policy document's `id` against with
+    // `new URL`, so a doubled slash in the `id` would skip the document.
+    const serverUrl = 'https://trailing-slash.example/'
+    const spaceId = 'home'
+    const collectionUrl = `https://trailing-slash.example/space/${spaceId}/docs/`
+    const backend = await openTempBackend()
+    const fastify = createApp({ serverUrl, backend, logger: false })
+    try {
+      const { alice } = await zcapClients({ baseServerUrl: serverUrl })
+      await backend.writeSpace({
+        spaceId,
+        spaceMetadata: {
+          id: spaceId,
+          type: ['Space'],
+          controller: alice.did as IDID
+        }
+      })
+      const server = { fastify, serverUrl }
+      const created = await signedInject({
+        server,
+        signer: alice.signer,
+        path: `/space/${spaceId}/docs/meta`,
+        method: 'PUT',
+        json: { name: 'Docs' }
+      })
+      assert.equal(created.statusCode, 201, created.payload)
+      const policy = await signedInject({
+        server,
+        signer: alice.signer,
+        path: `/space/${spaceId}/docs/policy`,
+        method: 'PUT',
+        json: { type: 'PublicCanRead' }
+      })
+      assert.equal(policy.statusCode, 201, policy.payload)
+
+      const feed = await signedInject({
+        server,
+        signer: alice.signer,
+        path: `/space/${spaceId}/docs/query`,
+        method: 'POST',
+        json: { profile: 'changes' }
+      })
+      assert.equal(feed.statusCode, 200, feed.payload)
+      const { documents } = feed.json()
+      assert.deepEqual(
+        documents.map((document: { id: string }) => document.id),
+        [`${collectionUrl}meta`, `${collectionUrl}policy`]
+      )
+      const checkpoint = JSON.parse(
+        new TextDecoder().decode(base64urlnopad.decode(documents[0].checkpoint))
+      )
+      assert.equal(checkpoint.feed, collectionUrl)
+    } finally {
+      await fastify.close()
+    }
   })
 })

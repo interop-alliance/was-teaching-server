@@ -85,7 +85,7 @@ export function collectionTombstoneSummary({
 }): CollectionTombstoneSummary {
   return {
     id: collectionId,
-    url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+    url: collectionPath({ spaceId, collectionId }),
     ...collectionTombstoneBody(stamp)
   }
 }

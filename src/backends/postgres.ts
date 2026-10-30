@@ -2770,11 +2770,7 @@ export class PostgresBackend implements StorageBackend {
       }
       return {
         id: row.collection_id,
-        url: collectionPath({
-          spaceId,
-          collectionId: row.collection_id,
-          trailingSlash: true
-        }),
+        url: collectionPath({ spaceId, collectionId: row.collection_id }),
         name: row.metadata?.name ?? row.collection_id,
         public: publicCollectionIds.has(row.collection_id)
       } satisfies CollectionSummary

@@ -130,8 +130,8 @@ importers:
         specifier: ^0.104.0
         version: 0.104.0(@interop/jsonld-signatures@11.9.0)
       '@interop/pws-conformance-suite':
-        specifier: ^0.35.0
-        version: 0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
+        specifier: ^0.36.0
+        version: 0.36.0(@interop/jsonld-signatures@11.9.0)(@interop/pws-client@0.104.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/webkms-client':
         specifier: ^15.0.3
         version: 15.0.3
@@ -702,12 +702,12 @@ packages:
     resolution: {integrity: sha512-If1ZihvdZBdCc/RHnjCacDISmx7SMXBPvRcMeJeGsOwY6Vi9fgy66+4dBaOFF0LDjOXnfzZsPn0xCbzMVDz8pQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/pws-conformance-suite@0.35.0':
-    resolution: {integrity: sha512-DSGERqh2pyi3IjkV43moRGt4xFFAC/Jstpej48g0w/MxgQJ9OzVisg/mHHXBJdRlMU6Bvgw2dtH8OydbV01qgw==}
+  '@interop/pws-conformance-suite@0.36.0':
+    resolution: {integrity: sha512-F0Ci5C9dhg//M3fsgwCRXSA0KjTJG+iFgKtpVrnjyp+fLL924cS18AMS9Agv/B7drA6nWWS2sr1nFg1dWqWfzA==}
     engines: {node: '>=24.0'}
     hasBin: true
     peerDependencies:
-      '@interop/was-client': '>=0.100.1 <1.0.0'
+      '@interop/pws-client': '>=0.104.0 <1.0.0'
 
   '@interop/security-document-loader@10.1.6':
     resolution: {integrity: sha512-FMWqpj9KYZw29bAl41RBnRXixoJKPvvs3Jup5LEYzSpKfc6bt8ywkAI8F9zmgFmJNlZyzx9LJWm09sM35d8cRA==}
@@ -765,10 +765,6 @@ packages:
 
   '@interop/wallet-request@0.4.1':
     resolution: {integrity: sha512-B3Z/9xxOMYzH0aS9PAtyqQRds1IDmL8WCVQUysJS9Xa5uvVMDbxIxbCWRdBe3S3dxzysgqpBYx7YQD6GJGUZ7w==}
-    engines: {node: '>=24.0'}
-
-  '@interop/was-client@0.103.0':
-    resolution: {integrity: sha512-10DhW83Bm9vxM+S6RmYZdLmxC1qGR+eMMEZ8is5DJEOui0DJLWDp53MpswTQ3miMIjt3YayJxc66jaRJGdwWPA==}
     engines: {node: '>=24.0'}
 
   '@interop/was-client@0.80.0':
@@ -3558,7 +3554,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/pws-conformance-suite@0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
+  '@interop/pws-conformance-suite@0.36.0(@interop/jsonld-signatures@11.9.0)(@interop/pws-client@0.104.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.9.0
@@ -3567,7 +3563,7 @@ snapshots:
       '@interop/ezcap': 7.5.4
       '@interop/http-digest-header': 3.2.0
       '@interop/http-signature-zcap-invoke': 6.3.0
-      '@interop/was-client': 0.103.0(@interop/jsonld-signatures@11.9.0)
+      '@interop/pws-client': 0.104.0(@interop/jsonld-signatures@11.9.0)
       '@interop/x25519-key-agreement-key': 5.4.3
       assert: 2.1.0
       uuid: 14.0.3
@@ -3716,27 +3712,6 @@ snapshots:
       byoe-context: 0.5.0
     transitivePeerDependencies:
       - '@interop/jsonld-signatures'
-      - react-native-get-random-values
-
-  '@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0)':
-    dependencies:
-      '@interop/capability-agent': 0.2.2
-      '@interop/data-integrity-core': 8.9.0
-      '@interop/ed25519-signature': 7.2.5(@interop/jsonld-signatures@11.9.0)
-      '@interop/edv-client': 17.9.4
-      '@interop/ezcap': 7.5.4
-      '@interop/http-client': 1.0.5
-      '@interop/minimal-cipher': 7.11.1
-      '@interop/storage-core': 0.43.0
-      '@interop/vh-resource-log': 0.10.1
-      '@interop/x25519-key-agreement-key': 5.4.3
-      '@interop/zcap': 11.4.0
-      '@noble/hashes': 2.4.0
-      '@scure/base': 2.4.0
-      json-canonicalize: 3.0.0
-    transitivePeerDependencies:
-      - '@interop/jsonld-signatures'
-      - expo-crypto
       - react-native-get-random-values
 
   '@interop/was-client@0.80.0(@interop/jsonld-signatures@11.9.0)':

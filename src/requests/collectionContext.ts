@@ -60,7 +60,7 @@ export function projectCollectionMetadata({
     ...body,
     type: [...body.type].sort(),
     backend: body.backend ?? { id: DEFAULT_BACKEND_ID },
-    url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+    url: collectionPath({ spaceId, collectionId }),
     linkset: linksetPath({ spaceId, collectionId })
   }
 }

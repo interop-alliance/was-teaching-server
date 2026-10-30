@@ -129,7 +129,7 @@ export async function projectSpaceMetadata({
   return {
     ...body,
     type: [...body.type].sort(),
-    url: spacePath({ spaceId, trailingSlash: true }),
+    url: spacePath({ spaceId }),
     linkset: linksetPath({ spaceId }),
     backends: listedBackends,
     replicas

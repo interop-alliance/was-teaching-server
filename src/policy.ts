@@ -155,8 +155,8 @@ export async function buildLinkset({
   // slash; the linked auxiliary resources are sub-resource paths, which do not.
   const anchor =
     collectionId !== undefined
-      ? collectionPath({ spaceId, collectionId, trailingSlash: true })
-      : spacePath({ spaceId, trailingSlash: true })
+      ? collectionPath({ spaceId, collectionId })
+      : spacePath({ spaceId })
   const policyHref = policyPath({ spaceId, collectionId })
   const policy =
     collectionId !== undefined

@@ -10,6 +10,8 @@ import { it, describe } from 'vitest'
 import assert from 'node:assert'
 
 import {
+  absoluteCollectionUrl,
+  absoluteSpaceUrl,
   spacesPath,
   spacePath,
   spaceMetaPath,
@@ -22,7 +24,18 @@ import {
   collectionMetaPath,
   backendsPath,
   quotasPath,
-  linksetPath
+  linksetPath,
+  registeredBackendPath,
+  replicasPath,
+  replicaPath,
+  replicaStatusPath,
+  collectionLogPath,
+  chunkPath,
+  chunksContainerPath,
+  backendPath,
+  quotaPath,
+  queryPath,
+  spaceRevocationsPath
 } from '../src/lib/paths.js'
 
 describe('spacesPath', () => {
@@ -32,15 +45,42 @@ describe('spacesPath', () => {
 })
 
 describe('spacePath', () => {
-  it('builds the canonical member path by default', () => {
-    assert.equal(spacePath({ spaceId: 's1' }), '/space/s1')
+  it('builds the canonical container URL (trailing slash)', () => {
+    assert.equal(spacePath({ spaceId: 's1' }), '/space/s1/')
+  })
+})
+
+describe('absoluteSpaceUrl', () => {
+  it('builds the canonical container URL on the server', () => {
+    assert.equal(
+      absoluteSpaceUrl({ spaceId: 's1', serverUrl: 'http://localhost:3002' }),
+      'http://localhost:3002/space/s1/'
+    )
   })
 
-  it('builds the container form when trailingSlash is set', () => {
+  it('is the same URL when the base URL ends in a slash', () => {
     assert.equal(
-      spacePath({ spaceId: 's1', trailingSlash: true }),
-      '/space/s1/'
+      absoluteSpaceUrl({ spaceId: 's1', serverUrl: 'http://localhost:3002/' }),
+      'http://localhost:3002/space/s1/'
     )
+  })
+})
+
+describe('absoluteCollectionUrl', () => {
+  it('is the same canonical URL whether or not the base URL ends in a slash', () => {
+    for (const serverUrl of [
+      'http://localhost:3002',
+      'http://localhost:3002/'
+    ]) {
+      assert.equal(
+        absoluteCollectionUrl({
+          spaceId: 's1',
+          collectionId: 'c1',
+          serverUrl
+        }),
+        'http://localhost:3002/space/s1/c1/'
+      )
+    }
   })
 })
 
@@ -61,20 +101,9 @@ describe('exportPath / importPath', () => {
 })
 
 describe('collectionPath', () => {
-  it('builds the canonical member path by default', () => {
+  it('builds the canonical container URL (trailing slash)', () => {
     assert.equal(
       collectionPath({ spaceId: 's1', collectionId: 'c1' }),
-      '/space/s1/c1'
-    )
-  })
-
-  it('builds the container form when trailingSlash is set', () => {
-    assert.equal(
-      collectionPath({
-        spaceId: 's1',
-        collectionId: 'c1',
-        trailingSlash: true
-      }),
       '/space/s1/c1/'
     )
   })
@@ -149,5 +178,41 @@ describe('linksetPath', () => {
       linksetPath({ spaceId: 's1', collectionId: 'c1' }),
       '/space/s1/c1/linkset'
     )
+  })
+})
+
+describe('sub-resource builders', () => {
+  const ids = { spaceId: 's1', collectionId: 'c1', resourceId: 'r1' }
+
+  it('extends the no-slash Space prefix', () => {
+    assert.equal(
+      registeredBackendPath({ spaceId: 's1', backendId: 'b1' }),
+      '/space/s1/backends/b1'
+    )
+    assert.equal(replicasPath({ spaceId: 's1' }), '/space/s1/replicas')
+    assert.equal(
+      replicaPath({ spaceId: 's1', replicaId: 'p1' }),
+      '/space/s1/replicas/p1'
+    )
+    assert.equal(
+      replicaStatusPath({ spaceId: 's1', replicaId: 'p1' }),
+      '/space/s1/replicas/p1/status'
+    )
+    assert.equal(
+      spaceRevocationsPath({ spaceId: 's1', revocationId: 'urn:z' }),
+      '/space/s1/zcaps/revocations/urn%3Az'
+    )
+  })
+
+  it('extends the no-slash Collection prefix', () => {
+    assert.equal(collectionLogPath(ids), '/space/s1/c1/meta/log')
+    assert.equal(backendPath(ids), '/space/s1/c1/backend')
+    assert.equal(quotaPath(ids), '/space/s1/c1/quota')
+    assert.equal(queryPath(ids), '/space/s1/c1/query')
+    assert.equal(
+      chunkPath({ ...ids, chunkIndex: 2 }),
+      '/space/s1/c1/r1/chunks/2'
+    )
+    assert.equal(chunksContainerPath(ids), '/space/s1/c1/r1/chunks/')
   })
 })

@@ -2822,7 +2822,7 @@ export class FileSystemBackend implements StorageBackend {
           return {
             id: collectionId,
             // The canonical container form, with the trailing slash.
-            url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+            url: collectionPath({ spaceId, collectionId }),
             // `name` is optional on the wire type; a stored Collection normally has
             // one (create defaults it to the id). Fall back to the dir name for a
             // metadata-less directory too (e.g. one left by a policy write to a

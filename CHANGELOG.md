@@ -29,6 +29,16 @@
   `@interop/pws-client` 0.104.0. Breaking for `/testing` consumers:
   `provisionWebvhIdentity` takes `owner` as `{ did, pws }`, a `PwsClient`, where
   it took `{ did, was }`.
+- Internal: `spacePath` and `collectionPath` return the canonical trailing-slash
+  container URL with no option. No wire change.
+
+### Fixed
+
+- The `changes` feed builds its `id` URLs and checkpoint scope by resolving
+  against the base URL. A `SERVER_URL` ending in a slash no longer doubles the
+  slash, which made a replica server skip the Collection's policy documents.
+- List Spaces and List Collection serve `type` lexically sorted, as Read Space
+  and Read Collection Metadata do.
 
 ## 0.45.0 - 2026-10-30
 

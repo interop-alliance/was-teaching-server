@@ -226,7 +226,13 @@ import {
   RESERVED_COLLECTION_IDS,
   RESERVED_RESOURCE_IDS
 } from './validateId.js'
-import { absoluteUrl, resourcePath, spaceMetaPath, spacePath } from './paths.js'
+import {
+  absoluteSpaceUrl,
+  absoluteUrl,
+  resourcePath,
+  spaceMetaPath,
+  spacePath
+} from './paths.js'
 
 /**
  * The service-entry type IRI naming the account's current annex DID.
@@ -505,9 +511,7 @@ function spaceUrlTargetId({
     target,
     serverUrl,
     canonicalPath: ({ spaceId, tail }) =>
-      tail.length === 1 && tail[0] === ''
-        ? spacePath({ spaceId, trailingSlash: true })
-        : undefined
+      tail.length === 1 && tail[0] === '' ? spacePath({ spaceId }) : undefined
   })
 }
 
@@ -803,10 +807,7 @@ async function ladderDelegationAdmitted({
   if (readSpaceId === undefined || parent.invocationTarget === undefined) {
     return false
   }
-  const parentSpaceUrl = absoluteUrl({
-    path: spacePath({ spaceId: readSpaceId, trailingSlash: true }),
-    serverUrl
-  })
+  const parentSpaceUrl = absoluteSpaceUrl({ spaceId: readSpaceId, serverUrl })
   return (
     (parent.invocationTarget === target ||
       parent.invocationTarget === parentSpaceUrl) &&

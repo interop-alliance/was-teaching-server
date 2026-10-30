@@ -608,13 +608,14 @@ export async function controllerUnmappedByRemoval({
 }
 
 /**
- * The first Space controller that deleting a local Space, or one Collection
- * of it, would leave with no log location: a `did:webvh` that is a local
- * Space's stored controller and resolves from the only copy the delete would
- * take. `undefined` when there is none. A Space's own controller goes with
- * the Space, so Delete Space is not refused for it, while a Delete Collection
- * is, since the Space stays. Reads the stored registrations and the Spaces'
- * controllers afresh, past the caches.
+ * Refuses a Delete Space or Delete Collection that would take the only copy
+ * of a log a Space's stored controller resolves from. A `did:webvh` hosted on
+ * a peer resolves here only from the copy a registration keeps, so that Space
+ * would be left with no resolvable controller and no break-glass, as it would
+ * by a Delete Replica. A Space's own controller goes with the Space, so Delete
+ * Space is not refused for it, while a Delete Collection is, since the Space
+ * stays. Reads the stored registrations and the Spaces' controllers afresh,
+ * past the caches.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}
@@ -622,10 +623,10 @@ export async function controllerUnmappedByRemoval({
  * @param options.spaceId {string}   the local Space
  * @param [options.collectionId] {string}   the Collection a Delete Collection
  *   names; absent for Delete Space
- * @returns {Promise<{ did: string, spaceId: string } | undefined>}   the DID
- *   with the local Space it controls
+ * @returns {Promise<void>}
+ * @throws {ReplicaRefusedError}
  */
-async function controllerUnmappedByDelete({
+export async function assertDeleteKeepsControllers({
   storage,
   serverUrl,
   spaceId,
@@ -635,10 +636,10 @@ async function controllerUnmappedByDelete({
   serverUrl: string
   spaceId: string
   collectionId?: string
-}): Promise<{ did: string; spaceId: string } | undefined> {
+}): Promise<void> {
   // A Space with no registration keeps no copy, and most Spaces have none.
   if ((await storage.listReplicas({ spaceId })).length === 0) {
-    return undefined
+    return
   }
   // Delete Space checks every other Space, Delete Collection the Spaces whose
   // controller's log that Collection holds.
@@ -665,58 +666,18 @@ async function controllerUnmappedByDelete({
         controllers
       }
     })
-    if (unmapped !== undefined) {
-      return unmapped
+    if (unmapped === undefined) {
+      continue
     }
+    const [holder, holds] =
+      collectionId === undefined ? ['Space', 'keeps'] : ['Collection', 'holds']
+    throw new ReplicaRefusedError({
+      title: `The ${holder} cannot be removed.`,
+      pointer: null,
+      detail:
+        `Space "${unmapped.spaceId}" is controlled by "${unmapped.did}", ` +
+        `which resolves only from the copy of its log this ${holder} ${holds}. ` +
+        'Change that controller first.'
+    })
   }
-  return undefined
-}
-
-/**
- * Refuses a Delete Space or Delete Collection that would take the only copy
- * of a log a Space's controller resolves from (see
- * {@link controllerUnmappedByDelete}). A `did:webvh` hosted on a peer resolves
- * here only from the copy a registration keeps, so that Space would be left
- * with no resolvable controller and no break-glass, as it would by a Delete
- * Replica.
- *
- * @param options {object}
- * @param options.storage {StorageBackend}
- * @param options.serverUrl {string}   this server's base URL
- * @param options.spaceId {string}   the local Space
- * @param [options.collectionId] {string}   the Collection a Delete Collection
- *   names; absent for Delete Space
- * @returns {Promise<void>}
- * @throws {ReplicaRefusedError}
- */
-export async function assertDeleteKeepsControllers({
-  storage,
-  serverUrl,
-  spaceId,
-  collectionId
-}: {
-  storage: StorageBackend
-  serverUrl: string
-  spaceId: string
-  collectionId?: string
-}): Promise<void> {
-  const unmapped = await controllerUnmappedByDelete({
-    storage,
-    serverUrl,
-    spaceId,
-    collectionId
-  })
-  if (unmapped === undefined) {
-    return
-  }
-  const [holder, holds] =
-    collectionId === undefined ? ['Space', 'keeps'] : ['Collection', 'holds']
-  throw new ReplicaRefusedError({
-    title: `The ${holder} cannot be removed.`,
-    pointer: null,
-    detail:
-      `Space "${unmapped.spaceId}" is controlled by "${unmapped.did}", ` +
-      `which resolves only from the copy of its log this ${holder} ${holds}. ` +
-      'Change that controller first.'
-  })
 }

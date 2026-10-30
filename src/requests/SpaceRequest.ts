@@ -63,10 +63,11 @@ import {
 import { projectCollectionMetadata } from './collectionContext.js'
 import { notModifiedReply, withEtag } from './notModified.js'
 import {
+  absoluteCollectionUrl,
+  absoluteSpaceUrl,
   absoluteUrl,
   spacePath,
   spaceMetaPath,
-  collectionPath,
   exportPath,
   importPath,
   linksetPath,
@@ -295,10 +296,7 @@ export class SpaceRequest {
     })
 
     const metaUrl = absoluteUrl({ path: spaceMetaPath({ spaceId }), serverUrl })
-    const spaceUrl = absoluteUrl({
-      path: spacePath({ spaceId, trailingSlash: true }),
-      serverUrl
-    })
+    const spaceUrl = absoluteSpaceUrl({ spaceId, serverUrl })
     const preconditions = parseWritePreconditions(request.headers)
 
     // Check to see if space already exists (if yes, this will be an Update).
@@ -408,7 +406,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: spacePath({ spaceId, trailingSlash: true }),
+      targetPath: spacePath({ spaceId }),
       requestName
     })
 
@@ -453,11 +451,10 @@ export class SpaceRequest {
     }
     // `Location` names the Collection in its canonical trailing-slash
     // (container) form.
-    const createdUrl = absoluteUrl({
-      path: collectionPath({ spaceId, collectionId, trailingSlash: true }),
-      serverUrl
-    })
-    reply.header('Location', createdUrl)
+    reply.header(
+      'Location',
+      absoluteCollectionUrl({ spaceId, collectionId, serverUrl })
+    )
     // Surface the new Collection Metadata `ETag` so a client can chain a
     // conditional update (the `key-epochs` conditional-Collection-write feature).
     reply.header('etag', formatEtag(written.validator))
@@ -511,7 +508,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: spacePath({ spaceId, trailingSlash: true }),
+      targetPath: spacePath({ spaceId }),
       requestName,
       containerRule: 'exact-delete'
     })
@@ -779,7 +776,7 @@ export class SpaceRequest {
     const { grantedBy } = await fetchSpaceAndAuthorize({
       request,
       spaceId,
-      targetPath: spacePath({ spaceId, trailingSlash: true }),
+      targetPath: spacePath({ spaceId }),
       requestName,
       allowTargetQuery: true
     })

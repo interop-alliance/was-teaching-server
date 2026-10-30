@@ -26,11 +26,11 @@ import { mapInBatches } from '../lib/mapInBatches.js'
 import { cursorOfNextUrl } from '../lib/pagination.js'
 import { mergeAppliedCollectionMetadata } from '../lib/replicaApply.js'
 import {
+  absoluteSpaceUrl,
   absoluteUrl,
   collectionMetaPath,
   resourcePath,
-  spaceMetaPath,
-  spacePath
+  spaceMetaPath
 } from '../lib/paths.js'
 import type { ServerSigningKey } from '../lib/serverIdentity.js'
 import { SERVER_SPACE_ID, keyRelationships } from '../lib/serverIdentity.js'
@@ -141,10 +141,7 @@ export function parseReplicaRegistration({
       '#/fromSpace'
     )
   }
-  const localSpaceUrl = absoluteUrl({
-    path: spacePath({ spaceId, trailingSlash: true }),
-    serverUrl
-  })
+  const localSpaceUrl = absoluteSpaceUrl({ spaceId, serverUrl })
   if (toSpace !== localSpaceUrl) {
     return refuse(
       `The registration "toSpace" must be this Space's canonical URL, "${localSpaceUrl}".`,

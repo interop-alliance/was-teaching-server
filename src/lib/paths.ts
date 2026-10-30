@@ -7,15 +7,14 @@
  * from one place rather than re-deriving them inline (which risks drift from the
  * routes).
  *
- * Builders return the no-trailing-slash form by default, the base every
- * sub-resource path (`meta`, `policy`, `linkset`, ...) extends. A container
- * (a Space or a Collection) is canonically addressed WITH the trailing slash
- * (spec "Reading This Document"): that form lists its members, adds one, and
- * deletes the container, and the bare form only redirects to it. So a call
- * site that names the container itself passes `trailingSlash: true` (or, for
- * the always-container `/spaces/`, gets the slash baked in) rather than
- * leaving the slash to drift. A leaf Resource has no children, so
- * `resourcePath` has no container form.
+ * A container (a Space or a Collection) is canonically addressed WITH the
+ * trailing slash (spec "Reading This Document"): that form lists its members,
+ * adds one, and deletes the container, and the bare form only redirects to it.
+ * So `spacePath` and `collectionPath` return that form. The no-slash form is
+ * not an address the server hands out. It exists only as the private
+ * `spaceBase` and `collectionBase` prefixes that every sub-resource path
+ * (`meta`, `policy`, `linkset`, ...) extends. A leaf Resource has no children,
+ * so `resourcePath` has no container form.
  */
 
 /**
@@ -49,8 +48,8 @@ export function serviceDescriptionPath(): string {
 /**
  * The SpacesRepository container (`/spaces/`), the `POST` (Create Space) and
  * `GET` (List Spaces) target. The repository has no member paths: a Space is
- * addressed under `/space/:spaceId`, not under `/spaces/`, so the `Location`
- * of a newly created Space is `spacePath({ spaceId, trailingSlash: true })`.
+ * addressed at `/space/:spaceId/`, not under `/spaces/`, so the `Location` of
+ * a newly created Space is `spacePath({ spaceId })`.
  * @returns {string}
  */
 export function spacesPath(): string {
@@ -58,22 +57,44 @@ export function spacesPath(): string {
 }
 
 /**
- * `/space/:spaceId` (the base of the Space's sub-resource paths) or
- * `/space/:spaceId/` (the canonical Space container URL: list Collections,
- * add one, delete the Space) when `trailingSlash` is set.
+ * `/space/:spaceId` -- the prefix the Space's sub-resource paths extend. Not
+ * an address of its own: the Space itself is {@link spacePath}.
  * @param options {object}
  * @param options.spaceId {string}
- * @param [options.trailingSlash] {boolean}   address the container form
  * @returns {string}
  */
-export function spacePath({
+function spaceBase({ spaceId }: { spaceId: string }): string {
+  return `/space/${spaceId}`
+}
+
+/**
+ * `/space/:spaceId/` -- the canonical Space container URL: list Collections,
+ * add one, delete the Space.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @returns {string}
+ */
+export function spacePath({ spaceId }: { spaceId: string }): string {
+  return `${spaceBase({ spaceId })}/`
+}
+
+/**
+ * The absolute canonical URL of a Space on this server, which is the target
+ * of the Space's root capability. A capability target compares as an exact
+ * string, so every site derives it here.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {string}
+ */
+export function absoluteSpaceUrl({
   spaceId,
-  trailingSlash = false
+  serverUrl
 }: {
   spaceId: string
-  trailingSlash?: boolean
+  serverUrl: string
 }): string {
-  return `/space/${spaceId}${trailingSlash ? '/' : ''}`
+  return absoluteUrl({ path: spacePath({ spaceId }), serverUrl })
 }
 
 /**
@@ -84,7 +105,7 @@ export function spacePath({
  * @returns {string}
  */
 export function spaceMetaPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/meta`
+  return `${spaceBase({ spaceId })}/meta`
 }
 
 /**
@@ -94,7 +115,7 @@ export function spaceMetaPath({ spaceId }: { spaceId: string }): string {
  * @returns {string}
  */
 export function exportPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/export`
+  return `${spaceBase({ spaceId })}/export`
 }
 
 /**
@@ -104,30 +125,68 @@ export function exportPath({ spaceId }: { spaceId: string }): string {
  * @returns {string}
  */
 export function importPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/import`
+  return `${spaceBase({ spaceId })}/import`
 }
 
 /**
- * `/space/:spaceId/:collectionId` (the base of the Collection's sub-resource
- * paths) or `/space/:spaceId/:collectionId/` (the canonical Collection
- * container URL: list items, add one, delete the Collection) when
- * `trailingSlash` is set.
+ * `/space/:spaceId/:collectionId` -- the prefix the Collection's sub-resource
+ * paths extend. Not an address of its own: the Collection itself is
+ * {@link collectionPath}.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @param [options.trailingSlash] {boolean}   address the container form
+ * @returns {string}
+ */
+function collectionBase({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): string {
+  return `${spaceBase({ spaceId })}/${collectionId}`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/` -- the canonical Collection container URL:
+ * list items, add one, delete the Collection.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
  * @returns {string}
  */
 export function collectionPath({
   spaceId,
-  collectionId,
-  trailingSlash = false
+  collectionId
 }: {
   spaceId: string
   collectionId: string
-  trailingSlash?: boolean
 }): string {
-  return `${spacePath({ spaceId })}/${collectionId}${trailingSlash ? '/' : ''}`
+  return `${collectionBase({ spaceId, collectionId })}/`
+}
+
+/**
+ * The absolute canonical URL of a Collection on this server, which a created
+ * Collection's `Location` names and a `changes` checkpoint is scoped to.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {string}
+ */
+export function absoluteCollectionUrl({
+  spaceId,
+  collectionId,
+  serverUrl
+}: {
+  spaceId: string
+  collectionId: string
+  serverUrl: string
+}): string {
+  return absoluteUrl({
+    path: collectionPath({ spaceId, collectionId }),
+    serverUrl
+  })
 }
 
 /**
@@ -147,7 +206,7 @@ export function resourcePath({
   collectionId: string
   resourceId: string
 }): string {
-  return `${collectionPath({ spaceId, collectionId })}/${resourceId}`
+  return `${collectionBase({ spaceId, collectionId })}/${resourceId}`
 }
 
 /**
@@ -173,9 +232,9 @@ export function policyPath({
     return `${resourcePath({ spaceId, collectionId, resourceId })}/policy`
   }
   if (collectionId !== undefined) {
-    return `${collectionPath({ spaceId, collectionId })}/policy`
+    return `${collectionBase({ spaceId, collectionId })}/policy`
   }
-  return `${spacePath({ spaceId })}/policy`
+  return `${spaceBase({ spaceId })}/policy`
 }
 
 /**
@@ -185,7 +244,7 @@ export function policyPath({
  * @returns {string}
  */
 export function backendsPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/backends`
+  return `${spaceBase({ spaceId })}/backends`
 }
 
 /**
@@ -216,7 +275,7 @@ export function registeredBackendPath({
  * @returns {string}
  */
 export function replicasPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/replicas`
+  return `${spaceBase({ spaceId })}/replicas`
 }
 
 /**
@@ -261,7 +320,7 @@ export function replicaStatusPath({
  * @returns {string}
  */
 export function quotasPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/quotas`
+  return `${spaceBase({ spaceId })}/quotas`
 }
 
 /**
@@ -280,7 +339,7 @@ export function collectionMetaPath({
   spaceId: string
   collectionId: string
 }): string {
-  return `${collectionPath({ spaceId, collectionId })}/meta`
+  return `${collectionBase({ spaceId, collectionId })}/meta`
 }
 
 /**
@@ -392,7 +451,7 @@ export function backendPath({
   spaceId: string
   collectionId: string
 }): string {
-  return `${collectionPath({ spaceId, collectionId })}/backend`
+  return `${collectionBase({ spaceId, collectionId })}/backend`
 }
 
 /**
@@ -410,7 +469,7 @@ export function quotaPath({
   spaceId: string
   collectionId: string
 }): string {
-  return `${collectionPath({ spaceId, collectionId })}/quota`
+  return `${collectionBase({ spaceId, collectionId })}/quota`
 }
 
 /**
@@ -429,7 +488,7 @@ export function queryPath({
   spaceId: string
   collectionId: string
 }): string {
-  return `${collectionPath({ spaceId, collectionId })}/query`
+  return `${collectionBase({ spaceId, collectionId })}/query`
 }
 
 /**
@@ -449,8 +508,8 @@ export function linksetPath({
 }): string {
   const anchor =
     collectionId !== undefined
-      ? collectionPath({ spaceId, collectionId })
-      : spacePath({ spaceId })
+      ? collectionBase({ spaceId, collectionId })
+      : spaceBase({ spaceId })
   return `${anchor}/linkset`
 }
 
@@ -547,7 +606,7 @@ export function spaceRevocationsPath({
   revocationId: string
 }): string {
   return (
-    `${spacePath({ spaceId })}/zcaps/revocations/` +
+    `${spaceBase({ spaceId })}/zcaps/revocations/` +
     encodeURIComponent(revocationId)
   )
 }

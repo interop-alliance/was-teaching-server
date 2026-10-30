@@ -386,6 +386,29 @@ describe('Space Description type', () => {
       }
     })
 
+    it('serves an unsorted stored type array sorted, as Read Space does', async () => {
+      const spaceId = randomUUID()
+      await createSpace({
+        identity: alice,
+        body: {
+          id: spaceId,
+          name: 'Stored unsorted',
+          controller: alice.did,
+          type: ['Space', 'DelegatedClientsSpace', 'AuxiliarySpace']
+        }
+      })
+
+      const listing = await alice.pws.listSpaces()
+      const item = listing.items.find(
+        (listed: { id: string }) => listed.id === spaceId
+      )
+      assert.deepStrictEqual(item.type, AUXILIARY_TYPE)
+      assert.deepStrictEqual(
+        item.type,
+        (await alice.pws.space(spaceId).describe()).type
+      )
+    })
+
     it('the auxiliary Space is still directly readable by its controller', async () => {
       const description = await bob.pws.space(auxiliarySpaceId).describe()
       assert.equal(description.id, auxiliarySpaceId)

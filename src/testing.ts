@@ -33,7 +33,13 @@ import {
   RequestFaults,
   RequestFaultDisarmedError
 } from './lib/requestFaults.js'
-import { absoluteUrl, resourcePath, spacePath } from './lib/paths.js'
+import {
+  absoluteSpaceUrl,
+  absoluteUrl,
+  replicasPath,
+  replicaStatusPath,
+  resourcePath
+} from './lib/paths.js'
 import { createServerSigningKey } from './lib/serverIdentity.js'
 import type { ServerSigningKey } from './lib/serverIdentity.js'
 import { WEBVH_LOG_RESOURCE_ID } from './lib/validateDid.js'
@@ -401,10 +407,7 @@ export async function provisionWebvhIdentity<
 
     const identity: WebvhIdentity = {
       spaceId,
-      spaceUrl: absoluteUrl({
-        path: spacePath({ spaceId, trailingSlash: true }),
-        serverUrl: baseServerUrl
-      }),
+      spaceUrl: absoluteSpaceUrl({ spaceId, serverUrl: baseServerUrl }),
       did: created.did,
       log: created.log,
       logSigner,
@@ -776,10 +779,7 @@ export async function signedInject({
     throw new Error(`signedInject: path must be under a Space; got "${path}".`)
   }
   const url = absoluteUrl({ path, serverUrl: server.serverUrl })
-  const spaceUrl = absoluteUrl({
-    path: spacePath({ spaceId, trailingSlash: true }),
-    serverUrl: server.serverUrl
-  })
+  const spaceUrl = absoluteSpaceUrl({ spaceId, serverUrl: server.serverUrl })
   const headers = await signCapabilityInvocation({
     url,
     method,
@@ -859,8 +859,8 @@ export async function registerReplica({
   expires?: Date
   overrides?: Record<string, unknown>
 }): Promise<LightMyRequestResponse> {
-  const fromSpace = absoluteUrl({
-    path: spacePath({ spaceId: fromSpaceId, trailingSlash: true }),
+  const fromSpace = absoluteSpaceUrl({
+    spaceId: fromSpaceId,
     serverUrl: from.serverUrl
   })
   const capability = await new ZcapClient({
@@ -877,13 +877,13 @@ export async function registerReplica({
   return signedInject({
     server: to,
     signer,
-    path: `/space/${toSpaceId}/replicas`,
+    path: replicasPath({ spaceId: toSpaceId }),
     method: 'POST',
     json: {
       id: replicaId,
       fromSpace,
-      toSpace: absoluteUrl({
-        path: spacePath({ spaceId: toSpaceId, trailingSlash: true }),
+      toSpace: absoluteSpaceUrl({
+        spaceId: toSpaceId,
         serverUrl: to.serverUrl
       }),
       capability,
@@ -918,7 +918,7 @@ export async function replicaStatus({
   const response = await signedInject({
     server,
     signer,
-    path: `/space/${spaceId}/replicas/${replicaId}/status`
+    path: replicaStatusPath({ spaceId, replicaId })
   })
   assert.equal(response.statusCode, 200, response.payload)
   return response.json()
