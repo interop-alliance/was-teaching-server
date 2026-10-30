@@ -526,7 +526,7 @@ describe('Chunk replication between servers', () => {
 
   beforeAll(async () => {
     const identities = await zcapClients({
-      serverUrl: 'https://unused.example'
+      baseServerUrl: 'https://unused.example'
     })
     alice = identities.alice
     source = await boot({

@@ -46,7 +46,7 @@ const MAX_UPLOAD_BYTES = 64 * 1024
  * how many bytes actually reached the wire, which is the structural measure of
  * the bound: a server that buffered the whole body would have read them all.
  * @param options {object}
- * @param options.serverUrl {string}   the test server's base URL
+ * @param options.baseServerUrl {string}   the test server's base URL
  * @param options.requestPath {string}   the request path
  * @param options.headers {Record<string, string>}   request headers
  * @param options.chunk {Buffer}   the chunk written repeatedly
@@ -54,13 +54,13 @@ const MAX_UPLOAD_BYTES = 64 * 1024
  * @returns {Promise<{ statusCode: number, headers: http.IncomingHttpHeaders, body: string, sentBytes: number }>}
  */
 async function sendChunked({
-  serverUrl,
+  baseServerUrl,
   requestPath,
   headers,
   chunk,
   chunkCount
 }: {
-  serverUrl: string
+  baseServerUrl: string
   requestPath: string
   headers: Record<string, string>
   chunk: Buffer
@@ -71,7 +71,7 @@ async function sendChunked({
   body: string
   sentBytes: number
 }> {
-  const url = new URL(requestPath, serverUrl)
+  const url = new URL(requestPath, baseServerUrl)
   let sentBytes = 0
   let stopped = false
   const request = http.request({
@@ -131,16 +131,16 @@ async function sendChunked({
 }
 
 describe('Buffered body limit', () => {
-  let fastify: FastifyInstance, serverUrl: string
+  let fastify: FastifyInstance, baseServerUrl: string
   let alice: any
   const spaceId = `body-limit-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({ maxUploadBytes: MAX_UPLOAD_BYTES })
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,
@@ -159,9 +159,9 @@ describe('Buffered body limit', () => {
     // 64 MiB of body against a 64 KiB limit: a server that buffered it would
     // read every byte.
     const chunkCount = 1024
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/chunked`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/chunked`
     const { statusCode, headers, body, sentBytes } = await sendChunked({
-      serverUrl,
+      baseServerUrl,
       requestPath: `/space/${spaceId}/${collectionId}/chunked`,
       headers: {
         authorization: placeholderAuthHeader(),
@@ -193,12 +193,12 @@ describe('Buffered body limit', () => {
     const chunkCount = 1024
     const requestPath = `/space/${spaceId}/${collectionId}/meta/log`
     const { statusCode, headers, body, sentBytes } = await sendChunked({
-      serverUrl,
+      baseServerUrl,
       requestPath,
       headers: {
         authorization: placeholderAuthHeader(),
         'capability-invocation': rootInvocation({
-          target: `${serverUrl}${requestPath}`
+          target: new URL(requestPath, baseServerUrl).href
         }),
         'content-type': 'text/jsonl',
         digest: digestHeaderFor('{}'),
@@ -218,7 +218,7 @@ describe('Buffered body limit', () => {
 
   it('refuses an announced over-limit JSON body with 413', async () => {
     const payload = JSON.stringify({ id: 'big', blob: 'x'.repeat(200 * 1024) })
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/announced`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/announced`
     const response = await fastify.inject({
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/announced`,
@@ -240,16 +240,16 @@ describe('Buffered body limit', () => {
 })
 
 describe('Buffered body limit (did.jsonl append)', () => {
-  let fastify: FastifyInstance, serverUrl: string
+  let fastify: FastifyInstance, baseServerUrl: string
   let alice: any
   const spaceId = `body-limit-log-${crypto.randomUUID()}`
   const collectionId = 'identity'
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     const space = await alice.was.createSpace({
       id: spaceId,
       name: 'Log Body Limit Space',
@@ -305,17 +305,17 @@ describe('Buffered body limit (did.jsonl append)', () => {
 })
 
 describe('Buffered body limit (default cap)', () => {
-  let fastify: FastifyInstance, serverUrl: string
+  let fastify: FastifyInstance, baseServerUrl: string
   let alice: any, aliceCredentials: any
   const spaceId = `body-limit-default-${crypto.randomUUID()}`
 
   beforeAll(async () => {
     // No `maxUploadBytes`: the backend applies its default-on 64 MiB cap, and
     // the buffered-body limit follows it rather than Fastify's 1 MiB default.
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,
@@ -356,7 +356,7 @@ describe('Buffered body limit (derivation)', () => {
 
   it('an unlimited backend cap still bounds a buffered body', async () => {
     const backend = await openTempBackend({ maxUploadBytes: Infinity })
-    const { fastify, serverUrl } = await startTestServer({
+    const { fastify, baseServerUrl } = await startTestServer({
       backend
     })
     try {
@@ -366,12 +366,12 @@ describe('Buffered body limit (derivation)', () => {
       // refusal names the server's own limit, not a backend cap.
       const requestPath = '/space/no-such-space/credentials/announced'
       const { statusCode, body } = await sendChunked({
-        serverUrl,
+        baseServerUrl,
         requestPath,
         headers: {
           authorization: placeholderAuthHeader(),
           'capability-invocation': rootInvocation({
-            target: `${serverUrl}${requestPath}`
+            target: new URL(requestPath, baseServerUrl).href
           }),
           'content-type': 'application/json',
           digest: digestHeaderFor('{}'),

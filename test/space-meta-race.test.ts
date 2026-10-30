@@ -80,7 +80,7 @@ class InterleavingBackend extends FileSystemBackend {
 
 describe('Update Space against a concurrently changing Space', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     dataDir: string,
     backend: InterleavingBackend,
     alice: any,
@@ -89,9 +89,9 @@ describe('Update Space against a concurrently changing Space', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     backend = await InterleavingBackend.open({ dataDir })
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     backend.serverStorage = fastify.storage
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -113,7 +113,7 @@ describe('Update Space against a concurrently changing Space', () => {
   }): Promise<Response> {
     return responseOf(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, controller: alice.did, ...body },
         ...(headers && { headers })
@@ -156,7 +156,7 @@ describe('Update Space against a concurrently changing Space', () => {
     assert.equal(response.status, 201)
     assert.equal(
       response.headers.get('location'),
-      `${serverUrl}/space/${spaceId}/`
+      `${baseServerUrl}space/${spaceId}/`
     )
     // Composed fresh, not from the deleted Space's type.
     const stored = await backend.getSpaceMetadata({ spaceId })
@@ -255,7 +255,7 @@ describe('Update Space against a concurrently changing Space', () => {
 
     const err = await requestError(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, controller: alice.did, name: 'Lost' }
       })

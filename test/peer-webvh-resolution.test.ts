@@ -131,7 +131,7 @@ function methodOf(keyPair: Ed25519VerificationKey, purpose: string[]) {
 }
 
 describe('peer server did:webvh resolution', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   /**
    * What the injected fetcher serves, by URL. A function value lets a case
@@ -162,15 +162,15 @@ describe('peer server did:webvh resolution', () => {
   let spaceUrl: string, docUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend(),
       peerLogFetcher
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
-    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
+    spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
     docUrl = new URL(
       `/space/${spaceId}/credentials/doc-1`,
-      serverUrl
+      baseServerUrl
     ).toString()
     const space = alice.was.space(spaceId)
     await space.configure({ name: 'Replicated Space', controller: alice.did })
@@ -683,7 +683,7 @@ describe('peer server did:webvh resolution', () => {
       }).request({
         url: new URL(
           `/space/${spaceId}/credentials/by-agent`,
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'PUT',
         action: 'PUT',
@@ -729,7 +729,7 @@ describe('peer server did:webvh resolution', () => {
     it('when the chain roots outside the Space', async () => {
       const peer = await mintPeer({ host: 'nofetch-root.example' })
       // The root targets every Space on the server, which no route accepts.
-      const allSpaces = new URL('/space/', serverUrl).toString()
+      const allSpaces = new URL('/space/', baseServerUrl).toString()
       const zcap = await delegate({
         signer: alice.signer,
         capability: `urn:zcap:root:${encodeURIComponent(allSpaces)}`,
@@ -784,7 +784,7 @@ describe('peer server did:webvh resolution', () => {
       const headers = await signCapabilityInvocation({
         url: docUrl,
         method: 'GET',
-        headers: { host: new URL(serverUrl).host },
+        headers: { host: new URL(baseServerUrl).host },
         capability: zcap,
         // Appends an `id` parameter after the embedded capability, inside
         // the signed header value.
@@ -868,7 +868,7 @@ describe('peer server did:webvh resolution', () => {
       const revoked = await client({ signer: alice.signer }).request({
         url: new URL(
           spaceRevocationsPath({ spaceId, revocationId: zcap.id }),
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'POST',
         action: 'POST',
@@ -909,7 +909,7 @@ describe('peer server did:webvh resolution', () => {
      */
     async function promote(controller: string): Promise<any> {
       return client({ signer: alice.signer }).request({
-        url: new URL(spaceMetaPath({ spaceId }), serverUrl).toString(),
+        url: new URL(spaceMetaPath({ spaceId }), baseServerUrl).toString(),
         method: 'PUT',
         action: 'PUT',
         capability: rootZcap({
@@ -933,7 +933,7 @@ describe('peer server did:webvh resolution', () => {
       }
       assert.equal(fetched.filter(url => url.includes('controller-')).length, 0)
       const meta = await client({ signer: alice.signer }).request({
-        url: new URL(spaceMetaPath({ spaceId }), serverUrl).toString(),
+        url: new URL(spaceMetaPath({ spaceId }), baseServerUrl).toString(),
         method: 'GET',
         action: 'GET',
         capability: rootZcap({ target: spaceUrl, controller: alice.did })
@@ -955,14 +955,16 @@ describe('peer server did:webvh resolution', () => {
         host: 'blocked-did.example',
         path: 'agents/b2'
       })
-      ;({ fastify: blocked, serverUrl: blockedUrl } = await startTestServer({
-        backend: await openTempBackend(),
-        peerLogFetcher,
-        // A host is compared case-insensitively; a DID entry names one DID.
-        webvhBlocklist: [' BLOCKED-HOST.example ', byDid.did]
-      }))
+      ;({ fastify: blocked, baseServerUrl: blockedUrl } = await startTestServer(
+        {
+          backend: await openTempBackend(),
+          peerLogFetcher,
+          // A host is compared case-insensitively; a DID entry names one DID.
+          webvhBlocklist: [' BLOCKED-HOST.example ', byDid.did]
+        }
+      ))
       const { alice: blockedAlice } = await zcapClients({
-        serverUrl: blockedUrl
+        baseServerUrl: blockedUrl
       })
       const space = blockedAlice.was.space(blockedSpaceId)
       await space.configure({ name: 'Blocklist Space', controller: alice.did })

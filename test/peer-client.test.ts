@@ -33,7 +33,9 @@ describe('PeerClient.readStream', () => {
   let signer: any
 
   beforeAll(async () => {
-    const { alice } = await zcapClients({ serverUrl: 'https://unused.example' })
+    const { alice } = await zcapClients({
+      baseServerUrl: 'https://unused.example'
+    })
     signer = alice.signer
   })
 

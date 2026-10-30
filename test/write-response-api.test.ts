@@ -145,7 +145,7 @@ function describeWriteResponses({
 }): void {
   describe(`Write responses (${name})`, () => {
     let fastify: FastifyInstance,
-      serverUrl: string,
+      baseServerUrl: string,
       backend: StorageBackend,
       cleanup: () => Promise<void>,
       alice: any,
@@ -154,7 +154,7 @@ function describeWriteResponses({
     const collectionId = 'notes'
 
     function resourceUrl(resourceId: string): string {
-      return `${serverUrl}/space/${spaceId}/${collectionId}/${resourceId}`
+      return `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`
     }
 
     function put(resourceId: string, json: unknown, headers = {}) {
@@ -187,7 +187,7 @@ function describeWriteResponses({
      */
     async function feedDocument(resourceId: string): Promise<any> {
       const { data } = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${collectionId}/query`,
+        url: `${baseServerUrl}space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes', limit: 1000 }
       })
@@ -198,15 +198,15 @@ function describeWriteResponses({
 
     beforeAll(async () => {
       ;({ backend, cleanup } = await openBackend())
-      ;({ fastify, serverUrl } = await startTestServer({ backend }))
-      ;({ alice, bob } = await zcapClients({ serverUrl }))
+      ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+      ;({ alice, bob } = await zcapClients({ baseServerUrl }))
       await alice.was.request({
-        url: `${serverUrl}/spaces/`,
+        url: `${baseServerUrl}spaces/`,
         method: 'POST',
         json: { id: spaceId, controller: alice.did }
       })
       await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/`,
+        url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Notes' }
       })
@@ -306,7 +306,7 @@ function describeWriteResponses({
       await alice.was.request({ url: resourceUrl('revived'), method: 'DELETE' })
 
       // Bob re-creates the id under a grant on the Collection.
-      const spaceUrl = `${serverUrl}/space/${spaceId}/`
+      const spaceUrl = `${baseServerUrl}space/${spaceId}/`
       const capability = await delegate({
         signer: alice.signer,
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
@@ -336,11 +336,11 @@ function describeWriteResponses({
     it('a write-once repeat answers 200 with the stored members', async () => {
       const onceId = `once-${crypto.randomUUID()}`
       await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/`,
+        url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: onceId, revisions: { immutable: true } }
       })
-      const url = `${serverUrl}/space/${spaceId}/${onceId}/doc`
+      const url = `${baseServerUrl}space/${spaceId}/${onceId}/doc`
       const created = await alice.was.request({
         url,
         method: 'PUT',
@@ -361,8 +361,8 @@ function describeWriteResponses({
 
     it('two unconditional creates of one Collection by PUT answer one 201 and one 204', async () => {
       const raceId = `race-${crypto.randomUUID()}`
-      const metaUrl = `${serverUrl}/space/${spaceId}/${raceId}/meta`
-      const spaceUrl = `${serverUrl}/space/${spaceId}/`
+      const metaUrl = `${baseServerUrl}space/${spaceId}/${raceId}/meta`
+      const spaceUrl = `${baseServerUrl}space/${spaceId}/`
       const capability = await delegate({
         signer: alice.signer,
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
@@ -417,13 +417,13 @@ function describeWriteResponses({
     it('Create Collection answers with the stored object', async () => {
       const newId = `created-${crypto.randomUUID()}`
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/`,
+        url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: newId, name: 'Fresh', createdBy: 'did:key:zIgnored' }
       })
       assert.equal(response.status, 201)
       const { data: stored } = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${newId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/${newId}/meta`,
         method: 'GET'
       })
       assert.deepEqual(response.data, stored)
@@ -433,13 +433,13 @@ function describeWriteResponses({
     it('Create Space answers with the stored object', async () => {
       const newSpaceId = `space-${crypto.randomUUID()}`
       const response = await alice.was.request({
-        url: `${serverUrl}/spaces/`,
+        url: `${baseServerUrl}spaces/`,
         method: 'POST',
         json: { id: newSpaceId, controller: alice.did, name: 'Fresh' }
       })
       assert.equal(response.status, 201)
       const { data: stored } = await alice.was.request({
-        url: `${serverUrl}/space/${newSpaceId}/meta`,
+        url: `${baseServerUrl}space/${newSpaceId}/meta`,
         method: 'GET'
       })
       assert.deepEqual(response.data, stored)

@@ -29,16 +29,16 @@ interface QuotaReportBody {
 }
 
 describe('Quotas API', () => {
-  let fastify: FastifyInstance, serverUrl: string
+  let fastify: FastifyInstance, baseServerUrl: string
   let alice: any, bob: any
   const spaceId = `quotas-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision a Space + Collection with one Resource so usage is non-zero.
     const space = await alice.was.createSpace({
@@ -62,7 +62,7 @@ describe('Quotas API', () => {
 
   it('[root] reports the Space quota grouped by backend', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/quotas`,
+      url: `${baseServerUrl}space/${spaceId}/quotas`,
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -96,7 +96,7 @@ describe('Quotas API', () => {
     // path authorizes it against the bare `/quotas` target (the query selects a
     // representation, not a different target).
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/quotas?include=collections`,
+      url: `${baseServerUrl}space/${spaceId}/quotas?include=collections`,
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -127,7 +127,7 @@ describe('Quotas API', () => {
     let thrown: any
     try {
       await bob.was.request({
-        url: `${serverUrl}/space/${spaceId}/quotas`,
+        url: `${baseServerUrl}space/${spaceId}/quotas`,
         method: 'GET'
       })
     } catch (err) {
@@ -140,7 +140,7 @@ describe('Quotas API', () => {
   describe('Per-Collection quota', () => {
     it('[root] reports a single Collection scoped to its backend', async () => {
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${collectionId}/quota`,
+        url: `${baseServerUrl}space/${spaceId}/${collectionId}/quota`,
         method: 'GET'
       })
       assert.equal(response.status, 200)
@@ -163,7 +163,7 @@ describe('Quotas API', () => {
       let thrown: any
       try {
         await bob.was.request({
-          url: `${serverUrl}/space/${spaceId}/${collectionId}/quota`,
+          url: `${baseServerUrl}space/${spaceId}/${collectionId}/quota`,
           method: 'GET'
         })
       } catch (err) {
@@ -177,7 +177,7 @@ describe('Quotas API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${spaceId}/no-such-collection/quota`,
+          url: `${baseServerUrl}space/${spaceId}/no-such-collection/quota`,
           method: 'GET'
         })
       } catch (err) {

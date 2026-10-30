@@ -21,14 +21,14 @@ import {
 
 describe('Hosted-page sandbox', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     aliceSpace: Space,
     pages: Collection
 
   const spaceId = 'b3f0c9a2-5e1d-4c7a-9f3e-2d8b6a1c4e70'
   const resourceUrl = (resourceId: string) =>
-    `${serverUrl}/space/${spaceId}/pages/${resourceId}`
+    `${baseServerUrl}space/${spaceId}/pages/${resourceId}`
   const chunkUrl = () => `${resourceUrl('index.html')}/chunks/0`
 
   /**
@@ -45,10 +45,10 @@ describe('Hosted-page sandbox', () => {
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({ prefix: 'was-sandbox-' })
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: spaceId,
@@ -76,7 +76,7 @@ describe('Hosted-page sandbox', () => {
     })
     await publicPages.setPublic()
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/public-pages/index.html`,
+      url: `${baseServerUrl}space/${spaceId}/public-pages/index.html`,
       method: 'PUT',
       body: new Blob(['<!doctype html><script>1</script>'], {
         type: 'text/html'
@@ -99,7 +99,7 @@ describe('Hosted-page sandbox', () => {
 
   it('[anonymous] GET of a world-readable text/html Resource is sandboxed', async () => {
     const response = await fetch(
-      new URL(`${serverUrl}/space/${spaceId}/public-pages/index.html`)
+      new URL(`${baseServerUrl}space/${spaceId}/public-pages/index.html`)
     )
     assert.equal(response.status, 200)
     assert.match(response.headers.get('content-type')!, /text\/html/)
@@ -205,9 +205,9 @@ describe('Hosted-page sandbox', () => {
 
   it('[signed] JSON API responses are sandboxed too', async () => {
     const urls = [
-      `${serverUrl}/space/${spaceId}/pages/`, // Collection listing
-      `${serverUrl}/space/${spaceId}/meta`, // Space Metadata object
-      `${serverUrl}/space/${spaceId}/pages/meta`, // Collection Metadata object
+      `${baseServerUrl}space/${spaceId}/pages/`, // Collection listing
+      `${baseServerUrl}space/${spaceId}/meta`, // Space Metadata object
+      `${baseServerUrl}space/${spaceId}/pages/meta`, // Collection Metadata object
       `${resourceUrl('index.html')}/meta`, // Resource metadata
       `${resourceUrl('index.html')}/chunks/` // chunk listing
     ]
@@ -219,7 +219,7 @@ describe('Hosted-page sandbox', () => {
   })
 
   it('[signed] a slash redirect and a 405 refusal are sandboxed', async () => {
-    const redirect = await fetch(new URL(`${serverUrl}/spaces`), {
+    const redirect = await fetch(new URL(`${baseServerUrl}spaces`), {
       redirect: 'manual'
     })
     assert.equal(redirect.status, 308)
@@ -227,7 +227,7 @@ describe('Hosted-page sandbox', () => {
 
     const refusal = await responseOf(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'DELETE'
       })
     )
@@ -236,7 +236,7 @@ describe('Hosted-page sandbox', () => {
   })
 
   it('[anonymous] the welcome page and service description carry no sandbox policy', async () => {
-    for (const url of [`${serverUrl}/`, `${serverUrl}/service`]) {
+    for (const url of [`${baseServerUrl}`, `${baseServerUrl}service`]) {
       const response = await fetch(new URL(url))
       assert.equal(response.status, 200, url)
       assert.equal(response.headers.get('content-security-policy'), null, url)

@@ -56,7 +56,7 @@ function envelope(
 
 describe('Collection blinded-index query profile', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any,
     bob: any,
@@ -70,7 +70,7 @@ describe('Collection blinded-index query profile', () => {
   ): Promise<any> {
     const url = new URL(
       `/space/${alice.space1.id}/${collectionId}/query`,
-      serverUrl
+      baseServerUrl
     ).toString()
     return signer.was.request({
       url,
@@ -81,8 +81,8 @@ describe('Collection blinded-index query profile', () => {
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -263,7 +263,7 @@ describe('Collection blinded-index query profile', () => {
 
   it('advertises blinded-index-query in the Encrypted Collections entry', async () => {
     await assertEncryptedCollectionsFeature({
-      serverUrl,
+      baseServerUrl,
       feature: 'blinded-index-query'
     })
   })
@@ -276,7 +276,7 @@ describe('Collection blinded-index query profile', () => {
     const resourceUrl = (resourceId: string) =>
       new URL(
         `/space/${alice.space1.id}/vault-unique/${resourceId}`,
-        serverUrl
+        baseServerUrl
       ).toString()
 
     // A second document claiming the same unique triple: 409 id-conflict.
@@ -340,7 +340,7 @@ describe('Collection blinded-index query profile', () => {
     const { status } = await alice.was.request({
       url: new URL(
         `/space/${alice.space1.id}/vault-sidecar/gamma`,
-        serverUrl
+        baseServerUrl
       ).toString(),
       method: 'PUT',
       json: envelope('gamma', [{ name: 'n1', value: 'v1', unique: true }])

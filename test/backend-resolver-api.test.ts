@@ -27,7 +27,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
   let fastify: FastifyInstance,
     defaultBackend: TempFileSystemBackend,
     providerBackend: TempFileSystemBackend,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any
 
   beforeAll(async () => {
@@ -38,11 +38,11 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     const providers: BackendProviderRegistry = new Map([
       ['test-provider', () => providerBackend]
     ])
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: defaultBackend,
       providers
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -50,7 +50,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
   })
 
   function url(relativePath: string): string {
-    return new URL(relativePath, serverUrl).toString()
+    return new URL(relativePath, baseServerUrl).toString()
   }
 
   async function freshSpace(name: string): Promise<string> {
@@ -353,25 +353,25 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
 describe('Backend registration allowlist (WAS_ENABLED_BACKENDS)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-test-allowlist-' })
     // Only `test-provider` may be registered.
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend,
       enabledBackendProviders: ['test-provider']
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
   })
 
   function backendsUrl(spaceId: string): string {
-    return new URL(`/space/${spaceId}/backends`, serverUrl).toString()
+    return new URL(`/space/${spaceId}/backends`, baseServerUrl).toString()
   }
 
   async function freshSpace(name: string): Promise<string> {

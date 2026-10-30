@@ -20,7 +20,10 @@ import type { Space } from '@interop/was-client'
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('GET Collection equality filter', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, aliceSpace: Space
+  let fastify: FastifyInstance,
+    baseServerUrl: string,
+    alice: any,
+    aliceSpace: Space
 
   const spaceId = () => alice.space1.id
 
@@ -31,20 +34,20 @@ describe('GET Collection equality filter', () => {
     documents: Array<{ id: string } & Record<string, unknown>>
   ): Promise<void> {
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId()}/${collectionId}/meta`,
+      url: `${baseServerUrl}space/${spaceId()}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: collectionId, plaintext: { indexes } }
     })
     for (const document of documents) {
       await alice.was.request({
-        url: `${serverUrl}/space/${spaceId()}/${collectionId}/${document.id}`,
+        url: `${baseServerUrl}space/${spaceId()}/${collectionId}/${document.id}`,
         method: 'PUT',
         json: document
       })
     }
     // PublicCanRead so an anonymous GET (with a filter) is served.
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId()}/${collectionId}/policy`,
+      url: `${baseServerUrl}space/${spaceId()}/${collectionId}/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
     })
@@ -55,14 +58,16 @@ describe('GET Collection equality filter', () => {
     collectionId: string,
     rawQuery: string
   ): Promise<Response> {
-    return fetch(`${serverUrl}/space/${spaceId()}/${collectionId}/${rawQuery}`)
+    return fetch(
+      `${baseServerUrl}space/${spaceId()}/${collectionId}/${rawQuery}`
+    )
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -258,12 +263,12 @@ describe('GET Collection equality filter', () => {
 
   it('a filter on an encrypted Collection is a 400 (it can never carry plaintext)', async () => {
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId()}/f-encrypted/meta`,
+      url: `${baseServerUrl}space/${spaceId()}/f-encrypted/meta`,
       method: 'PUT',
       json: { id: 'f-encrypted', encryption: { scheme: 'edv' } }
     })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId()}/f-encrypted/policy`,
+      url: `${baseServerUrl}space/${spaceId()}/f-encrypted/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
     })
@@ -301,7 +306,7 @@ describe('GET Collection equality filter', () => {
       ]
     )
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId()}/f-authed/?filter[parentId]=p1`,
+      url: `${baseServerUrl}space/${spaceId()}/f-authed/?filter[parentId]=p1`,
       method: 'GET'
     })
     assert.equal(response.status, 200)

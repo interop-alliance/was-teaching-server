@@ -45,17 +45,17 @@ const twoEpochs = {
 
 describe('Governing history log API (meta/log)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     aliceDelegatedApp: any
   const spaceId = `governed-log-space-${crypto.randomUUID()}`
 
   beforeAll(async () => {
     // A small per-upload cap, so the oversize-log refusal is cheap to hit.
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({ maxUploadBytes: 64 * 1024 })
     }))
-    ;({ alice, aliceDelegatedApp } = await zcapClients({ serverUrl }))
+    ;({ alice, aliceDelegatedApp } = await zcapClients({ baseServerUrl }))
     await alice.was.createSpace({
       id: spaceId,
       name: 'Governed Log Space',
@@ -68,7 +68,7 @@ describe('Governing history log API (meta/log)', () => {
 
   // The canonical (trailing-slash) container URL of a Collection.
   const collectionUrl = (collectionId: string) =>
-    `${serverUrl}/space/${spaceId}/${collectionId}/`
+    `${baseServerUrl}space/${spaceId}/${collectionId}/`
   // The Collection Metadata object's URL.
   const metaUrl = (collectionId: string) => `${collectionUrl(collectionId)}meta`
   const logUrl = (collectionId: string) => `${metaUrl(collectionId)}/log`
@@ -77,7 +77,7 @@ describe('Governing history log API (meta/log)', () => {
   async function freshCollection(body: object = {}): Promise<string> {
     const collectionId = `col-${crypto.randomUUID()}`
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: collectionId, ...body }
     })
@@ -208,7 +208,7 @@ describe('Governing history log API (meta/log)', () => {
         to: aliceDelegatedApp.did,
         actions: ['GET'],
         target: collectionUrl(collectionId),
-        spaceUrl: `${serverUrl}/space/${spaceId}/`
+        spaceUrl: `${baseServerUrl}space/${spaceId}/`
       })
       const read = await aliceDelegatedApp.was.request({
         url: logUrl(collectionId),
@@ -878,7 +878,7 @@ describe('Governing history log API (meta/log)', () => {
       })
       // Re-created under the same id, the Collection is not governed.
       await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/`,
+        url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: collectionId }
       })
@@ -898,7 +898,7 @@ describe('Governing history log API (meta/log)', () => {
 
   it('advertises governed-history-logs in the Encrypted Collections entry', async () => {
     await assertEncryptedCollectionsFeature({
-      serverUrl,
+      baseServerUrl,
       feature: 'governed-history-logs'
     })
   })

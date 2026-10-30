@@ -14,14 +14,14 @@ import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Request validation API', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     // Provision a Space for the body/traversal tests to operate against.
     await alice.was.createSpace({
@@ -40,7 +40,7 @@ describe('Request validation API', () => {
       // route -- the handler sees a spaceId of `../../pwned`. The Space is
       // written at its `meta` sub-resource, so that is the write the id
       // validation must refuse.
-      const traversalUrl = `${serverUrl}/space/%2e%2e%2f%2e%2e%2fpwned/meta`
+      const traversalUrl = `${baseServerUrl}space/%2e%2e%2f%2e%2e%2fpwned/meta`
       let expectedError: any
       try {
         await alice.was.request({
@@ -72,7 +72,7 @@ describe('Request validation API', () => {
     })
 
     it('rejects a traversal collectionId with a typed 400', async () => {
-      const url = `${serverUrl}/space/${alice.space1.id}/%2e%2e%2fevil/meta`
+      const url = `${baseServerUrl}space/${alice.space1.id}/%2e%2e%2fevil/meta`
       let expectedError: any
       try {
         await alice.was.request({
@@ -97,7 +97,7 @@ describe('Request validation API', () => {
       let expectedError: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${alice.space1.id}/export/meta`,
+          url: `${baseServerUrl}space/${alice.space1.id}/export/meta`,
           method: 'PUT',
           json: { name: 'export' }
         })
@@ -122,7 +122,7 @@ describe('Request validation API', () => {
       let expectedError: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${alice.space1.id}/stuff/quota`,
+          url: `${baseServerUrl}space/${alice.space1.id}/stuff/quota`,
           method: 'PUT',
           json: { hello: 'world' }
         })
@@ -140,7 +140,7 @@ describe('Request validation API', () => {
       // The Space Description `name` property is optional per the spec, so a
       // create request that omits it must succeed.
       const response = await alice.was.request({
-        url: new URL('/spaces/', serverUrl).toString(),
+        url: new URL('/spaces/', baseServerUrl).toString(),
         method: 'POST',
         json: { controller: alice.did }
       })
@@ -153,7 +153,7 @@ describe('Request validation API', () => {
       let expectedError: any
       try {
         await alice.was.request({
-          url: new URL('/spaces/', serverUrl).toString(),
+          url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { name: 'No controller' }
         })
@@ -171,7 +171,7 @@ describe('Request validation API', () => {
       // so an update request that omits it must succeed.
       const spaceMetaUrl = new URL(
         `/space/${alice.space1.id}/meta`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const response = await alice.was.request({
         url: spaceMetaUrl,

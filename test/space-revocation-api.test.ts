@@ -32,7 +32,7 @@ import {
 
 describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
@@ -47,16 +47,16 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   let collectionUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
 
-    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
-    otherSpaceUrl = new URL(`/space/${otherSpaceId}/`, serverUrl).toString()
+    spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
+    otherSpaceUrl = new URL(`/space/${otherSpaceId}/`, baseServerUrl).toString()
     collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
-      serverUrl
+      baseServerUrl
     ).toString()
 
     for (const id of [spaceId, otherSpaceId]) {
@@ -84,7 +84,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   function revocationUrl(capabilityId: string, space = spaceId): string {
     return new URL(
       spaceRevocationsPath({ spaceId: space, revocationId: capabilityId }),
-      serverUrl
+      baseServerUrl
     ).toString()
   }
 
@@ -273,7 +273,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
       const publicUrl = new URL(
         `/space/${spaceId}/${publicCollectionId}`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const zcap = await sessionDelegate({ target: publicUrl })
       await revoke({
@@ -666,7 +666,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       const unknownSpaceId = randomUUID()
       const unknownSpaceUrl = new URL(
         `/space/${unknownSpaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const err = await requestError(
         revoke({

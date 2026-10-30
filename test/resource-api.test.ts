@@ -23,17 +23,17 @@ import {
 
 describe('Resource API', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any,
     aliceSpace: Space,
     aliceCredentials: Collection
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision the Space and 'credentials' Collection this suite operates on.
     // This suite uses its own temp dataDir, so these must be created here
@@ -56,7 +56,7 @@ describe('Resource API', () => {
     // Reads no longer 401 at the hook: an anonymous read is allowed to attempt,
     // and is denied as 404 (no-leak) when no access-control policy grants it.
     const response = await fetch(
-      new URL('/space/any-space-id/any-collection/any-resource', serverUrl),
+      new URL('/space/any-space-id/any-collection/any-resource', baseServerUrl),
       {
         method: 'GET'
       }
@@ -87,7 +87,7 @@ describe('Resource API', () => {
     assert.match(result.contentType!, /application\/json/)
     assert.ok(
       result.url.startsWith(
-        `${serverUrl}/space/${alice.space1.id}/credentials/`
+        `${baseServerUrl}space/${alice.space1.id}/credentials/`
       )
     )
 
@@ -241,7 +241,7 @@ describe('Resource API', () => {
       name: 'A shared Verifiable Credential'
     })
 
-    const resourceUrl = `${serverUrl}/space/${alice.space1.id}/public-collection/public-vc`
+    const resourceUrl = `${baseServerUrl}space/${alice.space1.id}/public-collection/public-vc`
 
     // Before any policy: the anonymous read is denied (404, no leak).
     const beforeResponse = await fetch(new URL(resourceUrl))
@@ -281,7 +281,7 @@ describe('Resource API', () => {
         name: 'Private'
       })
 
-      const resourceUrl = `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
+      const resourceUrl = `${baseServerUrl}space/${alice.space1.id}/credentials/${resourceId}`
       const response = await fetch(new URL(resourceUrl), { method: 'HEAD' })
       assert.equal(response.status, 404)
     })
@@ -294,7 +294,7 @@ describe('Resource API', () => {
       await publicCollection.put('readme', { id: 'readme', name: 'Read Me' })
       await publicCollection.setPublic()
 
-      const resourceUrl = `${serverUrl}/space/${alice.space1.id}/head-public/readme`
+      const resourceUrl = `${baseServerUrl}space/${alice.space1.id}/head-public/readme`
 
       // The HEAD Content-Length must equal the exact byte length a GET returns,
       // and the Content-Type must equal the GET's (spec "Content Types and
@@ -319,7 +319,7 @@ describe('Resource API', () => {
   describe('Resource Metadata (/meta)', () => {
     // Build the absolute `/meta` URL for a credentials-collection resource.
     const metaUrl = (resourceId: string) =>
-      `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}/meta`
+      `${baseServerUrl}space/${alice.space1.id}/credentials/${resourceId}/meta`
 
     it('[signed] GET /meta of a JSON resource returns contentType + size', async () => {
       const resourceId = 'meta-json'
@@ -395,7 +395,7 @@ describe('Resource API', () => {
       })
       await publicCollection.put('readme', { id: 'readme', name: 'Read Me' })
 
-      const resourceUrl = `${serverUrl}/space/${alice.space1.id}/meta-public/readme`
+      const resourceUrl = `${baseServerUrl}space/${alice.space1.id}/meta-public/readme`
 
       // Before any policy: anonymous /meta read is denied (404, no leak).
       const beforeResponse = await fetch(new URL(`${resourceUrl}/meta`))
@@ -480,7 +480,7 @@ describe('Resource API', () => {
 
       // The List Collection result now shows the custom.name as the Resource name.
       const { data: listing } = await alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/credentials/`,
+        url: `${baseServerUrl}space/${alice.space1.id}/credentials/`,
         method: 'GET'
       })
       const entry = listing.items.find((item: any) => item.id === resourceId)
@@ -618,7 +618,7 @@ describe('Resource API', () => {
 
   describe('Conditional Reads (If-None-Match / 304)', () => {
     const resourceUrl = (resourceId: string) =>
-      `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
+      `${baseServerUrl}space/${alice.space1.id}/credentials/${resourceId}`
 
     /**
      * Writes a text Resource (so a HEAD's empty body does not trip the JSON
@@ -858,7 +858,7 @@ describe('Resource API', () => {
       })
       await publicCollection.setPublic()
       await publicCollection.put('readme', { id: 'readme', name: 'Read Me' })
-      const url = `${serverUrl}/space/${alice.space1.id}/cond-read-public/readme`
+      const url = `${baseServerUrl}space/${alice.space1.id}/cond-read-public/readme`
       const first = await fetch(new URL(url))
       assert.equal(first.status, 200)
       const etag = first.headers.get('etag')!
@@ -874,7 +874,7 @@ describe('Resource API', () => {
   describe('Conditional Writes (ETag / If-Match)', () => {
     // Build the absolute resource URL for a credentials-collection resource.
     const resourceUrl = (resourceId: string) =>
-      `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
+      `${baseServerUrl}space/${alice.space1.id}/credentials/${resourceId}`
 
     it('surfaces an ETag on write and GET that advances on each write', async () => {
       const resourceId = 'cond-etag-roundtrip'
@@ -1314,7 +1314,10 @@ describe('Resource API', () => {
       // through the client would JSON-parse any "json"-bearing content-type).
       await collection.setPublic()
       const response = await fetch(
-        new URL(`/space/${alice.space1.id}/jsonl-public/data.jsonl`, serverUrl)
+        new URL(
+          `/space/${alice.space1.id}/jsonl-public/data.jsonl`,
+          baseServerUrl
+        )
       )
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/jsonl/)
@@ -1334,7 +1337,7 @@ describe('Resource API', () => {
         assert.equal(meta!.contentType, type)
         assert.equal(meta!.size, Buffer.byteLength(body))
         const response = await alice.was.request({
-          url: `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`,
+          url: `${baseServerUrl}space/${alice.space1.id}/credentials/${resourceId}`,
           method: 'GET'
         })
         assert.equal(response.status, 200)
@@ -1352,7 +1355,7 @@ describe('Resource API', () => {
       assert.equal(meta!.contentType, type)
       assert.equal(meta!.size, Buffer.byteLength(body))
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/credentials/mixed`,
+        url: `${baseServerUrl}space/${alice.space1.id}/credentials/mixed`,
         method: 'GET'
       })
       assert.equal(response.status, 200)
@@ -1365,7 +1368,7 @@ describe('Resource API', () => {
     it('[signed] a form field alongside the one file part is skipped, not refused', async () => {
       // The write path reads file parts only; an extra <input> in the form
       // must not turn the upload into a "missing a file part" refusal.
-      const url = `${serverUrl}/space/${alice.space1.id}/credentials/`
+      const url = `${baseServerUrl}space/${alice.space1.id}/credentials/`
       const boundary = 'was-test-boundary'
       const body = new TextEncoder().encode(
         `--${boundary}\r\n` +
@@ -1406,7 +1409,7 @@ describe('Resource API', () => {
     it('[signed] the multipart media type is matched case-insensitively', async () => {
       const response = await signedMultipart({
         signer: alice.signer,
-        url: `${serverUrl}/space/${alice.space1.id}/credentials/`,
+        url: `${baseServerUrl}space/${alice.space1.id}/credentials/`,
         method: 'POST',
         envelopeType: 'MULTIPART/FORM-DATA',
         partType: 'application/json',
@@ -1424,7 +1427,7 @@ describe('Resource API', () => {
       await aliceCredentials.put('multipart-put', { name: 'before' })
       const response = await signedMultipart({
         signer: alice.signer,
-        url: `${serverUrl}/space/${alice.space1.id}/credentials/multipart-put`,
+        url: `${baseServerUrl}space/${alice.space1.id}/credentials/multipart-put`,
         method: 'PUT',
         partType: 'application/json',
         partBody: '{"name":"after"}'
@@ -1437,7 +1440,7 @@ describe('Resource API', () => {
     it('[signed] a multipart body that does not match its signed Digest is refused', async () => {
       // The digest is taken over the multipart body as busboy reads it, so a
       // body swapped under a valid signature still fails.
-      const url = `${serverUrl}/space/${alice.space1.id}/credentials/`
+      const url = `${baseServerUrl}space/${alice.space1.id}/credentials/`
       const boundary = 'was-test-boundary'
       const encode = (name: string) =>
         new TextEncoder().encode(
@@ -1474,14 +1477,16 @@ describe('Resource API', () => {
     const openSpaceId = 'c1d9e4f3-5e3b-4d6c-8b2f-7a8e9f0b1c2d'
 
     beforeAll(async () => {
-      ;({ fastify: openFastify, serverUrl: openServerUrl } =
+      ;({ fastify: openFastify, baseServerUrl: openServerUrl } =
         await startTestServer({
           backend: await openTempBackend({
             prefix: 'was-multipart-open-',
             maxUploadBytes: Infinity
           })
         }))
-      ;({ alice: openAlice } = await zcapClients({ serverUrl: openServerUrl }))
+      ;({ alice: openAlice } = await zcapClients({
+        baseServerUrl: openServerUrl
+      }))
       const space = await openAlice.was.createSpace({
         id: openSpaceId,
         name: 'Multipart Open Space',
@@ -1500,7 +1505,7 @@ describe('Resource API', () => {
       // `@fastify/multipart` falls back to when it is given no `fileSize`.
       const response = await signedMultipart({
         signer: openAlice.signer,
-        url: `${openServerUrl}/space/${openSpaceId}/data/`,
+        url: `${openServerUrl}space/${openSpaceId}/data/`,
         method: 'POST',
         partType: 'application/octet-stream',
         partBody: 'x'.repeat(2 * 1024 * 1024)
@@ -1521,9 +1526,11 @@ describe('Resource API', () => {
         maxUploadBytes
       })
       capBackendId = backend.describe().id
-      ;({ fastify: capFastify, serverUrl: capServerUrl } =
+      ;({ fastify: capFastify, baseServerUrl: capServerUrl } =
         await startTestServer({ backend }))
-      ;({ alice: capAlice } = await zcapClients({ serverUrl: capServerUrl }))
+      ;({ alice: capAlice } = await zcapClients({
+        baseServerUrl: capServerUrl
+      }))
       const space = await capAlice.was.createSpace({
         id: capSpaceId,
         name: 'Multipart Cap Space',
@@ -1539,7 +1546,7 @@ describe('Resource API', () => {
     it('[signed] names the server backend limit the multipart buffer enforced', async () => {
       const response = await signedMultipart({
         signer: capAlice.signer,
-        url: `${capServerUrl}/space/${capSpaceId}/data/`,
+        url: `${capServerUrl}space/${capSpaceId}/data/`,
         method: 'POST',
         partType: 'application/octet-stream',
         partBody: 'x'.repeat(maxUploadBytes * 2)

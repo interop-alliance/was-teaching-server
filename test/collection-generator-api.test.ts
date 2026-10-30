@@ -20,7 +20,7 @@ import type { FastifyInstance } from 'fastify'
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Collection generator attribution API', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any
   const spaceId = `generator-space-${crypto.randomUUID()}`
   const generator = {
     id: 'did:key:zAppKeyExample',
@@ -31,10 +31,10 @@ describe('Collection generator attribution API', () => {
   const other = { id: 'did:key:zOtherApp' }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     await alice.was.createSpace({
       id: spaceId,
@@ -51,7 +51,7 @@ describe('Collection generator attribution API', () => {
    */
   async function readDesc(collectionId: string): Promise<any> {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     return response.data
@@ -74,7 +74,7 @@ describe('Collection generator attribution API', () => {
    */
   async function create(json: Record<string, unknown>): Promise<any> {
     return alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json
     })
@@ -88,7 +88,7 @@ describe('Collection generator attribution API', () => {
     json: Record<string, unknown>
   ): Promise<any> {
     return alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, ...json }
     })

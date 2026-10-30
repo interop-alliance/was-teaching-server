@@ -36,26 +36,25 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
 
 /**
  * Boots a test server on an OS-assigned ephemeral port and returns the
- * `serverUrl` it is actually reachable at, so parallel Vitest workers can never
- * collide on a port, and its `baseServerUrl`, the same origin in the canonical
- * form a client is built from.
+ * `baseServerUrl` it is actually reachable at, so parallel Vitest workers can
+ * never collide on a port.
  *
- * ZCap `invocationTarget` URLs embed host and port, so `serverUrl` must match
- * the listening port exactly. The port is not known until the server listens,
- * so the app boots against a placeholder base URL and the `serverUrl`
- * decoration is corrected by the first `onListen` hook, before any request is
- * served. Handlers read `request.server.serverUrl` per request, and the
- * plugin's own listen-time read runs after that hook, so nothing captures the
- * placeholder.
+ * ZCap `invocationTarget` URLs embed host and port, so the server's URL must
+ * match the listening port exactly. The port is not known until the server
+ * listens, so the app boots against a placeholder base URL and the
+ * `serverUrl` decoration is corrected by the first `onListen` hook, before any
+ * request is served. Handlers read `request.server.serverUrl` per request, and
+ * the plugin's own listen-time read runs after that hook, so nothing captures
+ * the placeholder.
  *
  * When the boot fails (a refused option, a port already in use), the Fastify
  * instance is closed before the error is rethrown, so a backend the plugin
  * already owns is closed with it.
  *
- * Callers must build their ZCap clients from the returned values, not from a
- * precomputed URL. `baseServerUrl` is `serverUrl` with a trailing slash, the
- * spec's base server URL and the form `new WasClient({ baseServerUrl })`
- * takes; `serverUrl` is the form `createApp({ serverUrl })` takes.
+ * Callers must build their ZCap clients from the returned `baseServerUrl`, not
+ * from a precomputed URL. It is the spec's base server URL, with its trailing
+ * slash, the form `new WasClient({ baseServerUrl })` takes. The no-slash form
+ * `createApp({ serverUrl })` takes is the returned instance's `serverUrl`.
  *
  * The returned `faults` records every request and can refuse, drop the
  * response of, or hold a chosen one. Its hooks are added before the protocol
@@ -63,7 +62,7 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
  *
  * A suite that tears a server down and boots a replacement over the same
  * `dataDir` must pin the replacement to the returned `port`, so that ids minted
- * by the first server (which embed `serverUrl`) still resolve.
+ * by the first server (which embed its URL) still resolve.
  *
  * The physical clock the server's write stamps read can be frozen or stepped:
  * pass `physicalClock` here when the server opens its own default backend,
@@ -74,7 +73,7 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
  *   OS-assigned ephemeral port
  * @param [options.logger] {boolean|object}   Fastify logger; defaults to
  *   `false` so per-request log lines stay out of the test output
- * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, baseServerUrl: string, port: number, faults: RequestFaults }>}
+ * @returns {Promise<{ fastify: FastifyInstance, baseServerUrl: string, port: number, faults: RequestFaults }>}
  */
 export async function startTestServer({
   port = 0,
@@ -83,7 +82,6 @@ export async function startTestServer({
   port?: number
 } = {}): Promise<{
   fastify: FastifyInstance
-  serverUrl: string
   baseServerUrl: string
   port: number
   faults: RequestFaults
@@ -112,7 +110,6 @@ export async function startTestServer({
   const { serverUrl } = fastify
   return {
     fastify,
-    serverUrl,
     baseServerUrl: `${serverUrl}/`,
     port: Number(new URL(serverUrl).port),
     faults
@@ -247,7 +244,8 @@ export function webvhLogSigner({
  *   `@interop/was-client` `WasClient` signed by it, which creates the Space.
  *   This package does not depend on was-client, so the caller brings its own
  *   and the parameter is typed by the members this function calls
- * @param options.serverUrl {string}   the server the log is anchored on
+ * @param options.baseServerUrl {string}   the base server URL of the server
+ *   the log is anchored on
  * @param [options.withLadderKey] {boolean}   also list a method under
  *   `assertionMethod` and `capabilityDelegation` alone -- the ladder VM
  *   shape, recognized by relation asymmetry
@@ -266,7 +264,7 @@ export async function provisionWebvhIdentity<
   WithTransientKey extends boolean = false
 >({
   owner,
-  serverUrl,
+  baseServerUrl,
   withLadderKey,
   withTransientKey,
   collectionId = 'id',
@@ -293,7 +291,7 @@ export async function provisionWebvhIdentity<
       }): Promise<{ status: number }>
     }
   }
-  serverUrl: string
+  baseServerUrl: string
   withLadderKey?: WithLadderKey
   withTransientKey?: WithTransientKey
   collectionId?: string
@@ -353,7 +351,7 @@ export async function provisionWebvhIdentity<
     }
 
     const created = await createDID({
-      address: `${serverUrl}/space/${spaceId}/${collectionId}`,
+      address: `${baseServerUrl}space/${spaceId}/${collectionId}`,
       signer: logSigner,
       updateKeys: [updateKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -374,7 +372,7 @@ export async function provisionWebvhIdentity<
         collectionId,
         resourceId: WEBVH_LOG_RESOURCE_ID
       }),
-      serverUrl
+      serverUrl: baseServerUrl
     })
     const published = await owner.was.request({
       url: logUrl,
@@ -393,7 +391,7 @@ export async function provisionWebvhIdentity<
       spaceId,
       spaceUrl: absoluteUrl({
         path: spacePath({ spaceId, trailingSlash: true }),
-        serverUrl
+        serverUrl: baseServerUrl
       }),
       did: created.did,
       log: created.log,

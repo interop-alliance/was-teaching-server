@@ -136,21 +136,21 @@ export async function responseOf(promise: Promise<any>): Promise<Response> {
  *
  * @param options {object}
  * @param options.identity {any}   a test identity carrying a `was` client
- * @param options.serverUrl {string}   base URL to resolve `url` against
+ * @param options.baseServerUrl {string}   base URL to resolve `url` against
  * @param options.url {string}   the absolute or server-relative URL to GET
  * @returns {Promise<any>}
  */
 export async function signedGet({
   identity,
-  serverUrl,
+  baseServerUrl,
   url
 }: {
   identity: any
-  serverUrl: string
+  baseServerUrl: string
   url: string
 }): Promise<any> {
   return identity.was.request({
-    url: new URL(url, serverUrl).toString(),
+    url: new URL(url, baseServerUrl).toString(),
     method: 'GET'
   })
 }
@@ -538,19 +538,19 @@ export function client({ signer }: { signer: ISigner }): ZcapClient {
  *
  * @param options {object}
  * @param options.signer {ISigner}
- * @param options.serverUrl {string}   the suite's server URL, with or without
+ * @param options.baseServerUrl {string}   the suite's server URL, with or without
  *   its trailing slash (the client canonicalizes it)
  * @returns {WasClient}
  */
 export function wasClient({
   signer,
-  serverUrl
+  baseServerUrl
 }: {
   signer: ISigner
-  serverUrl: string
+  baseServerUrl: string
 }): WasClient {
   return new WasClient({
-    baseServerUrl: serverUrl,
+    baseServerUrl: baseServerUrl,
     zcapClient: client({ signer })
   })
 }
@@ -561,12 +561,16 @@ export function wasClient({
  * server through these `was` clients rather than raw `ZcapClient.request()`.
  *
  * @param options {object}
- * @param options.serverUrl {string}   the suite's in-process server URL with
- *   no trailing slash, as `startTestServer` returns `serverUrl`; also the zcap
+ * @param options.baseServerUrl {string}   the suite's in-process server URL with
+ *   no trailing slash, as `startTestServer` returns `baseServerUrl`; also the zcap
  *   invocationTarget base, so it must match the injected app's URL
  * @returns {Promise<object>}
  */
-export async function zcapClients({ serverUrl }: { serverUrl: string }) {
+export async function zcapClients({
+  baseServerUrl
+}: {
+  baseServerUrl: string
+}) {
   // Set up Alice's root / admin key pair and client
   const aliceAdminKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.alice.secret.adminKeySeedBytes
@@ -595,7 +599,7 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
       // the raw invocation signer, for clients that take one directly (e.g.
       // `@interop/webkms-client`) rather than wrapping a ZcapClient
       signer: aliceRootSigner,
-      was: wasClient({ signer: aliceRootSigner, serverUrl }),
+      was: wasClient({ signer: aliceRootSigner, baseServerUrl }),
       space1: {
         id: '426e7db8-26b5-4fdc-8068-9dcb948fd291'
       },
@@ -607,13 +611,13 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
       // did:key:z6MksgunmKuHjE2GvC3DYLBC3p7i1QkMRyhWxT4rNNnKxZar
       did: aliceDelegatedAppDid,
       signer: aliceDelegatedAppSigner,
-      was: wasClient({ signer: aliceDelegatedAppSigner, serverUrl })
+      was: wasClient({ signer: aliceDelegatedAppSigner, baseServerUrl })
     },
     bob: {
       // did:key:z6MkgpJp9jpAsqFCKqKMvHsAL5VEnkcd8FhhZdwnX33BFDgs
       did: bobRootDid,
       signer: bobRootSigner,
-      was: wasClient({ signer: bobRootSigner, serverUrl }),
+      was: wasClient({ signer: bobRootSigner, baseServerUrl }),
       space2: {
         id: '94f03216-5ab4-4723-853c-cf837c171323'
       }
@@ -722,18 +726,18 @@ export async function assertSpaceController({
  * token, so a feature's own suite proves its advertisement alongside its
  * behavior.
  * @param options {object}
- * @param options.serverUrl {string}
+ * @param options.baseServerUrl {string}
  * @param options.feature {string}   the `features` token to expect
  * @returns {Promise<void>}
  */
 export async function assertEncryptedCollectionsFeature({
-  serverUrl,
+  baseServerUrl,
   feature
 }: {
-  serverUrl: string
+  baseServerUrl: string
   feature: string
 }): Promise<void> {
-  const response = await fetch(`${serverUrl}/service`)
+  const response = await fetch(`${baseServerUrl}service`)
   const document = (await response.json()) as {
     specs: Record<string, Array<{ version: string; features?: string[] }>>
   }

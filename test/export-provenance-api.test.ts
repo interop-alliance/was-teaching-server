@@ -27,7 +27,7 @@ import {
 
 describe('Export provenance (wire level)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any,
     admin: any,
@@ -38,7 +38,7 @@ describe('Export provenance (wire level)', () => {
 
   async function exportArchive() {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/export`,
+      url: `${baseServerUrl}space/${spaceId}/export`,
       method: 'POST'
     })
     assert.equal(response.status, 200)
@@ -54,7 +54,7 @@ describe('Export provenance (wire level)', () => {
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-export-provenance-' })
     adminKeyPair = await Ed25519VerificationKey.generate()
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend,
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`,
@@ -67,8 +67,8 @@ describe('Export provenance (wire level)', () => {
         }
       }
     }))
-    admin = wasClient({ signer: adminKeyPair.didKeySigner(), serverUrl })
-    ;({ alice } = await zcapClients({ serverUrl }))
+    admin = wasClient({ signer: adminKeyPair.didKeySigner(), baseServerUrl })
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     const space = await alice.was.createSpace({
       id: spaceId,
       controller: alice.did
@@ -76,7 +76,7 @@ describe('Export provenance (wire level)', () => {
     await space.createCollection({ id: 'notes' })
     for (const resourceId of ['one', 'two', 'three']) {
       await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/notes/${resourceId}`,
+        url: `${baseServerUrl}space/${spaceId}/notes/${resourceId}`,
         method: 'PUT',
         json: { resourceId }
       })
@@ -101,7 +101,7 @@ describe('Export provenance (wire level)', () => {
   it('signs every object and embeds the served log once the admin publishes one', async () => {
     const signingKey = await createServerSigningKey({ seed })
     const { did, log } = await createDID({
-      address: `${serverUrl}/space/server/id`,
+      address: `${baseServerUrl}space/server/id`,
       signer: webvhLogSigner({ keyPair: adminKeyPair }),
       updateKeys: [adminKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -116,7 +116,7 @@ describe('Export provenance (wire level)', () => {
     })
     await admin.space('server').collection('id').configure({ force: true })
     const published = await admin.request({
-      url: `${serverUrl}/space/server/id/did.jsonl`,
+      url: `${baseServerUrl}space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(log)], { type: 'text/jsonl' })
@@ -131,7 +131,7 @@ describe('Export provenance (wire level)', () => {
 
     // The snapshot is the log's bytes exactly as the server serves them.
     const served = await admin.request({
-      url: `${serverUrl}/space/server/id/did.jsonl`,
+      url: `${baseServerUrl}space/server/id/did.jsonl`,
       method: 'GET'
     })
     assert.equal(served.status, 200)
@@ -145,7 +145,7 @@ describe('Export provenance (wire level)', () => {
       didLog: archive.didLog
     })
     assert.equal(embeddedDid, did)
-    const base = `${serverUrl}/space/${spaceId}`
+    const base = `${baseServerUrl}space/${spaceId}`
     assert.deepStrictEqual(
       statements.map(statement => statement.id),
       [

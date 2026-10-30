@@ -45,7 +45,7 @@ import {
 describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
   let fastify: FastifyInstance,
     backend: TempFileSystemBackend,
-    serverUrl: string,
+    baseServerUrl: string,
     keystoresUrl: string,
     keystoreId: string,
     keystoreAgent: KeystoreAgent,
@@ -55,9 +55,9 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    keystoresUrl = `${serverUrl}/kms/keystores`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    keystoresUrl = `${baseServerUrl}kms/keystores`
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision Alice's keystore and hang a KeystoreAgent off it, the way a
     // wallet would at login. The agent only needs a `getSigner()` capability
@@ -1039,7 +1039,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       assert.ok(first.next, 'a further page must carry a next cursor')
 
       // Follow the (relative) next URL to exhaustion.
-      const nextUrl = new URL(first.next, serverUrl).toString()
+      const nextUrl = new URL(first.next, baseServerUrl).toString()
       const second = await listKeysRaw(nextUrl, {
         capability: rootZcap(keystore.url)
       })

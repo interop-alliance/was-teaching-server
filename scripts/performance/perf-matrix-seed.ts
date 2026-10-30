@@ -254,9 +254,9 @@ export async function seedMatrixInProcess({
   seed: Uint8Array
   binaryTotalMib?: number
 }): Promise<EncryptedReadIds> {
-  const { fastify, serverUrl } = await startTestServer({ backend })
+  const { fastify, baseServerUrl } = await startTestServer({ backend })
   try {
-    return await seedMatrix({ serverUrl, seed, binaryTotalMib })
+    return await seedMatrix({ serverUrl: baseServerUrl, seed, binaryTotalMib })
   } finally {
     await fastify.close()
   }

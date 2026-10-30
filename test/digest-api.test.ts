@@ -24,15 +24,15 @@ import {
 } from './helpers.js'
 
 describe('Request Body Integrity (Digest header)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any
   const spaceId = `digest-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,
@@ -51,7 +51,7 @@ describe('Request Body Integrity (Digest header)', () => {
   it('a correctly signed write (valid Digest) succeeds', async () => {
     // The real client always covers and sends a matching Digest header.
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/happy`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/happy`,
       method: 'PUT',
       json: { id: 'happy', name: 'Happy Path' }
     })
@@ -59,7 +59,7 @@ describe('Request Body Integrity (Digest header)', () => {
   })
 
   it('rejects a body write whose signature does not cover `digest` (400)', async () => {
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r1`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/r1`
     const response = await fastify.inject({
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r1`,
@@ -82,7 +82,7 @@ describe('Request Body Integrity (Digest header)', () => {
   })
 
   it('rejects a body write with no Digest header (400)', async () => {
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r2`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/r2`
     const response = await fastify.inject({
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r2`,
@@ -98,7 +98,7 @@ describe('Request Body Integrity (Digest header)', () => {
   })
 
   it('rejects a body write whose Digest does not match the body (400)', async () => {
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r3`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/r3`
     const response = await fastify.inject({
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r3`,
@@ -116,7 +116,7 @@ describe('Request Body Integrity (Digest header)', () => {
   })
 
   it('rejects a body write with a malformed Digest header (400)', async () => {
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r4`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/r4`
     const response = await fastify.inject({
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r4`,
@@ -152,7 +152,7 @@ describe('Request Body Integrity (Digest header)', () => {
               'capability-invocation'
           }),
           'capability-invocation': rootInvocation({
-            target: `${serverUrl}/space/${spaceId}/`
+            target: `${baseServerUrl}space/${spaceId}/`
           })
         },
         payload: Buffer.from('{"state":{}}\n')
@@ -166,7 +166,7 @@ describe('Request Body Integrity (Digest header)', () => {
   it('a signed bodyless request with no Content-Type needs no Digest', async () => {
     // Content-Length 0 is bodyless: the request passes the digest gate and is
     // refused by the (placeholder) signature verification instead.
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r6`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/r6`
     const response = await fastify.inject({
       method: 'DELETE',
       url: `/space/${spaceId}/${collectionId}/r6`,
@@ -188,7 +188,7 @@ describe('Request Body Integrity (Digest header)', () => {
     // The placeholder signature fails verification, so the handler refuses
     // before it reads the body, and the transform's mismatch error at
     // end-of-stream has no consumer to receive it.
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/blob`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/blob`
     const response = await fastify.inject({
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/blob`,
@@ -203,7 +203,7 @@ describe('Request Body Integrity (Digest header)', () => {
     assert.equal(response.statusCode, 404)
     // Let the transform flush, then check the server still answers.
     await new Promise(resolve => setImmediate(resolve))
-    const health = await fetch(`${serverUrl}/health`)
+    const health = await fetch(`${baseServerUrl}health`)
     assert.equal(health.status, 200)
   })
 
@@ -211,7 +211,7 @@ describe('Request Body Integrity (Digest header)', () => {
     // Correct covered headers + a matching Digest: the digest hook accepts it,
     // so the request proceeds and is instead rejected by the (placeholder)
     // signature verification -- a different failure than the digest details.
-    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r5`
+    const target = `${baseServerUrl}space/${spaceId}/${collectionId}/r5`
     const payload = JSON.stringify({ id: 'r5' })
     const response = await fastify.inject({
       method: 'PUT',

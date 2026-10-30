@@ -21,7 +21,7 @@ import {
 describe('Space backend registration (/backends)', () => {
   let fastify: FastifyInstance,
     backend: TempFileSystemBackend,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any
 
@@ -59,8 +59,8 @@ describe('Space backend registration (/backends)', () => {
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -76,7 +76,7 @@ describe('Space backend registration (/backends)', () => {
     const base = `/space/${spaceId}/backends`
     return new URL(
       backendId ? `${base}/${backendId}` : base,
-      serverUrl
+      baseServerUrl
     ).toString()
   }
 
@@ -196,7 +196,7 @@ describe('Space backend registration (/backends)', () => {
   it('POST without auth headers is unauthorized (401)', async () => {
     const spaceId = await freshSpace('Unauthenticated Space')
     const response = await fetch(
-      new URL(`/space/${spaceId}/backends`, serverUrl),
+      new URL(`/space/${spaceId}/backends`, baseServerUrl),
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -308,7 +308,7 @@ describe('Space backend registration (/backends)', () => {
     // validator must change with it: a conditional read holding the prior
     // validator gets the new object, not a 304.
     const spaceId = await freshSpace('ETag Space')
-    const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+    const metaUrl = new URL(`/space/${spaceId}/meta`, baseServerUrl).toString()
     const before = await alice.was.request({ url: metaUrl, method: 'GET' })
     const etagBefore = before.headers.get('etag')!
     assert.deepStrictEqual(before.data.backends, serverBackendDescriptors)

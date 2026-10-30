@@ -38,7 +38,7 @@ import {
 
 describe('Delegation-proof cryptosuites', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
@@ -100,15 +100,15 @@ describe('Delegation-proof cryptosuites', () => {
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
 
-    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
     collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
-      serverUrl
+      baseServerUrl
     ).toString()
 
     const space = alice.was.space(spaceId)
@@ -227,7 +227,7 @@ describe('Delegation-proof cryptosuites', () => {
         const response = await jcsClient({ signer: alice.signer }).request({
           url: new URL(
             spaceRevocationsPath({ spaceId, revocationId: capability.id }),
-            serverUrl
+            baseServerUrl
           ).toString(),
           method: 'POST',
           action: 'POST',

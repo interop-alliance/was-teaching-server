@@ -50,9 +50,9 @@ describe('testing export', () => {
     try {
       const started = await startTestServer({ backend })
       fastify = started.fastify
-      assert.equal(started.serverUrl, `http://localhost:${started.port}`)
-      assert.equal(fastify.serverUrl, started.serverUrl)
-      const response = await fetch(`${started.serverUrl}/service`)
+      assert.equal(started.baseServerUrl, `http://localhost:${started.port}/`)
+      assert.equal(`${fastify.serverUrl}/`, started.baseServerUrl)
+      const response = await fetch(`${started.baseServerUrl}service`)
       assert.equal(response.status, 200)
     } finally {
       await fastify?.close()
@@ -130,14 +130,14 @@ describe('testing export', () => {
   })
 
   it('provisions a did:webvh identity, typed by the keys asked for', async () => {
-    const { fastify, serverUrl } = await startTestServer({
+    const { fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     })
     try {
-      const { alice } = await zcapClients({ serverUrl })
+      const { alice } = await zcapClients({ baseServerUrl })
       const identity = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withLadderKey: true
       })
       assert.match(identity.did, /^did:webvh:/)
@@ -156,16 +156,16 @@ describe('testing export', () => {
   })
 
   it('deletes the Space when provisioning fails after creating it', async () => {
-    const { fastify, serverUrl } = await startTestServer({
+    const { fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     })
     try {
-      const { alice } = await zcapClients({ serverUrl })
+      const { alice } = await zcapClients({ baseServerUrl })
       // `meta` is a reserved Collection id, so the Collection create is refused.
       await assert.rejects(
         provisionWebvhIdentity({
           owner: alice,
-          serverUrl,
+          baseServerUrl,
           collectionId: 'meta'
         })
       )

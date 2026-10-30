@@ -14,7 +14,7 @@ import { withoutStampMembers } from '../src/lib/hlc.js'
 
 describe('Access-control policy API', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any,
     aliceSpace: Space,
@@ -25,10 +25,10 @@ describe('Access-control policy API', () => {
     `/space/${alice.space1.id}/public-credentials/public-vc`
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision the Space + a 'public-credentials' Collection with one resource.
     aliceSpace = await alice.was.createSpace({
@@ -50,7 +50,7 @@ describe('Access-control policy API', () => {
   })
 
   it('anonymous GET of a resource with no policy is denied (404)', async () => {
-    const response = await fetch(new URL(publicResourcePath(), serverUrl))
+    const response = await fetch(new URL(publicResourcePath(), baseServerUrl))
     assert.equal(response.status, 404)
   })
 
@@ -64,7 +64,7 @@ describe('Access-control policy API', () => {
   })
 
   it('anonymous GET of a resource in a PublicCanRead collection succeeds (200)', async () => {
-    const response = await fetch(new URL(publicResourcePath(), serverUrl))
+    const response = await fetch(new URL(publicResourcePath(), baseServerUrl))
     assert.equal(response.status, 200)
     const body = (await response.json()) as { name: string }
     assert.equal(body.name, 'A shared Verifiable Credential')
@@ -74,14 +74,14 @@ describe('Access-control policy API', () => {
     // Bob signs the request, but he is not the Space controller, so his
     // capability does not verify. The PublicCanRead policy grants the read.
     const response = await bob.was.request({
-      url: `${serverUrl}${publicResourcePath()}`,
+      url: new URL(publicResourcePath(), baseServerUrl).href,
       method: 'GET'
     })
     assert.equal(response.status, 200)
   })
 
   it('anonymous write is still rejected (401) even on a public collection', async () => {
-    const response = await fetch(new URL(publicResourcePath(), serverUrl), {
+    const response = await fetch(new URL(publicResourcePath(), baseServerUrl), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'anon write' })
@@ -91,7 +91,7 @@ describe('Access-control policy API', () => {
 
   it('PublicCanRead does not make collection writes public (anonymous POST 401)', async () => {
     const response = await fetch(
-      new URL(`/space/${alice.space1.id}/public-credentials/`, serverUrl),
+      new URL(`/space/${alice.space1.id}/public-credentials/`, baseServerUrl),
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -112,7 +112,10 @@ describe('Access-control policy API', () => {
     await closed.setPolicy({ type: 'SomethingUnsupported' })
 
     const response = await fetch(
-      new URL(`/space/${alice.space1.id}/closed-collection/secret`, serverUrl)
+      new URL(
+        `/space/${alice.space1.id}/closed-collection/secret`,
+        baseServerUrl
+      )
     )
     assert.equal(response.status, 404)
   })
@@ -124,7 +127,10 @@ describe('Access-control policy API', () => {
       .resource('secret')
       .setPublic()
     const response = await fetch(
-      new URL(`/space/${alice.space1.id}/closed-collection/secret`, serverUrl)
+      new URL(
+        `/space/${alice.space1.id}/closed-collection/secret`,
+        baseServerUrl
+      )
     )
     assert.equal(response.status, 200)
   })
@@ -145,7 +151,7 @@ describe('Access-control policy API', () => {
 
     // Sanity check: with no policy anywhere, the resource is private (404).
     const beforeResponse = await fetch(
-      new URL(`/space/${inheritedSpaceId}/docs/readme`, serverUrl)
+      new URL(`/space/${inheritedSpaceId}/docs/readme`, baseServerUrl)
     )
     assert.equal(beforeResponse.status, 404)
 
@@ -154,7 +160,7 @@ describe('Access-control policy API', () => {
 
     // The resource inherits the space policy (anonymous GET succeeds).
     const resourceResponse = await fetch(
-      new URL(`/space/${inheritedSpaceId}/docs/readme`, serverUrl)
+      new URL(`/space/${inheritedSpaceId}/docs/readme`, baseServerUrl)
     )
     assert.equal(resourceResponse.status, 200)
     const body = (await resourceResponse.json()) as { name: string }
@@ -162,23 +168,29 @@ describe('Access-control policy API', () => {
 
     // The collection description and listing inherit it too.
     const describeResponse = await fetch(
-      new URL(`/space/${inheritedSpaceId}/docs`, serverUrl)
+      new URL(`/space/${inheritedSpaceId}/docs`, baseServerUrl)
     )
     assert.equal(describeResponse.status, 200)
     const listResponse = await fetch(
-      new URL(`/space/${inheritedSpaceId}/docs/`, serverUrl)
+      new URL(`/space/${inheritedSpaceId}/docs/`, baseServerUrl)
     )
     assert.equal(listResponse.status, 200)
   })
 
   it('reading/writing the policy resource itself requires auth (401)', async () => {
     const getResponse = await fetch(
-      new URL(`/space/${alice.space1.id}/public-credentials/policy`, serverUrl)
+      new URL(
+        `/space/${alice.space1.id}/public-credentials/policy`,
+        baseServerUrl
+      )
     )
     assert.equal(getResponse.status, 401)
 
     const deleteResponse = await fetch(
-      new URL(`/space/${alice.space1.id}/public-credentials/policy`, serverUrl),
+      new URL(
+        `/space/${alice.space1.id}/public-credentials/policy`,
+        baseServerUrl
+      ),
       { method: 'DELETE' }
     )
     assert.equal(deleteResponse.status, 401)
@@ -187,7 +199,10 @@ describe('Access-control policy API', () => {
   it('the collection linkset advertises the policy resource', async () => {
     // The collection is public, so its linkset is discoverable anonymously.
     const response = await fetch(
-      new URL(`/space/${alice.space1.id}/public-credentials/linkset`, serverUrl)
+      new URL(
+        `/space/${alice.space1.id}/public-credentials/linkset`,
+        baseServerUrl
+      )
     )
     assert.equal(response.status, 200)
     assert.match(
@@ -212,7 +227,7 @@ describe('Access-control policy API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/spaces/`,
+          url: `${baseServerUrl}spaces/`,
           method: 'POST',
           json: { name: 'bad-controller', controller }
         })
@@ -230,7 +245,7 @@ describe('Access-control policy API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${alice.space1.id}/public-credentials/policy`,
+          url: `${baseServerUrl}space/${alice.space1.id}/public-credentials/policy`,
           method: 'PUT',
           json: { type }
         })
@@ -246,7 +261,7 @@ describe('Access-control policy API', () => {
     await publicCollection.clearPolicy()
     assert.equal(await publicCollection.getPolicy(), null)
 
-    const response = await fetch(new URL(publicResourcePath(), serverUrl))
+    const response = await fetch(new URL(publicResourcePath(), baseServerUrl))
     assert.equal(response.status, 404)
   })
 
@@ -258,7 +273,7 @@ describe('Access-control policy API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${alice.space1.id}/`,
+          url: `${baseServerUrl}space/${alice.space1.id}/`,
           method: 'POST',
           json: { id: reserved, name: reserved }
         })

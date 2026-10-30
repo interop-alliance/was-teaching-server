@@ -21,20 +21,20 @@ import {
 
 describe('List Collection pagination', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any,
     aliceSpace: Space
 
   /** GETs an absolute or server-relative URL with Alice's signed capability. */
   const aliceGet = (url: string): Promise<any> =>
-    signedGet({ identity: alice, serverUrl, url })
+    signedGet({ identity: alice, baseServerUrl, url })
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -246,7 +246,7 @@ describe('List Collection pagination', () => {
     let expectedError: any
     try {
       await bob.was.request({
-        url: new URL(`${listPath}?cursor=garbage%%%`, serverUrl).toString(),
+        url: new URL(`${listPath}?cursor=garbage%%%`, baseServerUrl).toString(),
         method: 'GET'
       })
     } catch (error) {

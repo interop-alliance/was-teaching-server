@@ -32,7 +32,7 @@ import {
 describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)', () => {
   let fastify: FastifyInstance,
     backend: TempFileSystemBackend,
-    serverUrl: string,
+    baseServerUrl: string,
     keystoresUrl: string,
     keystoreId: string,
     keystoreLocalId: string,
@@ -44,9 +44,9 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    keystoresUrl = `${serverUrl}/kms/keystores`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    keystoresUrl = `${baseServerUrl}kms/keystores`
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
 
     const config = await KmsClient.createKeystore({
       url: keystoresUrl,
@@ -82,7 +82,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
   ): string {
     return new URL(
       kmsRevocationsPath({ keystoreId: keystore, revocationId: capabilityId }),
-      serverUrl
+      baseServerUrl
     ).toString()
   }
 

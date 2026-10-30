@@ -16,10 +16,10 @@ const { version: packageVersion } = JSON.parse(
 ) as { version: string }
 
 describe('Server', () => {
-  let fastify: FastifyInstance, serverUrl: string
+  let fastify: FastifyInstance, baseServerUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
   })
@@ -28,7 +28,7 @@ describe('Server', () => {
   })
 
   it('should GET /', async () => {
-    const response = await fetch(serverUrl)
+    const response = await fetch(baseServerUrl)
     const body = await response.text()
 
     assert.equal(response.status, 200)
@@ -36,7 +36,7 @@ describe('Server', () => {
   })
 
   it('should GET /health without authentication', async () => {
-    const response = await fetch(serverUrl + '/health')
+    const response = await fetch(baseServerUrl + 'health')
     const body = (await response.json()) as { status: string; version: string }
 
     assert.equal(response.status, 200)
@@ -54,7 +54,7 @@ describe('Server', () => {
   })
 
   it('should HEAD /health with an empty body', async () => {
-    const response = await fetch(serverUrl + '/health', { method: 'HEAD' })
+    const response = await fetch(baseServerUrl + 'health', { method: 'HEAD' })
     const body = await response.text()
 
     assert.equal(response.status, 200)

@@ -18,7 +18,7 @@ import type { RequestFaults } from '../src/testing.js'
 
 describe('request faults', () => {
   let fastify: FastifyInstance
-  let serverUrl: string
+  let baseServerUrl: string
   let faults: RequestFaults
   let alice: Awaited<ReturnType<typeof zcapClients>>['alice']
   let bob: Awaited<ReturnType<typeof zcapClients>>['bob']
@@ -27,8 +27,8 @@ describe('request faults', () => {
 
   beforeAll(async () => {
     const started = await startTestServer({ backend: await openTempBackend() })
-    ;({ fastify, serverUrl, faults } = started)
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl, faults } = started)
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
     const space = alice.was.space(spaceId)
     await space.configure({ name: 'Faults', controller: alice.did })
     await space.collection('notes').configure({ force: true })
@@ -49,9 +49,11 @@ describe('request faults', () => {
   it('records every request in order with method, path, and DID', async () => {
     await notes().put('recorded', { n: 1 })
     await notes().get('recorded')
-    await fetch(`${serverUrl}/service?x=1`)
+    await fetch(`${baseServerUrl}service?x=1`)
     // An unsigned write the auth hooks refuse is still recorded.
-    await fetch(`${serverUrl}${collectionPath}unsigned`, { method: 'DELETE' })
+    await fetch(new URL(`${collectionPath}unsigned`, baseServerUrl), {
+      method: 'DELETE'
+    })
 
     assert.deepStrictEqual(faults.requests, [
       {
@@ -76,7 +78,7 @@ describe('request faults', () => {
       match: { path: /^\/kms\// },
       status: 502
     })
-    const response = await fetch(`${serverUrl}/kms/keystores/none`)
+    const response = await fetch(`${baseServerUrl}kms/keystores/none`)
     assert.equal(response.status, 502)
     assert.equal((await fired).fault, 'refused')
   })
@@ -103,7 +105,7 @@ describe('request faults', () => {
     faults.refuse({ match: { path: '/service' }, times: 2 })
     const statuses = []
     for (let attempt = 0; attempt < 3; attempt++) {
-      statuses.push((await fetch(`${serverUrl}/service`)).status)
+      statuses.push((await fetch(`${baseServerUrl}service`)).status)
     }
     assert.deepStrictEqual(statuses, [503, 503, 200])
   })
@@ -122,7 +124,7 @@ describe('request faults', () => {
     faults.refuse({ match: { path: /\/service/g }, times: Infinity })
     const statuses = []
     for (let attempt = 0; attempt < 3; attempt++) {
-      statuses.push((await fetch(`${serverUrl}/service`)).status)
+      statuses.push((await fetch(`${baseServerUrl}service`)).status)
     }
     assert.deepStrictEqual(statuses, [503, 503, 503])
   })
@@ -132,14 +134,16 @@ describe('request faults', () => {
       match: { path: `${collectionPath}my doc` },
       status: 400
     })
-    const response = await fetch(`${serverUrl}${collectionPath}my%20doc`)
+    const response = await fetch(
+      new URL(`${collectionPath}my%20doc`, baseServerUrl)
+    )
     assert.equal(response.status, 400)
     assert.equal((await fired).path, `${collectionPath}my%20doc`)
   })
 
   it('lets a cross-origin page read a refusal', async () => {
     faults.refuse({ match: { path: '/service' }, status: 400 })
-    const response = await fetch(`${serverUrl}/service`, {
+    const response = await fetch(`${baseServerUrl}service`, {
       headers: { origin: 'https://app.example' }
     })
     assert.equal(response.status, 400)
@@ -158,7 +162,7 @@ describe('request faults', () => {
     const { held, release } = faults.hold({ match: { path: '/service' } })
     release()
     await assert.rejects(held, RequestFaultDisarmedError)
-    assert.equal((await fetch(`${serverUrl}/service`)).status, 200)
+    assert.equal((await fetch(`${baseServerUrl}service`)).status, 200)
     assert.equal(faults.requests[0]!.fault, undefined)
   })
 
@@ -172,7 +176,7 @@ describe('request faults', () => {
   it('leaves a CORS preflight alone when no method is named', async () => {
     const path = `${collectionPath}preflight`
     faults.refuse({ match: { path }, status: 400 })
-    const preflight = await fetch(`${serverUrl}${path}`, {
+    const preflight = await fetch(new URL(path, baseServerUrl), {
       method: 'OPTIONS',
       headers: {
         origin: 'https://app.example',
@@ -216,7 +220,7 @@ describe('request faults', () => {
   it('releases a held request when the server closes', async () => {
     const started = await startTestServer({ backend: await openTempBackend() })
     const { held } = started.faults.hold({ match: { path: '/service' } })
-    const pending = fetch(`${started.serverUrl}/service`)
+    const pending = fetch(`${started.baseServerUrl}service`)
     await held
     await started.fastify.close()
     assert.equal((await pending).status, 200)

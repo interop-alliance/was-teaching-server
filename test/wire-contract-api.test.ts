@@ -13,25 +13,25 @@ import type { FastifyInstance } from 'fastify'
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Wire-contract smoke (status codes)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any
   const spaceId = `smoke-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     // Provision the Space + Collection the read/write smoke checks operate on,
     // over the wire (the high-level handles still speak the pre-v0.5 table).
     await alice.was.request({
-      url: `${serverUrl}/spaces/`,
+      url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Smoke Space', controller: alice.did }
     })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Verifiable Credentials' }
     })
@@ -43,7 +43,7 @@ describe('Wire-contract smoke (status codes)', () => {
   it('POST /spaces/ returns 201 with a Location and JSON content-type', async () => {
     const freshSpaceId = `smoke-space-${crypto.randomUUID()}`
     const response = await alice.was.request({
-      url: `${serverUrl}/spaces/`,
+      url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: {
         id: freshSpaceId,
@@ -55,7 +55,7 @@ describe('Wire-contract smoke (status codes)', () => {
     // `Location` names the created Space in its canonical container form.
     assert.equal(
       response.headers.get('location'),
-      `${serverUrl}/space/${freshSpaceId}/`
+      `${baseServerUrl}space/${freshSpaceId}/`
     )
     assert.match(response.headers.get('content-type')!, /application\/json/)
     assert.equal(response.data.url, `/space/${freshSpaceId}/`)
@@ -63,7 +63,7 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('GET /space/:spaceId/meta returns the Space Metadata object with an ETag', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -77,18 +77,18 @@ describe('Wire-contract smoke (status codes)', () => {
   it('PUT /space/:spaceId/meta creates a Space by id (201) then updates it (204)', async () => {
     const freshSpaceId = `smoke-space-${crypto.randomUUID()}`
     const created = await alice.was.request({
-      url: `${serverUrl}/space/${freshSpaceId}/meta`,
+      url: `${baseServerUrl}space/${freshSpaceId}/meta`,
       method: 'PUT',
       json: { id: freshSpaceId, name: 'By Id', controller: alice.did }
     })
     assert.equal(created.status, 201)
     assert.equal(
       created.headers.get('location'),
-      `${serverUrl}/space/${freshSpaceId}/`
+      `${baseServerUrl}space/${freshSpaceId}/`
     )
     assert.ok(created.headers.get('etag'))
     const updated = await alice.was.request({
-      url: `${serverUrl}/space/${freshSpaceId}/meta`,
+      url: `${baseServerUrl}space/${freshSpaceId}/meta`,
       method: 'PUT',
       json: { id: freshSpaceId, name: 'Renamed', controller: alice.did }
     })
@@ -98,7 +98,7 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('GET /space/:spaceId/ lists Collections with container urls', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -112,7 +112,7 @@ describe('Wire-contract smoke (status codes)', () => {
   it('POST /space/:spaceId/ creates a collection (201 with Location)', async () => {
     const freshCollectionId = `smoke-collection-${crypto.randomUUID()}`
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: freshCollectionId, name: 'Smoke Collection' }
     })
@@ -120,14 +120,14 @@ describe('Wire-contract smoke (status codes)', () => {
     // `Location` names the created Collection in its canonical container form.
     assert.equal(
       response.headers.get('location'),
-      `${serverUrl}/space/${spaceId}/${freshCollectionId}/`
+      `${baseServerUrl}space/${spaceId}/${freshCollectionId}/`
     )
     assert.equal(response.data.url, `/space/${spaceId}/${freshCollectionId}/`)
   })
 
   it('GET /space/:spaceId/:collectionId/meta returns the merged Collection Metadata object', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -148,9 +148,9 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('PUT /space/:spaceId/:collectionId/meta creates by id (201), then is a full replacement (204)', async () => {
     const freshCollectionId = `smoke-collection-${crypto.randomUUID()}`
-    const metaPath = `/space/${spaceId}/${freshCollectionId}/meta`
+    const metaUrl = `${baseServerUrl}space/${spaceId}/${freshCollectionId}/meta`
     const created = await alice.was.request({
-      url: `${serverUrl}${metaPath}`,
+      url: metaUrl,
       method: 'PUT',
       json: {
         id: freshCollectionId,
@@ -165,7 +165,7 @@ describe('Wire-contract smoke (status codes)', () => {
     assert.equal(created.status, 201)
     assert.equal(
       created.headers.get('location'),
-      `${serverUrl}/space/${spaceId}/${freshCollectionId}/`
+      `${baseServerUrl}space/${spaceId}/${freshCollectionId}/`
     )
     const firstEtag = created.headers.get('etag')
     assert.ok(firstEtag)
@@ -174,11 +174,11 @@ describe('Wire-contract smoke (status codes)', () => {
     // `generator` keeps the stored one; the read-only members sent back from a
     // GET are ignored, not rejected.
     const read = await alice.was.request({
-      url: `${serverUrl}${metaPath}`,
+      url: metaUrl,
       method: 'GET'
     })
     const updated = await alice.was.request({
-      url: `${serverUrl}${metaPath}`,
+      url: metaUrl,
       method: 'PUT',
       json: { ...read.data, name: 'Renamed', generator: undefined, custom: {} },
       headers: { 'if-match': firstEtag! }
@@ -186,7 +186,7 @@ describe('Wire-contract smoke (status codes)', () => {
     assert.equal(updated.status, 204)
     assert.notEqual(updated.headers.get('etag'), firstEtag)
     const after = await alice.was.request({
-      url: `${serverUrl}${metaPath}`,
+      url: metaUrl,
       method: 'GET'
     })
     assert.equal(after.data.name, 'Renamed')
@@ -200,7 +200,7 @@ describe('Wire-contract smoke (status codes)', () => {
     let expectedError: any
     try {
       await alice.was.request({
-        url: `${serverUrl}${metaPath}`,
+        url: metaUrl,
         method: 'PUT',
         json: { id: freshCollectionId, name: 'Stale' },
         headers: { 'if-match': firstEtag! }
@@ -214,12 +214,12 @@ describe('Wire-contract smoke (status codes)', () => {
   it('DELETE /space/:spaceId/:collectionId/ deletes the Collection (204)', async () => {
     const freshCollectionId = `smoke-collection-${crypto.randomUUID()}`
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: freshCollectionId }
     })
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${freshCollectionId}/`,
+      url: `${baseServerUrl}space/${spaceId}/${freshCollectionId}/`,
       method: 'DELETE'
     })
     assert.equal(response.status, 204)
@@ -227,7 +227,7 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('POST a resource returns 201 with a Location', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/`,
       method: 'POST',
       json: { name: 'Smoke Resource' }
     })
@@ -235,21 +235,21 @@ describe('Wire-contract smoke (status codes)', () => {
     assert.ok(
       response.headers
         .get('location')!
-        .startsWith(`${serverUrl}/space/${spaceId}/${collectionId}/`)
+        .startsWith(`${baseServerUrl}space/${spaceId}/${collectionId}/`)
     )
   })
 
   it('PUT a resource by id returns 201, then DELETE returns 204', async () => {
-    const resourcePath = `/space/${spaceId}/${collectionId}/smoke-put`
+    const resourceUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/smoke-put`
     const putResponse = await alice.was.request({
-      url: `${serverUrl}${resourcePath}`,
+      url: resourceUrl,
       method: 'PUT',
       json: { id: 'smoke-put', name: 'PUT Smoke' }
     })
     assert.equal(putResponse.status, 201)
 
     const deleteResponse = await alice.was.request({
-      url: `${serverUrl}${resourcePath}`,
+      url: resourceUrl,
       method: 'DELETE'
     })
     assert.equal(deleteResponse.status, 204)
@@ -259,7 +259,7 @@ describe('Wire-contract smoke (status codes)', () => {
     let expectedError: any
     try {
       await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${collectionId}/does-not-exist`,
+        url: `${baseServerUrl}space/${spaceId}/${collectionId}/does-not-exist`,
         method: 'GET'
       })
     } catch (err) {
@@ -294,16 +294,16 @@ describe('Wire-contract smoke (status codes)', () => {
   ]
   for (const [label, raw, expected] of primitives) {
     it(`round-trips a top-level JSON ${label} in a plaintext Collection`, async () => {
-      const resourcePath = `/space/${spaceId}/${collectionId}/primitive-${label.replace(/\s+/g, '-')}`
+      const resourceUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/primitive-${label.replace(/\s+/g, '-')}`
       const putResponse = await alice.was.request({
-        url: `${serverUrl}${resourcePath}`,
+        url: resourceUrl,
         method: 'PUT',
         body: new TextEncoder().encode(raw),
         headers: { 'content-type': 'application/json' }
       })
       assert.equal(putResponse.status, 201)
       const getResponse = await alice.was.request({
-        url: `${serverUrl}${resourcePath}`,
+        url: resourceUrl,
         method: 'GET'
       })
       assert.equal(getResponse.status, 200)
@@ -315,9 +315,9 @@ describe('Wire-contract smoke (status codes)', () => {
   // (`policy`) addresses the dedicated Policy endpoint (static-beats-parametric),
   // never a Resource named `policy`. Confirm the reserved route wins end to end.
   it('reserved `policy` segment routes to the collection Policy endpoint', async () => {
-    const policyPath = `/space/${spaceId}/${collectionId}/policy`
+    const policyUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/policy`
     const put = await alice.was.request({
-      url: `${serverUrl}${policyPath}`,
+      url: policyUrl,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
     })
@@ -325,13 +325,13 @@ describe('Wire-contract smoke (status codes)', () => {
     // Read it back: proves the PUT hit the Policy handler (a Resource write would
     // not be retrievable at this path as a policy document).
     const get = await alice.was.request({
-      url: `${serverUrl}${policyPath}`,
+      url: policyUrl,
       method: 'GET'
     })
     assert.equal(get.status, 200)
     assert.equal(get.data.type, 'PublicCanRead')
     const del = await alice.was.request({
-      url: `${serverUrl}${policyPath}`,
+      url: policyUrl,
       method: 'DELETE'
     })
     assert.equal(del.status, 204)

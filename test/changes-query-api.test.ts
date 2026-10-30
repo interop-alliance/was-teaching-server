@@ -33,7 +33,7 @@ import {
 
 describe('Collection changes query profile', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any,
     aliceSpace: Space
@@ -59,7 +59,7 @@ describe('Collection changes query profile', () => {
   function feedUrl(collectionId: string): string {
     return new URL(
       `/space/${alice.space1.id}/${collectionId}/`,
-      serverUrl
+      baseServerUrl
     ).toString()
   }
 
@@ -78,7 +78,7 @@ describe('Collection changes query profile', () => {
   ): Promise<any> {
     const url = new URL(
       `/space/${alice.space1.id}/${collectionId}/query`,
-      serverUrl
+      baseServerUrl
     ).toString()
     return signer.was.request({
       url,
@@ -88,10 +88,10 @@ describe('Collection changes query profile', () => {
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -238,7 +238,7 @@ describe('Collection changes query profile', () => {
 
     const resourceUrl = new URL(
       `/space/${alice.space1.id}/etag-feed/a`,
-      serverUrl
+      baseServerUrl
     ).toString()
     const getResponse = await alice.was.request({
       url: resourceUrl,
@@ -269,7 +269,7 @@ describe('Collection changes query profile', () => {
 
     const resourceUrl = new URL(
       `/space/${alice.space1.id}/etag-feed-premeta/a`,
-      serverUrl
+      baseServerUrl
     ).toString()
     const metaResponse = await alice.was.request({
       url: `${resourceUrl}/meta`,

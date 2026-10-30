@@ -42,7 +42,7 @@ async function statusOf(promise: Promise<{ status: number }>): Promise<number> {
 
 describe('Chunk API (chunked-streams)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any,
     aliceSpace: Space,
@@ -52,16 +52,16 @@ describe('Chunk API (chunked-streams)', () => {
 
   // The absolute member (one chunk) and container (listing) URLs.
   const chunkUrl = (resourceId: string, chunkIndex: number | string) =>
-    `${serverUrl}/space/${spaceId}/data/${resourceId}/chunks/${chunkIndex}`
+    `${baseServerUrl}space/${spaceId}/data/${resourceId}/chunks/${chunkIndex}`
   const listUrl = (resourceId: string) =>
-    `${serverUrl}/space/${spaceId}/data/${resourceId}/chunks/`
+    `${baseServerUrl}space/${spaceId}/data/${resourceId}/chunks/`
   const resourceUrl = (resourceId: string) =>
-    `${serverUrl}/space/${spaceId}/data/${resourceId}`
+    `${baseServerUrl}space/${spaceId}/data/${resourceId}`
 
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-chunks-' })
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: spaceId,
@@ -831,9 +831,9 @@ describe('Chunk API (chunked-streams)', () => {
         id: 'feed',
         name: 'Feed'
       })
-      const queryUrl = `${serverUrl}/space/${spaceId}/feed/query`
+      const queryUrl = `${baseServerUrl}space/${spaceId}/feed/query`
       const feedChunkUrl = (index: number) =>
-        `${serverUrl}/space/${spaceId}/feed/manifest/chunks/${index}`
+        `${baseServerUrl}space/${spaceId}/feed/manifest/chunks/${index}`
 
       await feedCollection.put('manifest', { id: 'manifest', sequence: 0 })
 
@@ -960,7 +960,7 @@ describe('Chunk API (chunked-streams)', () => {
 
       // The chunk bytes came back under the target Space's mirrored Collection.
       const targetChunkUrl = (index: number) =>
-        `${serverUrl}/space/${targetSpaceId}/data/${resourceId}/chunks/${index}`
+        `${baseServerUrl}space/${targetSpaceId}/data/${resourceId}/chunks/${index}`
       for (const index of [0, 1]) {
         const response = await alice.was.request({
           url: targetChunkUrl(index),
@@ -975,7 +975,7 @@ describe('Chunk API (chunked-streams)', () => {
 
       // The listing round-trips too.
       const listing = await alice.was.request({
-        url: `${serverUrl}/space/${targetSpaceId}/data/${resourceId}/chunks/`,
+        url: `${baseServerUrl}space/${targetSpaceId}/data/${resourceId}/chunks/`,
         method: 'GET'
       })
       assert.equal(listing.data.count, 2)
@@ -993,14 +993,16 @@ describe('Chunk API (chunked-streams)', () => {
     const maxUploadBytes = 1024
 
     beforeAll(async () => {
-      ;({ fastify: capFastify, serverUrl: capServerUrl } =
+      ;({ fastify: capFastify, baseServerUrl: capServerUrl } =
         await startTestServer({
           backend: await openTempBackend({
             prefix: 'was-chunks-cap-',
             maxUploadBytes
           })
         }))
-      ;({ alice: capAlice } = await zcapClients({ serverUrl: capServerUrl }))
+      ;({ alice: capAlice } = await zcapClients({
+        baseServerUrl: capServerUrl
+      }))
 
       const space = await capAlice.was.createSpace({
         id: capSpaceId,
@@ -1025,7 +1027,7 @@ describe('Chunk API (chunked-streams)', () => {
       assert.equal(
         await statusOf(
           capAlice.was.request({
-            url: `${capServerUrl}/space/${capSpaceId}/data/${resourceId}/chunks/0`,
+            url: `${capServerUrl}space/${capSpaceId}/data/${resourceId}/chunks/0`,
             method: 'PUT',
             body: new Blob([oversized], { type: 'application/octet-stream' })
           })

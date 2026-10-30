@@ -14,24 +14,23 @@ import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Server layout under the base server URL', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
     baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-layout-' })
-    ;({ fastify, serverUrl, baseServerUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
   })
 
   it('returns the listen origin in canonical form', () => {
-    expect(baseServerUrl).toBe(`${serverUrl}/`)
+    expect(baseServerUrl).toBe(`${fastify.serverUrl}/`)
   })
 
   it('serves the service description at {base}service', async () => {
@@ -47,7 +46,7 @@ describe('Server layout under the base server URL', () => {
   it('names a created Space at {base}space/{id}/', async () => {
     const spaceId = randomUUID()
     const response = await alice.was.request({
-      url: `${serverUrl}/spaces/`,
+      url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, controller: alice.did }
     })

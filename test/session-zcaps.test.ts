@@ -25,7 +25,7 @@ import {
 
 describe('Space-rooted session capabilities', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
@@ -41,15 +41,15 @@ describe('Space-rooted session capabilities', () => {
   let collectionWriteCap: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
 
-    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
     collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
-      serverUrl
+      baseServerUrl
     ).toString()
 
     // Alice provisions a Space and a Collection...
@@ -155,7 +155,7 @@ describe('Space-rooted session capabilities', () => {
 
     it('queries the changes feed (POST .../query)', async () => {
       const response = await aliceDelegatedApp.was.request({
-        url: `${serverUrl}/space/${spaceId}/${collectionId}/query`,
+        url: `${baseServerUrl}space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes', limit: 10 },
         capability: collectionWriteCap
@@ -182,7 +182,7 @@ describe('Space-rooted session capabilities', () => {
       // capability's target) or server-side; the write must not land.
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          url: `${serverUrl}/space/${spaceId}/wallet-activity/doc-3`,
+          url: `${baseServerUrl}space/${spaceId}/wallet-activity/doc-3`,
           method: 'PUT',
           json: { escape: true },
           capability: collectionWriteCap
@@ -198,7 +198,7 @@ describe('Space-rooted session capabilities', () => {
     it('cannot PUT the Space Metadata object (no Space takeover)', async () => {
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          url: `${serverUrl}/space/${spaceId}/meta`,
+          url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: { id: spaceId, controller: aliceDelegatedApp.did },
           capability: collectionWriteCap
@@ -225,7 +225,7 @@ describe('Space-rooted session capabilities', () => {
       })
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          url: `${serverUrl}/space/${spaceId}/${collectionId}/doc-4`,
+          url: `${baseServerUrl}space/${spaceId}/${collectionId}/doc-4`,
           method: 'PUT',
           json: { rooted: 'wrong' },
           capability: collectionRootedCap
@@ -249,7 +249,10 @@ describe('Space-rooted session capabilities', () => {
       await bob.was
         .space(bobSpaceId)
         .configure({ name: "Bob's Space", controller: bob.did })
-      const bobSpaceUrl = new URL(`/space/${bobSpaceId}/`, serverUrl).toString()
+      const bobSpaceUrl = new URL(
+        `/space/${bobSpaceId}/`,
+        baseServerUrl
+      ).toString()
       const bobSessionCap = await delegate({
         signer: bob.signer,
         capability: `urn:zcap:root:${encodeURIComponent(bobSpaceUrl)}`,
@@ -261,7 +264,7 @@ describe('Space-rooted session capabilities', () => {
       // capability's target) or server-side; the write must not land.
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          url: `${serverUrl}/space/${spaceId}/${collectionId}/doc-5`,
+          url: `${baseServerUrl}space/${spaceId}/${collectionId}/doc-5`,
           method: 'PUT',
           json: { crossSpace: true },
           capability: bobSessionCap

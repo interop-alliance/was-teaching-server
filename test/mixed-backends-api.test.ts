@@ -59,7 +59,7 @@ describe.skipIf(!connectionString)(
       fsBackend: TempFileSystemBackend,
       pgBackend: PostgresBackend,
       dropSchema: () => Promise<void>,
-      serverUrl: string,
+      baseServerUrl: string,
       alice: any
 
     beforeAll(async () => {
@@ -69,11 +69,11 @@ describe.skipIf(!connectionString)(
       }))
       // The filesystem backend is both the default and the control plane
       // here, so Postgres is the other backend throughout.
-      ;({ fastify, serverUrl } = await startTestServer({
+      ;({ fastify, baseServerUrl } = await startTestServer({
         backends: [fsBackend, pgBackend],
         controlPlaneBackend: 'fs'
       }))
-      ;({ alice } = await zcapClients({ serverUrl }))
+      ;({ alice } = await zcapClients({ baseServerUrl }))
     })
     afterAll(async () => {
       await fastify.close()
@@ -81,7 +81,7 @@ describe.skipIf(!connectionString)(
     })
 
     function url(relativePath: string): string {
-      return new URL(relativePath, serverUrl).toString()
+      return new URL(relativePath, baseServerUrl).toString()
     }
 
     async function freshSpace(name: string): Promise<string> {
@@ -388,7 +388,7 @@ describe.skipIf(!connectionString)(
       const single = await startTestServer({ backend: fsOnly })
       try {
         const { alice: single_alice } = await zcapClients({
-          serverUrl: single.serverUrl
+          baseServerUrl: single.baseServerUrl
         })
         const lonelyId = crypto.randomUUID()
         await single_alice.was.createSpace({
@@ -400,7 +400,7 @@ describe.skipIf(!connectionString)(
           single_alice.was.request({
             url: new URL(
               `/space/${lonelyId}/import`,
-              single.serverUrl
+              single.baseServerUrl
             ).toString(),
             method: 'POST',
             body: tarBytes,
@@ -837,7 +837,7 @@ describe.skipIf(!connectionString)('Postgres as the default backend', () => {
     fsBackend: TempFileSystemBackend,
     pgBackend: PostgresBackend,
     dropSchema: () => Promise<void>,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any
 
   beforeAll(async () => {
@@ -845,11 +845,11 @@ describe.skipIf(!connectionString)('Postgres as the default backend', () => {
     ;({ backend: pgBackend, dropSchema } = await openTempPostgres({
       originId: fsBackend.originId
     }))
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backends: [fsBackend, pgBackend],
       defaultBackend: 'postgres'
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -866,7 +866,7 @@ describe.skipIf(!connectionString)('Postgres as the default backend', () => {
     })
     assert.ok(created)
     const listing = await alice.was.request({
-      url: new URL(`/space/${spaceId}/backends`, serverUrl).toString(),
+      url: new URL(`/space/${spaceId}/backends`, baseServerUrl).toString(),
       method: 'GET'
     })
     assert.deepStrictEqual(listing.data, [
@@ -879,12 +879,12 @@ describe.skipIf(!connectionString)('Postgres as the default backend', () => {
 
     // A Collection selecting `fs` lands its Resources on the filesystem.
     await alice.was.request({
-      url: new URL(`/space/${spaceId}/on-fs/meta`, serverUrl).toString(),
+      url: new URL(`/space/${spaceId}/on-fs/meta`, baseServerUrl).toString(),
       method: 'PUT',
       json: { id: 'on-fs', backend: { id: 'fs' } }
     })
     await alice.was.request({
-      url: new URL(`/space/${spaceId}/on-fs/r1`, serverUrl).toString(),
+      url: new URL(`/space/${spaceId}/on-fs/r1`, baseServerUrl).toString(),
       method: 'PUT',
       json: { on: 'fs' }
     })

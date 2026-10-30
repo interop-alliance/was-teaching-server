@@ -46,10 +46,10 @@ import {
  */
 async function adminIdentity({
   keyPair,
-  serverUrl
+  baseServerUrl
 }: {
   keyPair: Ed25519VerificationKey
-  serverUrl: string
+  baseServerUrl: string
 }) {
   const signer = keyPair.didKeySigner()
   const logSigner = webvhLogSigner({ keyPair })
@@ -57,13 +57,13 @@ async function adminIdentity({
     did: `did:key:${keyPair.publicKeyMultibase}`,
     keyPair,
     logSigner,
-    was: wasClient({ signer, serverUrl })
+    was: wasClient({ signer, baseServerUrl })
   }
 }
 
 describe('Server identity', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     admin: Awaited<ReturnType<typeof adminIdentity>>,
     alice: any,
@@ -74,7 +74,7 @@ describe('Server identity', () => {
     did: string
 
   async function serviceEntry(): Promise<any> {
-    const response = await fetch(`${serverUrl}/service`)
+    const response = await fetch(`${baseServerUrl}service`)
     assert.equal(response.status, 200)
     const document = (await response.json()) as any
     return { etag: response.headers.get('etag'), entry: document.instance }
@@ -82,7 +82,7 @@ describe('Server identity', () => {
 
   async function publishLog(jsonl: string): Promise<Response> {
     return admin.was.request({
-      url: `${serverUrl}/space/server/id/did.jsonl`,
+      url: `${baseServerUrl}space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([jsonl], { type: 'text/jsonl' })
@@ -93,15 +93,15 @@ describe('Server identity', () => {
     backend = await openTempBackend({ prefix: 'was-server-identity-' })
     seed = randomBytes(32)
     // The admin key must exist before the server boots, since its DID is a
-    // boot option, while the client needs the assigned `serverUrl`.
+    // boot option, while the client needs the assigned `baseServerUrl`.
     const adminKeyPair = await Ed25519VerificationKey.generate()
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend,
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`
     }))
-    admin = await adminIdentity({ keyPair: adminKeyPair, serverUrl })
-    ;({ alice } = await zcapClients({ serverUrl }))
+    admin = await adminIdentity({ keyPair: adminKeyPair, baseServerUrl })
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     const signingKey = await createServerSigningKey({ seed })
     exportSigningKey = signingKey.exportSigningKey
     serverKeyMultibase = signingKey.keyPair.publicKeyMultibase
@@ -137,7 +137,7 @@ describe('Server identity', () => {
     it('is reserved: Create Space naming the id is `reserved-id`', async () => {
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/spaces/`,
+          url: `${baseServerUrl}spaces/`,
           method: 'POST',
           json: { id: 'server', controller: alice.did }
         })
@@ -150,7 +150,7 @@ describe('Server identity', () => {
     it('cannot be rewritten by another client (the existing Space masks as 404)', async () => {
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/server/meta`,
+          url: `${baseServerUrl}space/server/meta`,
           method: 'PUT',
           json: { controller: alice.did }
         })
@@ -162,7 +162,7 @@ describe('Server identity', () => {
       for (const create of [
         () =>
           alice.was.request({
-            url: `${serverUrl}/spaces/`,
+            url: `${baseServerUrl}spaces/`,
             method: 'POST',
             json: {
               id: randomUUID(),
@@ -172,7 +172,7 @@ describe('Server identity', () => {
           }),
         () =>
           alice.was.request({
-            url: `${serverUrl}/space/${randomUUID()}/meta`,
+            url: `${baseServerUrl}space/${randomUUID()}/meta`,
             method: 'PUT',
             json: {
               controller: alice.did,
@@ -190,7 +190,7 @@ describe('Server identity', () => {
 
     it('the admin can still update it, restating its stored type', async () => {
       const response = await admin.was.request({
-        url: `${serverUrl}/space/server/meta`,
+        url: `${baseServerUrl}space/server/meta`,
         method: 'PUT',
         json: {
           controller: admin.did,
@@ -232,7 +232,7 @@ describe('Server identity', () => {
 
     it('appears on /service as instance.serverDid once the admin publishes a log listing the key under assertionMethod', async () => {
       const created = await createDID({
-        address: `${serverUrl}/space/server/id`,
+        address: `${baseServerUrl}space/server/id`,
         signer: admin.logSigner,
         updateKeys: [admin.keyPair.publicKeyMultibase!],
         vmIdFragment: 'multibase',
@@ -467,12 +467,12 @@ describe('signingKeyRelationshipProblem', () => {
 
 describe('Server identity without a seed', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend
 
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-server-identity-' })
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend
     }))
   })
@@ -481,24 +481,24 @@ describe('Server identity without a seed', () => {
   })
 
   it('serves neither identity member', async () => {
-    const response = await fetch(`${serverUrl}/service`)
+    const response = await fetch(`${baseServerUrl}service`)
     const document = (await response.json()) as any
     assert.equal('exportSigningKey' in document.instance, false)
     assert.equal('serverDid' in document.instance, false)
   })
 
   it('does not provision the `server` Space, and still reserves the id', async () => {
-    const { alice } = await zcapClients({ serverUrl })
+    const { alice } = await zcapClients({ baseServerUrl })
     const read = await requestError(
       alice.was.request({
-        url: `${serverUrl}/space/server/meta`,
+        url: `${baseServerUrl}space/server/meta`,
         method: 'GET'
       })
     )
     assert.equal(read.status, 404)
     const create = await requestError(
       alice.was.request({
-        url: `${serverUrl}/space/server/meta`,
+        url: `${baseServerUrl}space/server/meta`,
         method: 'PUT',
         json: { controller: alice.did }
       })

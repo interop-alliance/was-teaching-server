@@ -27,17 +27,17 @@ const packageJson = JSON.parse(
 
 describe('Service description API', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any,
     aliceSpace: Space
 
-  const serviceLink = () => `<${serverUrl}/service>; rel="service"`
+  const serviceLink = () => `<${baseServerUrl}service>; rel="service"`
 
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-service-' })
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -56,7 +56,7 @@ describe('Service description API', () => {
 
   describe('GET /service', () => {
     it('serves the document without authorization', async () => {
-      const response = await fetch(`${serverUrl}/service`)
+      const response = await fetch(`${baseServerUrl}service`)
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toMatch(/^application\/json/)
       expect(response.headers.get('access-control-allow-origin')).toBe('*')
@@ -66,12 +66,12 @@ describe('Service description API', () => {
       expect(response.headers.get('etag')).toMatch(/^"[^"]+"$/)
 
       expect(await response.json()).toEqual({
-        url: `${serverUrl}/service`,
+        url: `${baseServerUrl}service`,
         specs: {
           'https://w3id.org/pws': [
             {
               version: '0.5',
-              spaces: `${serverUrl}/spaces/`,
+              spaces: `${baseServerUrl}spaces/`,
               features: [
                 'listing',
                 'collection-management',
@@ -121,7 +121,7 @@ describe('Service description API', () => {
     })
 
     it('carries the signature members on the profile entry only', async () => {
-      const response = await fetch(`${serverUrl}/service`)
+      const response = await fetch(`${baseServerUrl}service`)
       const { specs } = (await response.json()) as {
         specs: Record<string, Record<string, unknown>[]>
       }
@@ -137,7 +137,7 @@ describe('Service description API', () => {
       // The entry is a conformance claim a wallet checks at signup. It has
       // nothing to advertise beyond its version, so it carries no other
       // member.
-      const response = await fetch(`${serverUrl}/service`)
+      const response = await fetch(`${baseServerUrl}service`)
       const { specs } = (await response.json()) as {
         specs: Record<string, Record<string, unknown>[]>
       }
@@ -148,8 +148,8 @@ describe('Service description API', () => {
     })
 
     it('serves a bodyless HEAD with the same validator', async () => {
-      const get = await fetch(`${serverUrl}/service`)
-      const head = await fetch(`${serverUrl}/service`, { method: 'HEAD' })
+      const get = await fetch(`${baseServerUrl}service`)
+      const head = await fetch(`${baseServerUrl}service`, { method: 'HEAD' })
       expect(head.status).toBe(200)
       expect(await head.text()).toBe('')
       expect(head.headers.get('etag')).toBe(get.headers.get('etag'))
@@ -157,9 +157,9 @@ describe('Service description API', () => {
     })
 
     it('answers 304 to a conditional GET holding the current ETag', async () => {
-      const first = await fetch(`${serverUrl}/service`)
+      const first = await fetch(`${baseServerUrl}service`)
       const etag = first.headers.get('etag')!
-      const response = await fetch(`${serverUrl}/service`, {
+      const response = await fetch(`${baseServerUrl}service`, {
         headers: { 'if-none-match': etag }
       })
       expect(response.status).toBe(304)
@@ -173,10 +173,10 @@ describe('Service description API', () => {
       // RFC 9110 section 8.6. HEAD here is Fastify's implicit HEAD route,
       // whose own onSend hook would stamp `Content-Length: 0` on an empty
       // reply.
-      const first = await fetch(`${serverUrl}/service`)
+      const first = await fetch(`${baseServerUrl}service`)
       const etag = first.headers.get('etag')!
       for (const method of ['GET', 'HEAD']) {
-        const response = await fetch(`${serverUrl}/service`, {
+        const response = await fetch(`${baseServerUrl}service`, {
           method,
           headers: { 'if-none-match': etag }
         })
@@ -196,12 +196,12 @@ describe('Service description API', () => {
     }
 
     it('is on the service description itself', async () => {
-      expectDiscoverable(await fetch(`${serverUrl}/service`))
+      expectDiscoverable(await fetch(`${baseServerUrl}service`))
     })
 
     it('is on an unauthorized HEAD of a private Resource (404)', async () => {
       const response = await fetch(
-        `${serverUrl}/space/${alice.space1.id}/private-notes/note`,
+        `${baseServerUrl}space/${alice.space1.id}/private-notes/note`,
         { method: 'HEAD' }
       )
       expect(response.status).toBe(404)
@@ -210,7 +210,7 @@ describe('Service description API', () => {
 
     it('is on an authorized listing (200)', async () => {
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/private-notes/`,
+        url: `${baseServerUrl}space/${alice.space1.id}/private-notes/`,
         method: 'GET'
       })
       expect(response.status).toBe(200)
@@ -218,7 +218,7 @@ describe('Service description API', () => {
     })
 
     it('is on a canonicalization redirect (308)', async () => {
-      const response = await fetch(`${serverUrl}/spaces`, {
+      const response = await fetch(`${baseServerUrl}spaces`, {
         redirect: 'manual'
       })
       expect(response.status).toBe(308)
@@ -227,7 +227,7 @@ describe('Service description API', () => {
 
     it('is on an error from the error handler (401)', async () => {
       const response = await fetch(
-        `${serverUrl}/space/${alice.space1.id}/private-notes/note`,
+        `${baseServerUrl}space/${alice.space1.id}/private-notes/note`,
         {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
@@ -240,21 +240,21 @@ describe('Service description API', () => {
 
     it('is on a 405 at a reserved endpoint', async () => {
       const response = await fetch(
-        `${serverUrl}/space/${alice.space1.id}/export`
+        `${baseServerUrl}space/${alice.space1.id}/export`
       )
       expect(response.status).toBe(405)
       expectDiscoverable(response)
     })
 
     it('is on a 404 for a URL no route matches', async () => {
-      const response = await fetch(`${serverUrl}/no-such-route`)
+      const response = await fetch(`${baseServerUrl}no-such-route`)
       expect(response.status).toBe(404)
       expectDiscoverable(response)
     })
 
     it('is on a CORS preflight', async () => {
       const response = await fetch(
-        `${serverUrl}/space/${alice.space1.id}/private-notes/note`,
+        `${baseServerUrl}space/${alice.space1.id}/private-notes/note`,
         {
           method: 'OPTIONS',
           headers: {
@@ -268,7 +268,7 @@ describe('Service description API', () => {
     })
 
     it('is on the teaching-server extras (/health)', async () => {
-      expectDiscoverable(await fetch(`${serverUrl}/health`))
+      expectDiscoverable(await fetch(`${baseServerUrl}health`))
     })
 
     it('appends to a Link header a handler already set', async () => {
@@ -298,12 +298,12 @@ describe('Service description API', () => {
 
   describe('linksets', () => {
     const serviceRelation = () => [
-      { href: `${serverUrl}/service`, type: 'application/json' }
+      { href: `${baseServerUrl}service`, type: 'application/json' }
     ]
 
     it('the Space linkset carries the service relation', async () => {
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/linkset`,
+        url: `${baseServerUrl}space/${alice.space1.id}/linkset`,
         method: 'GET'
       })
       expect(response.status).toBe(200)
@@ -312,7 +312,7 @@ describe('Service description API', () => {
 
     it('the Collection linkset carries the service relation', async () => {
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/private-notes/linkset`,
+        url: `${baseServerUrl}space/${alice.space1.id}/private-notes/linkset`,
         method: 'GET'
       })
       expect(response.status).toBe(200)
@@ -322,10 +322,10 @@ describe('Service description API', () => {
 })
 
 describe('Service description with the version withheld', () => {
-  let fastify: FastifyInstance, serverUrl: string
+  let fastify: FastifyInstance, baseServerUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({ prefix: 'was-service-' }),
       discloseVersion: false
     }))
@@ -335,7 +335,7 @@ describe('Service description with the version withheld', () => {
   })
 
   it('omits instance.version and keeps the other members', async () => {
-    const response = await fetch(`${serverUrl}/service`)
+    const response = await fetch(`${baseServerUrl}service`)
     const body = (await response.json()) as { instance: object }
     expect(body.instance).toEqual({
       name: packageJson.name,
@@ -345,12 +345,12 @@ describe('Service description with the version withheld', () => {
   })
 
   it('omits the version from /health', async () => {
-    const response = await fetch(`${serverUrl}/health`)
+    const response = await fetch(`${baseServerUrl}health`)
     expect(await response.json()).toEqual({ status: 'pass' })
   })
 
   it('omits the version from the welcome page', async () => {
-    const response = await fetch(serverUrl)
+    const response = await fetch(baseServerUrl)
     const body = await response.text()
     expect(body).toMatch(/Welcome|W\.A\.S\./)
     expect(body).not.toContain(packageJson.version)

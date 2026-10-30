@@ -114,7 +114,7 @@ under "Testing against the server". Rules a suite in `test/` follows:
 - Each suite opens its own temp-dir backend with `openTempBackend()`, injects it
   into `startTestServer({ backend })`, and closes it in `afterAll`. Suites never
   touch the gitignored `data/` directory and never hardcode a port.
-- Build ZCap clients, and any URL derived from `serverUrl`, after the
+- Build ZCap clients, and any URL derived from `baseServerUrl`, after the
   `startTestServer` call resolves, since the port is unknown before `listen()`.
 - A suite that reboots a server over the same `dataDir` passes the first
   server's `port` back in, so ids minted by the first server still resolve.

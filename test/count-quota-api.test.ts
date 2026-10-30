@@ -10,16 +10,16 @@ import type { FastifyInstance } from 'fastify'
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Count quota (Spaces per controller)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({
         prefix: 'was-count-quota-',
         maxSpacesPerController: 1
       })
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()

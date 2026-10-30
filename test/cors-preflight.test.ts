@@ -11,10 +11,10 @@ import { openTempBackend, startTestServer } from './helpers.js'
 
 describe('CORS preflight', () => {
   let fastify: FastifyInstance
-  let serverUrl: string
+  let baseServerUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({ prefix: 'was-cors-' })
     }))
   })
@@ -24,7 +24,7 @@ describe('CORS preflight', () => {
   })
 
   it('answers a preflight with a cacheable Access-Control-Max-Age', async () => {
-    const response = await fetch(new URL('/space/some-space', serverUrl), {
+    const response = await fetch(new URL('/space/some-space', baseServerUrl), {
       method: 'OPTIONS',
       headers: {
         origin: 'https://wallet.example',
@@ -47,15 +47,18 @@ describe('CORS preflight', () => {
     // A cross-origin client finds the service description through the `Link`
     // header, which it can read only when `Link` is an exposed header.
     for (const method of ['OPTIONS', 'GET']) {
-      const response = await fetch(new URL('/space/some-space/', serverUrl), {
-        method,
-        headers: {
-          origin: 'https://wallet.example',
-          'access-control-request-method': 'GET'
+      const response = await fetch(
+        new URL('/space/some-space/', baseServerUrl),
+        {
+          method,
+          headers: {
+            origin: 'https://wallet.example',
+            'access-control-request-method': 'GET'
+          }
         }
-      })
+      )
       expect(response.headers.get('link')).toBe(
-        `<${serverUrl}/service>; rel="service"`
+        `<${baseServerUrl}service>; rel="service"`
       )
       expect(response.headers.get('access-control-expose-headers')).toContain(
         'Link'

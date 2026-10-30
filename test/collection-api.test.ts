@@ -23,7 +23,7 @@ import {
 
 describe('Collections API', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any,
     bob: any,
@@ -31,8 +31,8 @@ describe('Collections API', () => {
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision the Space this suite operates on. This suite uses its own
     // temp dataDir, so it must create the Space here rather than relying on
@@ -48,9 +48,12 @@ describe('Collections API', () => {
   })
 
   it('POST /space/:spaceId/ should 401 error when no authorization headers', async () => {
-    const response = await fetch(new URL('/space/any-space-id/', serverUrl), {
-      method: 'POST'
-    })
+    const response = await fetch(
+      new URL('/space/any-space-id/', baseServerUrl),
+      {
+        method: 'POST'
+      }
+    )
     assert.equal(response.status, 401)
     assert.match(
       response.headers.get('content-type')!,
@@ -72,7 +75,7 @@ describe('Collections API', () => {
   it('POST responses carry Cache-Control: no-store (non-idempotent, non-cacheable)', async () => {
     const collectionId = crypto.randomUUID()
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/`,
+      url: `${baseServerUrl}space/${alice.space1.id}/`,
       method: 'POST',
       json: { id: collectionId, name: 'No Store' }
     })
@@ -82,7 +85,7 @@ describe('Collections API', () => {
     // A failed POST is marked the same way; a read is not marked at all.
     const conflict = await responseOf(
       alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/`,
+        url: `${baseServerUrl}space/${alice.space1.id}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Conflict' }
       })
@@ -90,7 +93,7 @@ describe('Collections API', () => {
     assert.equal(conflict.status, 409)
     assert.equal(conflict.headers.get('cache-control'), 'no-store')
     const read = await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/${collectionId}/`,
+      url: `${baseServerUrl}space/${alice.space1.id}/${collectionId}/`,
       method: 'GET'
     })
     assert.equal(read.headers.get('cache-control'), null)
@@ -100,7 +103,7 @@ describe('Collections API', () => {
     // The redirect sits behind the auth-headers presence and parse gates but
     // before verification, so a well-formed, unsigned pair reaches it.
     const redirect = await fetch(
-      new URL(`/space/${alice.space1.id}`, serverUrl),
+      new URL(`/space/${alice.space1.id}`, baseServerUrl),
       {
         method: 'POST',
         headers: {
@@ -115,14 +118,14 @@ describe('Collections API', () => {
     assert.equal(redirect.status, 308)
     assert.equal(redirect.headers.get('cache-control'), null)
     const query = await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/${collectionId}/query`,
+      url: `${baseServerUrl}space/${alice.space1.id}/${collectionId}/query`,
       method: 'POST',
       json: { profile: 'changes' }
     })
     assert.equal(query.status, 200)
     assert.equal(query.headers.get('cache-control'), null)
     const exported = await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/export`,
+      url: `${baseServerUrl}space/${alice.space1.id}/export`,
       method: 'POST'
     })
     assert.equal(exported.status, 200)
@@ -174,7 +177,7 @@ describe('Collections API', () => {
     let expectedError: any
     try {
       await alice.was.request({
-        url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+        url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
         method: 'POST',
         json: { id: collectionId, name: 'Replacement' }
       })
@@ -280,7 +283,7 @@ describe('Collections API', () => {
     await alice.was.request({
       url: new URL(
         `/space/${alice.space1.id}/${collectionId}/meta`,
-        serverUrl
+        baseServerUrl
       ).toString(),
       method: 'PUT',
       json: { name: 'Renamed', createdBy: 'did:key:zEVIL' }
@@ -315,10 +318,10 @@ describe('Collections API', () => {
 
   it('a Collection re-created over its tombstone starts a new generation', async () => {
     const collectionId = crypto.randomUUID()
-    const metaUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`
+    const metaUrl = `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`
 
     const created = await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/`,
+      url: `${baseServerUrl}space/${alice.space1.id}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Regenerated' }
     })
@@ -330,7 +333,7 @@ describe('Collections API', () => {
     // Re-creating under the same id starts a fresh Collection Metadata record:
     // no generation survives a hard Collection delete.
     await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/`,
+      url: `${baseServerUrl}space/${alice.space1.id}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Regenerated Again' }
     })
@@ -353,7 +356,7 @@ describe('Collections API', () => {
 
   it('[root] PUT with If-None-Match: * creates an absent Collection and 412s on a present one', async () => {
     const collectionId = 'guarded-collection'
-    const metaUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`
+    const metaUrl = `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`
 
     const created = await alice.was.request({
       url: metaUrl,
@@ -406,7 +409,7 @@ describe('Collections API', () => {
       await alice.was.request({
         url: new URL(
           `/space/${alice.space1.id}/${collectionId}/meta`,
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'PUT',
         json: { id: crypto.randomUUID(), name: 'Mismatch' }
@@ -430,7 +433,7 @@ describe('Collections API', () => {
     it('POST with backend { id: "default" } persists and echoes it', async () => {
       const collectionId = crypto.randomUUID()
       const response = await alice.was.request({
-        url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+        url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
         method: 'POST',
         json: {
           id: collectionId,
@@ -450,7 +453,7 @@ describe('Collections API', () => {
       let expectedError: any
       try {
         await alice.was.request({
-          url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+          url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
           method: 'POST',
           json: {
             id: crypto.randomUUID(),
@@ -477,7 +480,7 @@ describe('Collections API', () => {
       let expectedError: any
       try {
         await alice.was.request({
-          url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+          url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
           method: 'POST',
           json: {
             id: crypto.randomUUID(),
@@ -504,7 +507,7 @@ describe('Collections API', () => {
       const response = await alice.was.request({
         url: new URL(
           `/space/${alice.space1.id}/credentials/backend`,
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'GET'
       })
@@ -523,7 +526,7 @@ describe('Collections API', () => {
         await alice.was.request({
           url: new URL(
             `/space/${alice.space1.id}/no-such-collection/backend`,
-            serverUrl
+            baseServerUrl
           ).toString(),
           method: 'GET'
         })
@@ -545,7 +548,7 @@ describe('Collections API', () => {
       const response = await alice.was.request({
         url: new URL(
           `/space/${alice.space1.id}/credentials/linkset`,
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'GET'
       })
@@ -569,7 +572,7 @@ describe('Collections API', () => {
   describe('Collection Metadata (/meta)', () => {
     // Build the absolute Collection `/meta` URL.
     const metaUrl = (collectionId: string) =>
-      `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`
+      `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`
 
     /** Creates a fresh Collection with a random id and returns that id. */
     async function freshCollection(): Promise<string> {
@@ -1003,7 +1006,7 @@ describe('Collections API', () => {
       const collectionId = 'credentials'
       return alice.was
         .request({
-          url: `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`,
+          url: `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`,
           method: 'DELETE'
         })
         .then(

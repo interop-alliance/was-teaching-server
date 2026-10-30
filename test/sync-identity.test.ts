@@ -238,7 +238,7 @@ describe('Server key relationships', () => {
 
 describe('Sync signer', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     admin: any,
     adminKeyPair: Ed25519VerificationKey,
@@ -257,7 +257,7 @@ describe('Sync signer', () => {
     return loadSyncSigner({
       storage: fastify.storage,
       serverBackends: fastify.serverBackends,
-      serverUrl,
+      serverUrl: fastify.serverUrl,
       signingKey: fastify.serverSigningKey,
       logger: silent
     })
@@ -285,7 +285,7 @@ describe('Sync signer', () => {
 
   async function publish(next: DIDLog): Promise<void> {
     const response = await admin.request({
-      url: `${serverUrl}/space/server/id/did.jsonl`,
+      url: `${baseServerUrl}space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(next)], { type: 'text/jsonl' })
@@ -301,7 +301,7 @@ describe('Sync signer', () => {
    */
   function readUnderGrant(signer: any) {
     return client({ signer }).request({
-      url: `${serverUrl}/space/${spaceId}/notes/one`,
+      url: `${baseServerUrl}space/${spaceId}/notes/one`,
       method: 'GET',
       action: 'GET',
       capability: grant
@@ -311,13 +311,13 @@ describe('Sync signer', () => {
   beforeAll(async () => {
     backend = await openTempBackend({ prefix: 'was-sync-signer-' })
     adminKeyPair = await Ed25519VerificationKey.generate()
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend,
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`
     }))
-    admin = wasClient({ signer: adminKeyPair.didKeySigner(), serverUrl })
-    ;({ alice } = await zcapClients({ serverUrl }))
+    admin = wasClient({ signer: adminKeyPair.didKeySigner(), baseServerUrl })
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     signingKey = await createServerSigningKey({ seed })
 
     const space = await alice.was.createSpace({
@@ -326,7 +326,7 @@ describe('Sync signer', () => {
     })
     await space.createCollection({ id: 'notes' })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/notes/one`,
+      url: `${baseServerUrl}space/${spaceId}/notes/one`,
       method: 'PUT',
       json: { hello: 'peer' }
     })
@@ -345,7 +345,7 @@ describe('Sync signer', () => {
     const loaded = await loadSyncSigner({
       storage: fastify.storage,
       serverBackends: fastify.serverBackends,
-      serverUrl,
+      serverUrl: fastify.serverUrl,
       signingKey: undefined,
       logger: silent
     })
@@ -357,7 +357,7 @@ describe('Sync signer', () => {
   it('is refused naming capabilityInvocation while the log lists only assertionMethod', async () => {
     await admin.space('server').collection('id').configure({ force: true })
     const created = await createDID({
-      address: `${serverUrl}/space/server/id`,
+      address: `${baseServerUrl}space/server/id`,
       signer: webvhLogSigner({ keyPair: adminKeyPair }),
       updateKeys: [adminKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -387,8 +387,8 @@ describe('Sync signer', () => {
   it('an invocation by the key under a grant to serverDid is masked while the log lacks capabilityInvocation', async () => {
     grant = await delegate({
       signer: alice.signer,
-      capability: `urn:zcap:root:${encodeURIComponent(`${serverUrl}/space/${spaceId}/`)}`,
-      invocationTarget: `${serverUrl}/space/${spaceId}/`,
+      capability: `urn:zcap:root:${encodeURIComponent(`${baseServerUrl}space/${spaceId}/`)}`,
+      invocationTarget: `${baseServerUrl}space/${spaceId}/`,
       controller: serverDid,
       allowedActions: ['GET']
     })

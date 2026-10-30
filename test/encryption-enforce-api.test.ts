@@ -32,16 +32,16 @@ const jwe = { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
 const envelope = { id: 'z1', sequence: 0, indexed: [], jwe }
 
 describe('Encryption enforcement API', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
   const spaceId = `enc-enforce-space-${crypto.randomUUID()}`
   const edvCollection = 'vault'
   const plainCollection = 'plain'
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     await alice.was.createSpace({
       id: spaceId,
@@ -50,12 +50,12 @@ describe('Encryption enforcement API', () => {
     })
     // An encrypted Collection and a plaintext one, both owned by Alice.
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: edvCollection, name: 'Vault', encryption: { scheme: 'edv' } }
     })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: plainCollection, name: 'Plain' }
     })
@@ -74,7 +74,7 @@ describe('Encryption enforcement API', () => {
   }): Promise<any> {
     const { who = alice, collectionId, resourceId, body, contentType } = options
     return who.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/${resourceId}`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`,
       method: 'PUT',
       body: new TextEncoder().encode(
         typeof body === 'string' ? body : JSON.stringify(body)
@@ -95,7 +95,7 @@ describe('Encryption enforcement API', () => {
 
   it('accepts a conforming EDV Document on POST (create) into an edv Collection', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/`,
       method: 'POST',
       body: new TextEncoder().encode(JSON.stringify(envelope)),
       headers: { 'content-type': JSON_TYPE }
@@ -128,7 +128,7 @@ describe('Encryption enforcement API', () => {
   }): Promise<Response> {
     return signedMultipart({
       signer: alice.signer,
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/${resourceId}`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/${resourceId}`,
       method: 'PUT',
       partType,
       partBody
@@ -160,7 +160,7 @@ describe('Encryption enforcement API', () => {
   it('rejects a plaintext JSON body into an edv Collection (422 scheme-mismatch)', async () => {
     const err = await rejection(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${edvCollection}/doc-plain`,
+        url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-plain`,
         method: 'PUT',
         json: { hello: 'world' }
       })
@@ -212,7 +212,7 @@ describe('Encryption enforcement API', () => {
 
   it('a plaintext Collection still accepts any body (no enforcement)', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${plainCollection}/plain-doc`,
+      url: `${baseServerUrl}space/${spaceId}/${plainCollection}/plain-doc`,
       method: 'PUT',
       json: { hello: 'world' }
     })
@@ -246,7 +246,7 @@ describe('Encryption enforcement API', () => {
     })
     const err = await rejection(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+        url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
         method: 'PUT',
         json: { custom: { name: 'labeled' } }
       })
@@ -260,7 +260,7 @@ describe('Encryption enforcement API', () => {
     // ETag (the `/meta` stamp), independent of the content ETag. GET /meta returns
     // the opaque envelope verbatim (no plaintext name leaked).
     const put1 = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'PUT',
       json: { custom: envelope }
     })
@@ -269,7 +269,7 @@ describe('Encryption enforcement API', () => {
     assert.ok(metaEtag1, 'PUT /meta returns a /meta ETag')
 
     const read = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'GET'
     })
     assert.equal(read.status, 200)
@@ -278,7 +278,7 @@ describe('Encryption enforcement API', () => {
 
     // A second meta write moves the /meta ETag.
     const put2 = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'PUT',
       json: { custom: envelope }
     })
@@ -289,7 +289,7 @@ describe('Encryption enforcement API', () => {
   it('PUT .../meta honors If-Match on the /meta ETag (412 on mismatch)', async () => {
     const err = await rejection(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+        url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
         method: 'PUT',
         json: { custom: envelope },
         headers: { 'if-match': '"999"' }
@@ -300,12 +300,12 @@ describe('Encryption enforcement API', () => {
 
   it('a plaintext Collection still accepts a plaintext /meta custom', async () => {
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${plainCollection}/plain-meta`,
+      url: `${baseServerUrl}space/${spaceId}/${plainCollection}/plain-meta`,
       method: 'PUT',
       json: { hello: 'world' }
     })
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${plainCollection}/plain-meta/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${plainCollection}/plain-meta/meta`,
       method: 'PUT',
       json: { custom: { name: 'labeled' } }
     })
@@ -320,7 +320,7 @@ describe('Encryption enforcement API', () => {
     // envelope check (it 409s as an attempted clear instead).
     const err = await rejection(
       alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/${edvCollection}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/${edvCollection}/meta`,
         method: 'PUT',
         json: {
           encryption: { scheme: 'edv' },
@@ -334,7 +334,7 @@ describe('Encryption enforcement API', () => {
 
   it('PUT the Collection /meta of an edv Collection accepts an envelope custom', async () => {
     const put = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/meta`,
       method: 'PUT',
       json: { encryption: { scheme: 'edv' }, custom: envelope }
     })
@@ -344,7 +344,7 @@ describe('Encryption enforcement API', () => {
 
     // The envelope is returned verbatim (no plaintext name leaked).
     const read = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/meta`,
       method: 'GET'
     })
     assert.equal(read.status, 200)
@@ -354,7 +354,7 @@ describe('Encryption enforcement API', () => {
 
   it('scope: PUT .../policy on an edv Collection still accepts application/json', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${edvCollection}/policy`,
+      url: `${baseServerUrl}space/${spaceId}/${edvCollection}/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
     })

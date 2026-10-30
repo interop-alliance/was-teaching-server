@@ -56,16 +56,16 @@ function withoutStamp(description: any): any {
 
 describe('Spaces', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any,
     aliceDelegatedApp: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -75,7 +75,7 @@ describe('Spaces', () => {
     it('GET /spaces/ without auth headers returns the empty listing (200)', async () => {
       // List Spaces is the spec's exception to 404 masking: an anonymous
       // request is not an error -- it is simply authorized to see no spaces.
-      const response = await fetch(new URL('/spaces/', serverUrl))
+      const response = await fetch(new URL('/spaces/', baseServerUrl))
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/json/)
       assert.deepStrictEqual(await response.json(), {
@@ -85,7 +85,7 @@ describe('Spaces', () => {
       })
     })
     it('POST /spaces/ should 401 error when no authorization headers', async () => {
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST'
       })
       assert.equal(response.status, 401)
@@ -119,7 +119,7 @@ describe('Spaces', () => {
 
     it('[root] Space linkset advertises the backends-available and quotas relations', async () => {
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${alice.space1.id}/linkset`,
+        url: `${baseServerUrl}space/${alice.space1.id}/linkset`,
         method: 'GET'
       })
       assert.equal(response.status, 200)
@@ -144,7 +144,7 @@ describe('Spaces', () => {
       const post = (name: string) =>
         alice.was
           .request({
-            url: new URL('/spaces/', serverUrl).toString(),
+            url: new URL('/spaces/', baseServerUrl).toString(),
             method: 'POST',
             json: { id: spaceId, name, controller: alice.did }
           })
@@ -171,7 +171,7 @@ describe('Spaces', () => {
       let expectedError: any
       try {
         await alice.was.request({
-          url: new URL('/spaces/', serverUrl).toString(),
+          url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { id: spaceId, name: 'Replacement', controller: alice.did }
         })
@@ -199,7 +199,7 @@ describe('Spaces', () => {
       let expectedError: any
       try {
         await bob.was.request({
-          url: new URL('/spaces/', serverUrl).toString(),
+          url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { id: spaceId, name: 'Hijacked', controller: bob.did }
         })
@@ -228,7 +228,7 @@ describe('Spaces', () => {
     it('[root] the Create Space 201 body carries the same createdBy a later GET returns', async () => {
       const spaceId = crypto.randomUUID()
       const response = await alice.was.request({
-        url: new URL('/spaces/', serverUrl).toString(),
+        url: new URL('/spaces/', baseServerUrl).toString(),
         method: 'POST',
         json: { id: spaceId, name: 'Created Space', controller: alice.did }
       })
@@ -251,7 +251,7 @@ describe('Spaces', () => {
       })
 
       await alice.was.request({
-        url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
+        url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
         method: 'PUT',
         json: {
           name: 'Renamed',
@@ -272,7 +272,10 @@ describe('Spaces', () => {
         name: 'Named Space',
         controller: alice.did
       })
-      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+      const metaUrl = new URL(
+        `/space/${spaceId}/meta`,
+        baseServerUrl
+      ).toString()
 
       const named = await alice.was.request({
         url: metaUrl,
@@ -300,7 +303,7 @@ describe('Spaces', () => {
       // and is denied as 404 (no-leak) when no access-control policy grants it.
       const spaceUrl = new URL(
         `/space/${alice.space1.id}/meta`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const response = await fetch(spaceUrl, { method: 'GET' })
       assert.equal(response.status, 404)
@@ -394,7 +397,7 @@ describe('Spaces', () => {
   })
 
   describe('Space Metadata ETag and conditional writes', () => {
-    const metaUrl = (spaceId: string) => `${serverUrl}/space/${spaceId}/meta`
+    const metaUrl = (spaceId: string) => `${baseServerUrl}space/${spaceId}/meta`
     const spaceMetadata = (spaceId: string, name: string) => ({
       id: spaceId,
       name,
@@ -403,7 +406,7 @@ describe('Spaces', () => {
 
     it('[root] Create Space (POST and PUT) and Get Space emit the Space Metadata ETag', async () => {
       const posted = await alice.was.request({
-        url: `${serverUrl}/spaces/`,
+        url: `${baseServerUrl}spaces/`,
         method: 'POST',
         json: spaceMetadata('etag-post', 'Posted')
       })
@@ -632,7 +635,7 @@ describe('Spaces', () => {
           const [posted, put] = await Promise.all([
             statusOf(
               alice.was.request({
-                url: new URL('/spaces/', serverUrl).toString(),
+                url: new URL('/spaces/', baseServerUrl).toString(),
                 method: 'POST',
                 json: { id: spaceId, controller: alice.did }
               })
@@ -739,7 +742,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: bob.was,
         request: {
-          url: new URL('/spaces/', serverUrl).toString(),
+          url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { id: spaceId, name: 'Unconsented', controller: alice.did }
         }
@@ -757,7 +760,7 @@ describe('Spaces', () => {
 
     it("[delegated] a provisioning service creates a Space on Alice's behalf via POST", async () => {
       // Alice delegates a POST /spaces/ capability to her provisioning app...
-      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['POST'],
@@ -789,7 +792,7 @@ describe('Spaces', () => {
       // The app holds a capability delegated by Alice, but names Bob as the
       // controller: the chain is not rooted in Bob, so Bob has consented to
       // nothing.
-      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['POST'],
@@ -827,7 +830,7 @@ describe('Spaces', () => {
       // raw ZcapClient so the delegation proof can be backdated before its own
       // `expires` (`grant` cannot mint an already-expired zcap); well past the
       // verifier's clock-skew tolerance.
-      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       const zcap = await client({ signer: alice.signer }).delegate({
         controller: aliceDelegatedApp.did,
         invocationTarget: spacesUrl,
@@ -862,7 +865,7 @@ describe('Spaces', () => {
       // The chain is rooted in the body's controller and unexpired, but its
       // delegation proof does not verify: the differentiated cause (spec
       // SHOULD) falls through to the failed-proof clause.
-      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['POST'],
@@ -907,7 +910,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: bob.was,
         request: {
-          url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
+          url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
           method: 'PUT',
           json: { name: 'Unconsented', controller: alice.did }
         }
@@ -927,7 +930,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: alice.was,
         request: {
-          url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
+          url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
           method: 'PUT',
           json: { id: crypto.randomUUID(), controller: alice.did }
         }
@@ -947,7 +950,10 @@ describe('Spaces', () => {
       // Alice delegates a PUT capability for the (not yet existing) Space's
       // Metadata URL.
       const spaceId = crypto.randomUUID()
-      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+      const metaUrl = new URL(
+        `/space/${spaceId}/meta`,
+        baseServerUrl
+      ).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
@@ -969,7 +975,10 @@ describe('Spaces', () => {
 
     it('[delegated] a PUT-create chain not rooted in the body controller yields controller-mismatch (400)', async () => {
       const spaceId = crypto.randomUUID()
-      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+      const metaUrl = new URL(
+        `/space/${spaceId}/meta`,
+        baseServerUrl
+      ).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
@@ -1005,12 +1014,15 @@ describe('Spaces', () => {
       const grantedSpaceId = crypto.randomUUID()
       const grantedSpaceUrl = new URL(
         `/space/${grantedSpaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
 
       const spaceId = crypto.randomUUID()
-      const spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
-      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+      const spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
+      const metaUrl = new URL(
+        `/space/${spaceId}/meta`,
+        baseServerUrl
+      ).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
@@ -1053,7 +1065,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: bob.was,
         request: {
-          url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
+          url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
           method: 'PUT',
           json: { name: 'Seized', controller: bob.did }
         }
@@ -1131,7 +1143,7 @@ describe('Spaces', () => {
       })
 
       // Alice delegates List Spaces to her app...
-      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['GET'],
@@ -1179,7 +1191,7 @@ describe('Spaces', () => {
       })
 
       const response = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/backends`,
+        url: `${baseServerUrl}space/${spaceId}/backends`,
         method: 'GET'
       })
       assert.equal(response.status, 200)
@@ -1196,7 +1208,7 @@ describe('Spaces', () => {
       })
 
       const response = await fetch(
-        new URL(`/space/${spaceId}/backends`, serverUrl)
+        new URL(`/space/${spaceId}/backends`, baseServerUrl)
       )
       assert.equal(response.status, 404)
     })
@@ -1211,7 +1223,7 @@ describe('Spaces', () => {
       await space.setPublic()
 
       const response = await fetch(
-        new URL(`/space/${spaceId}/backends`, serverUrl)
+        new URL(`/space/${spaceId}/backends`, baseServerUrl)
       )
       assert.equal(response.status, 200)
       const backends = (await response.json()) as unknown[]

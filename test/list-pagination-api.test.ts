@@ -23,20 +23,20 @@ import {
 
 describe('List Collections pagination', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     bob: any,
     aliceSpace: Space
 
   /** GETs an absolute or server-relative URL with Alice's signed capability. */
   const aliceGet = (url: string): Promise<any> =>
-    sharedSignedGet({ identity: alice, serverUrl, url })
+    sharedSignedGet({ identity: alice, baseServerUrl, url })
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -180,7 +180,7 @@ describe('List Collections pagination', () => {
       await bob.was.request({
         url: new URL(
           `/space/${spaceId}/?cursor=garbage%%%`,
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'GET'
       })
@@ -206,11 +206,11 @@ describe('List Collections pagination', () => {
 })
 
 describe('List Spaces pagination', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   /** GETs an absolute or server-relative URL with the given identity's cap. */
   const signedGet = (identity: any, url: string): Promise<any> =>
-    sharedSignedGet({ identity, serverUrl, url })
+    sharedSignedGet({ identity, baseServerUrl, url })
 
   // Interleave Alice's and Bob's Spaces by id so the authorized-only scan must
   // skip Bob's between Alice's: Alice owns the even positions, Bob the odd.
@@ -218,10 +218,10 @@ describe('List Spaces pagination', () => {
   const bobIds = ['sp-1-bob', 'sp-3-bob', 'sp-5-bob']
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     for (const id of aliceIds) {
       await alice.was.createSpace({ id, name: id, controller: alice.did })
@@ -310,7 +310,7 @@ describe('List Spaces pagination', () => {
     // No signature at all: the anonymous early-return precedes cursor
     // validation, so a bad cursor is never observed by an unauthorized caller.
     const response = await fetch(
-      new URL('/spaces/?cursor=garbage%%%', serverUrl).toString()
+      new URL('/spaces/?cursor=garbage%%%', baseServerUrl).toString()
     )
     assert.equal(response.status, 200)
     const body = await response.json()

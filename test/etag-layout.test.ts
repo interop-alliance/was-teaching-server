@@ -29,14 +29,14 @@ describe('Write stamp and ETag layout', () => {
   const clock = frozenClock()
   let fastify: FastifyInstance,
     backend: TempFileSystemBackend,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any
   const spaceId = `etag-layout-${crypto.randomUUID()}`
 
   beforeAll(async () => {
     backend = await openTempBackend({ physicalClock: clock.read })
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     await alice.was.createSpace({
       id: spaceId,
       name: 'ETag Layout Space',
@@ -47,7 +47,7 @@ describe('Write stamp and ETag layout', () => {
     await fastify.close()
   })
 
-  const url = (path: string) => new URL(path, serverUrl).toString()
+  const url = (path: string) => new URL(path, baseServerUrl).toString()
   const spaceMetaUrl = () => url(`/space/${spaceId}/meta`)
   const collectionUrl = (collectionId: string) =>
     url(`/space/${spaceId}/${collectionId}/`)

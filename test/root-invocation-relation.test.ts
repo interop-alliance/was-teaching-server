@@ -83,14 +83,14 @@ interface PromotedSpace {
 
 describe('root-invocation relation scoping (did:webvh controller)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
 
   afterAll(async () => {
@@ -122,7 +122,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     // Relationship wiring is driven entirely through `purpose`: passing
     // explicit relationship arrays alongside would override it wholesale.
     const created = await createDID({
-      address: `${serverUrl}/space/${spaceId}/id`,
+      address: `${baseServerUrl}space/${spaceId}/id`,
       signer: logSigner,
       updateKeys: [updateKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -166,7 +166,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     }
 
     const published = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/id/did.jsonl`,
+      url: `${baseServerUrl}space/${spaceId}/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
@@ -176,7 +176,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     // Promotion by ordering: created under Alice's `did:key`, handed to the
     // `did:webvh` by a PUT the stored `did:key` still authorizes.
     const promoted = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'PUT',
       json: {
         id: spaceId,
@@ -186,7 +186,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     })
     assert.equal(promoted.status, 204)
 
-    const spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    const spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
     return {
       spaceId,
       spaceUrl,
@@ -369,7 +369,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
       const headers = await signCapabilityInvocation({
         url,
         method,
-        headers: { host: new URL(serverUrl).host },
+        headers: { host: new URL(baseServerUrl).host },
         capability: rootZcap({
           target: space.spaceUrl,
           controller: space.did
@@ -383,12 +383,12 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
         allowedAction: method,
         method,
         headers,
-        serverUrl,
+        serverUrl: fastify.serverUrl,
         spaceController: space.did,
         webvh: {
           storage: backend,
           serverBackends: new ServerBackends({ backends: [backend] }),
-          serverUrl
+          serverUrl: fastify.serverUrl
         },
         attenuatedRootTarget: space.spaceUrl
       })

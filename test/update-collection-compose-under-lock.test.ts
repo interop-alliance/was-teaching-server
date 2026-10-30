@@ -27,14 +27,14 @@ import {
 
 describe('Update Collection composes under the lock', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     backend: TempFileSystemBackend
 
-  const metaPath = (collectionId: string) =>
-    `/space/${alice.space1.id}/${collectionId}/meta`
-  const resourcePath = (collectionId: string, resourceId: string) =>
-    `/space/${alice.space1.id}/${collectionId}/${resourceId}`
+  const metaUrl = (collectionId: string) =>
+    `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`
+  const resourceUrl = (collectionId: string, resourceId: string) =>
+    `${baseServerUrl}space/${alice.space1.id}/${collectionId}/${resourceId}`
 
   /**
    * Resolves when a spied backend method is first called, which then runs as
@@ -85,8 +85,8 @@ describe('Update Collection composes under the lock', () => {
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     await alice.was.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
@@ -106,7 +106,7 @@ describe('Update Collection composes under the lock', () => {
   it('an unconditional rename racing a plaintext unique declaration keeps the declaration', async () => {
     const collectionId = 'raced'
     await alice.was.request({
-      url: `${serverUrl}${metaPath(collectionId)}`,
+      url: metaUrl(collectionId),
       method: 'PUT',
       json: { id: collectionId, name: 'before' }
     })
@@ -116,13 +116,13 @@ describe('Update Collection composes under the lock', () => {
     const { held, release } = holdFirstCall('writeCollection')
 
     const rename = alice.was.request({
-      url: `${serverUrl}${metaPath(collectionId)}`,
+      url: metaUrl(collectionId),
       method: 'PUT',
       json: { id: collectionId, name: 'renamed' }
     })
     await held
     const declared = await alice.was.request({
-      url: `${serverUrl}${metaPath(collectionId)}`,
+      url: metaUrl(collectionId),
       method: 'PUT',
       json: {
         id: collectionId,
@@ -136,7 +136,7 @@ describe('Update Collection composes under the lock', () => {
     assert.equal(renamed.status, 204)
 
     const stored = await alice.was.request({
-      url: `${serverUrl}${metaPath(collectionId)}`,
+      url: metaUrl(collectionId),
       method: 'GET'
     })
     assert.equal(stored.data.name, 'renamed')
@@ -148,12 +148,12 @@ describe('Update Collection composes under the lock', () => {
   it('a Resource write arriving during a unique declaration scan waits for the declaration and is bound by it', async () => {
     const collectionId = 'scanned'
     await alice.was.request({
-      url: `${serverUrl}${metaPath(collectionId)}`,
+      url: metaUrl(collectionId),
       method: 'PUT',
       json: { id: collectionId, name: 'scanned' }
     })
     const holder = await alice.was.request({
-      url: `${serverUrl}${resourcePath(collectionId, 'holder')}`,
+      url: resourceUrl(collectionId, 'holder'),
       method: 'PUT',
       json: { id: 'holder', slug: 'taken' }
     })
@@ -163,7 +163,7 @@ describe('Update Collection composes under the lock', () => {
     // side of the Space gate; hold it there.
     const { held, release } = holdFirstCall('findEqualityUniqueViolation')
     const declared = alice.was.request({
-      url: `${serverUrl}${metaPath(collectionId)}`,
+      url: metaUrl(collectionId),
       method: 'PUT',
       json: {
         id: collectionId,
@@ -182,7 +182,7 @@ describe('Update Collection composes under the lock', () => {
     let claimantSettled = false
     const claimant = requestError(
       alice.was.request({
-        url: `${serverUrl}${resourcePath(collectionId, 'claimant')}`,
+        url: resourceUrl(collectionId, 'claimant'),
         method: 'PUT',
         json: { id: 'claimant', slug: 'taken' }
       })
@@ -204,7 +204,7 @@ describe('Update Collection composes under the lock', () => {
     // The holder's value is still the only claim; the claimant stored nothing.
     const missing = await requestError(
       alice.was.request({
-        url: `${serverUrl}${resourcePath(collectionId, 'claimant')}`,
+        url: resourceUrl(collectionId, 'claimant'),
         method: 'GET'
       })
     )

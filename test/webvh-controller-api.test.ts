@@ -72,13 +72,13 @@ interface WebvhSpace {
 }
 
 describe('did:webvh Space controller', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -86,7 +86,7 @@ describe('did:webvh Space controller', () => {
 
   /**
    * Builds a `did:webvh` whose log is anchored at
-   * `<serverUrl>/space/<id>/<collectionId>`, with one enrolled client key listed
+   * `<baseServerUrl>/space/<id>/<collectionId>`, with one enrolled client key listed
    * for every verification relationship a zcap needs.
    *
    * @param options {object}
@@ -114,7 +114,7 @@ describe('did:webvh Space controller', () => {
     const clientKeyPair = await Ed25519VerificationKey.generate()
 
     const created = await createDID({
-      address: address ?? `${serverUrl}/space/${spaceId}/${collectionId}`,
+      address: address ?? `${baseServerUrl}space/${spaceId}/${collectionId}`,
       signer: logSigner,
       updateKeys: [updateKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -168,7 +168,7 @@ describe('did:webvh Space controller', () => {
     jsonl: string
   }) {
     return signerClient.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/did.jsonl`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([jsonl], { type: 'text/jsonl' })
@@ -225,7 +225,7 @@ describe('did:webvh Space controller', () => {
       log: minted.log,
       logSigner: minted.logSigner,
       clientKeyPair: minted.clientKeyPair,
-      was: wasClient({ signer: minted.clientKeyPair.signer(), serverUrl })
+      was: wasClient({ signer: minted.clientKeyPair.signer(), baseServerUrl })
     }
   }
 
@@ -249,7 +249,7 @@ describe('did:webvh Space controller', () => {
     controller: string
   }) {
     return signerClient.request({
-      url: `${serverUrl}/space/${spaceId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'PUT',
       json: { id: spaceId, name: 'Promotable Space', controller }
     })
@@ -303,12 +303,15 @@ describe('did:webvh Space controller', () => {
         client({ signer: alice.signer }).request({
           url: new URL(
             `/space/${space.spaceId}/credentials/doc-1`,
-            serverUrl
+            baseServerUrl
           ).toString(),
           method: 'GET',
           action: 'GET',
           capability: rootZcap({
-            target: new URL(`/space/${space.spaceId}/`, serverUrl).toString(),
+            target: new URL(
+              `/space/${space.spaceId}/`,
+              baseServerUrl
+            ).toString(),
             controller: alice.did
           })
         })
@@ -331,10 +334,10 @@ describe('did:webvh Space controller', () => {
         controller: space.did
       })
       assert.equal(response.status, 204)
-      spaceUrl = new URL(`/space/${space.spaceId}/`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${space.spaceId}/`, baseServerUrl).toString()
       collectionUrl = new URL(
         `/space/${space.spaceId}/credentials`,
-        serverUrl
+        baseServerUrl
       ).toString()
     })
 
@@ -406,7 +409,7 @@ describe('did:webvh Space controller', () => {
       replacementKey.controller = space.did
       const rotatedClient = wasClient({
         signer: replacementKey.signer(),
-        serverUrl
+        baseServerUrl
       })
       const doc = await rotatedClient
         .space(space.spaceId)
@@ -653,12 +656,15 @@ describe('did:webvh Space controller', () => {
         client({ signer: space.clientKeyPair.signer() }).request({
           url: new URL(
             `/space/${space.spaceId}/credentials/doc-1`,
-            serverUrl
+            baseServerUrl
           ).toString(),
           method: 'GET',
           action: 'GET',
           capability: rootZcap({
-            target: new URL(`/space/${space.spaceId}/`, serverUrl).toString(),
+            target: new URL(
+              `/space/${space.spaceId}/`,
+              baseServerUrl
+            ).toString(),
             controller: space.did
           })
         })
@@ -680,10 +686,13 @@ describe('did:webvh Space controller', () => {
         ).status,
         204
       )
-      const spaceUrl = new URL(`/space/${space.spaceId}/`, serverUrl).toString()
+      const spaceUrl = new URL(
+        `/space/${space.spaceId}/`,
+        baseServerUrl
+      ).toString()
       const collectionUrl = new URL(
         `/space/${space.spaceId}/credentials`,
-        serverUrl
+        baseServerUrl
       ).toString()
 
       const delegated = await delegate({
@@ -711,7 +720,7 @@ describe('did:webvh Space controller', () => {
             spaceId: space.spaceId,
             revocationId: delegated.id
           }),
-          serverUrl
+          baseServerUrl
         ).toString(),
         method: 'POST',
         action: 'POST',
@@ -772,7 +781,7 @@ describe('did:webvh Space controller', () => {
       const response = await fetch(
         new URL(
           `/space/${space.spaceId}/clientAnnex-0/did.jsonl`,
-          serverUrl
+          baseServerUrl
         ).toString()
       )
       assert.equal(response.status, 404)
@@ -814,7 +823,7 @@ describe('did:webvh Space controller', () => {
       replacementKey.controller = space.did
       const rotatedClient = wasClient({
         signer: replacementKey.signer(),
-        serverUrl
+        baseServerUrl
       })
       assert.deepStrictEqual(
         await rotatedClient
@@ -828,7 +837,7 @@ describe('did:webvh Space controller', () => {
       // the current document, so it does not resolve, which is the masked 404.
       const err = await requestError(
         space.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/credentials/doc-1`,
+          url: `${baseServerUrl}space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
       )
@@ -866,7 +875,7 @@ describe('did:webvh Space controller', () => {
 
     it('the cross-Space controller key invokes on the controlled Space', async () => {
       const response = await logSpace.was.request({
-        url: `${serverUrl}/space/${controlledSpaceId}/`,
+        url: `${baseServerUrl}space/${controlledSpaceId}/`,
         method: 'POST',
         json: { id: 'cross-space-collection', name: 'Made by webvh' }
       })
@@ -877,7 +886,7 @@ describe('did:webvh Space controller', () => {
       // A DELETE of the log itself is refused, whoever asks...
       const refused = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
+          url: `${baseServerUrl}space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
           method: 'DELETE'
         })
       )
@@ -887,7 +896,7 @@ describe('did:webvh Space controller', () => {
       // may remove the Collection holding the log -- which is the controlled
       // Space's only key material.
       const deleted = await alice.was.request({
-        url: `${serverUrl}/space/${logSpace.spaceId}/clientAnnex-1/`,
+        url: `${baseServerUrl}space/${logSpace.spaceId}/clientAnnex-1/`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
@@ -896,7 +905,7 @@ describe('did:webvh Space controller', () => {
       // the cross-Space cache entry must go with it.
       const err = await requestError(
         logSpace.was.request({
-          url: `${serverUrl}/space/${controlledSpaceId}/`,
+          url: `${baseServerUrl}space/${controlledSpaceId}/`,
           method: 'POST',
           json: { id: 'after-log-deletion' }
         })
@@ -908,7 +917,7 @@ describe('did:webvh Space controller', () => {
       // authorization and so the same masked 404.
       const readErr = await requestError(
         logSpace.was.request({
-          url: `${serverUrl}/space/${controlledSpaceId}/`,
+          url: `${baseServerUrl}space/${controlledSpaceId}/`,
           method: 'GET'
         })
       )
@@ -932,7 +941,7 @@ describe('did:webvh Space controller', () => {
 
     beforeAll(async () => {
       space = await provisionSpace()
-      spaceUrl = new URL(`/space/${space.spaceId}/`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${space.spaceId}/`, baseServerUrl).toString()
       logUrl = `${spaceUrl}id/did.jsonl`
       const promoted = await promote({
         signerClient: alice.was,
@@ -1023,7 +1032,7 @@ describe('did:webvh Space controller', () => {
     async function assertCurrentKeyReads() {
       const currentClient = wasClient({
         signer: currentKeyPair.signer(),
-        serverUrl
+        baseServerUrl
       })
       assert.deepStrictEqual(
         await currentClient
@@ -1043,7 +1052,7 @@ describe('did:webvh Space controller', () => {
       // The retired key still cannot root-invoke.
       const denied = await requestError(
         space.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/credentials/doc-1`,
+          url: `${baseServerUrl}space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
       )
@@ -1107,7 +1116,7 @@ describe('did:webvh Space controller', () => {
     let space: WebvhSpace, keystoresUrl: string, keystoreId: string
 
     beforeAll(async () => {
-      keystoresUrl = `${serverUrl}/kms/keystores`
+      keystoresUrl = `${baseServerUrl}kms/keystores`
       space = await provisionSpace()
       // Promote the Space itself first (the wallet's ordering).
       const promoted = await promote({

@@ -34,14 +34,14 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
   const bareId = 'no-sidecar'
   const bareBody = JSON.stringify({ n: bareId })
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const space = await alice.was.createSpace({
       id: alice.space1.id,
@@ -73,7 +73,7 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
   function resourceUrl(resourceId: string): string {
     return new URL(
       `/space/${alice.space1.id}/${collectionId}/${resourceId}`,
-      serverUrl
+      baseServerUrl
     ).toString()
   }
 
@@ -97,7 +97,7 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
     const { data } = await alice.was.request({
       url: new URL(
         `/space/${alice.space1.id}/${collectionId}/query`,
-        serverUrl
+        baseServerUrl
       ).toString(),
       method: 'POST',
       json: { profile: 'changes', limit: 10 }

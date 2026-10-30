@@ -111,7 +111,7 @@ describe('Replication between two servers', () => {
 
   beforeAll(async () => {
     const identities = await zcapClients({
-      serverUrl: 'https://unused.example'
+      baseServerUrl: 'https://unused.example'
     })
     alice = identities.alice
     bob = identities.bob

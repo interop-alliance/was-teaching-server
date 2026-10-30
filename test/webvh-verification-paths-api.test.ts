@@ -30,13 +30,13 @@ import {
 } from './helpers.js'
 
 describe('did:webvh on the revocation, consent, and listing paths', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -51,23 +51,23 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
     let grantee: WebvhIdentity
 
     beforeAll(async () => {
-      spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
       collectionUrl = new URL(
         `/space/${spaceId}/credentials`,
-        serverUrl
+        baseServerUrl
       ).toString()
       docUrl = `${collectionUrl}/doc-1`
       const space = alice.was.space(spaceId)
       await space.configure({ name: 'Unlock-shaped', controller: alice.did })
       await space.collection('credentials').configure({ force: true })
       await space.collection('credentials').put('doc-1', { hello: 'world' })
-      grantee = await provisionWebvhIdentity({ owner: alice, serverUrl })
+      grantee = await provisionWebvhIdentity({ owner: alice, baseServerUrl })
     })
 
     function revocationUrl(capabilityId: string): string {
       return new URL(
         spaceRevocationsPath({ spaceId, revocationId: capabilityId }),
-        serverUrl
+        baseServerUrl
       ).toString()
     }
 
@@ -185,11 +185,11 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
     let grantee: WebvhIdentity
 
     beforeAll(async () => {
-      grantee = await provisionWebvhIdentity({ owner: alice, serverUrl })
+      grantee = await provisionWebvhIdentity({ owner: alice, baseServerUrl })
     })
 
     it('a provisioning chain with a did:webvh delegee creates the Space', async () => {
-      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       const zcap = await delegate({
         signer: alice.signer,
         capability: `urn:zcap:root:${encodeURIComponent(spacesUrl)}`,
@@ -214,14 +214,17 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
 
     it('the create branch of PUT /meta refuses a did:webvh controller (400)', async () => {
       const spaceId = randomUUID()
-      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+      const metaUrl = new URL(
+        `/space/${spaceId}/meta`,
+        baseServerUrl
+      ).toString()
       const err = await requestError(
         client({ signer: grantee.clientKeyPair.signer() }).request({
           url: metaUrl,
           method: 'PUT',
           action: 'PUT',
           capability: rootZcap({
-            target: new URL(`/space/${spaceId}/`, serverUrl).toString(),
+            target: new URL(`/space/${spaceId}/`, baseServerUrl).toString(),
             controller: grantee.did
           }),
           json: { id: spaceId, controller: grantee.did }
@@ -239,10 +242,10 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
     let spacesUrl: string
 
     beforeAll(async () => {
-      spacesUrl = new URL('/spaces/', serverUrl).toString()
-      account = await provisionWebvhIdentity({ owner: alice, serverUrl })
+      spacesUrl = new URL('/spaces/', baseServerUrl).toString()
+      account = await provisionWebvhIdentity({ owner: alice, baseServerUrl })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${account.spaceId}/meta`,
+        url: `${baseServerUrl}space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: account.spaceId,

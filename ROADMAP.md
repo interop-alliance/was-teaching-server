@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 238
+nextAvailableId: 241
 
 <!-- roadmap-order:index:start -->
 
@@ -88,6 +88,12 @@ Ready:
 - WAS-225 [M] (*) Client-annex clause: a ladder-signed replica pull gated on the
   annex document's replica pointer
 - WAS-226 [M] (*) Open the replicas route to a root-chained delegated invocation
+- WAS-238 [M] (*) `serverDid` moves to the core `specs` entry, and the
+  replication entry carries `url`
+- WAS-239 [M] (*) Refuse a second registration of one source Space sharing a
+  Collection on the same local Space
+- WAS-240 [M] (*) The foreign `did:webvh` fetch and the companion's
+  `space:server:id` bound
 - WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
@@ -1279,9 +1285,11 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
     `parseReplicaRegistration`), `src/lib/webvhLogLocation.ts` (the cross-Space
     lookup), docs/replication.md ("Registration checks"), ARCHITECTURE.md (the
     `src/sync/` entry)
-  - wallet-attached-storage-spec: decision 0013 amended (the controller check's
-    new branch) and WASS-50's registration-check text; WASS-58's touches gain
-    the `fromSpace` comparison
+  - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
+    amended and the replication companion (`replication/spec.md`, "The
+    controller check") states the branch, with no binding of the local
+    did:key to the capability; WASS-58's touches gain the `fromSpace`
+    comparison
   - freewallet: the replica registration ceremony (FW-638, FW-688) creates and
     registers under the bootstrap did:key
   - was-conformance-suite: PWSCS-23's registration-check cases
@@ -1342,8 +1350,10 @@ condition. One residue stays open, left to this item by the design: any reader
 of the wallet's directory can register the recorded capability under its own
 did:key in a tear between the wallet's mint and its POST, and then win
 `replicaMappingConflict`. Binding the local did:key to a K recorded with the
-capability would close it. That needs a new wire member, so it is a question for
-Dmitri before coding, not an acceptance box. Related: WAS-207 (a log that
+capability would close it. Settled 2026-10-29 in the companion text: no
+binding. The residue is accepted and recorded in the companion's security
+considerations ("The bootstrap key"); the first acceptance box above stands as
+written. Related: WAS-207 (a log that
 declares witnesses still cannot replicate), WAS-210 (one function for where a
 did:webvh resolves from).
 
@@ -1367,10 +1377,10 @@ did:webvh resolves from).
     document)
   - wallet-core: the ladder-signed pull mint, the ladder-clause counterpart
     fixtures, and the `hostConformance.ts` header's predicate count
-  - wallet-attached-storage-spec: decision 0013 amended (the pull may be
-    ladder-signed under the annex pointer; why that is consistent with 0013's
-    rejection of acting on service entries); WASS-58's touches gain the pull
-    capability's target
+  - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
+    amended and the replication companion ("Signing the pull capability")
+    defines the `ReplicaServer` pointer and cites the predicate by name;
+    WASS-58's touches gain the pull capability's target
 - acceptance:
   - [ ] A ladder-signed delegation is admitted when its sole `controller` equals
         the `serviceEndpoint` of a `https://w3id.org/pws#ReplicaServer` service
@@ -1450,9 +1460,10 @@ log, once per replica server.
     operations"), ARCHITECTURE.md (the `src/sync/` entry, "controller-only"),
     `decisions/0002` (amended 2026-10-26), `decisions/0005` (its Context says
     the registration record is controller-only)
-  - wallet-attached-storage-spec: decision 0013 ("controller-only, every method
-    included" is amended) and WASS-50; WASS-1 / WAS-59's Authorization column
-    for `replicas`
+  - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
+    amended and the replication companion ("Registrations", Authorization)
+    states the delegated path and the `POST` bound; WASS-1 / WAS-59's
+    Authorization column for `replicas` still open
   - app-connect-spec: decision 0003 (the replica-server-side predicate)
   - was-client: the replica methods' "Controller-only" JSDoc
     (`Space.ts:791-875`); `/paths` exports `spaceReplicas` and
@@ -1501,6 +1512,135 @@ have that source's tombstones applied to the copy. It is shape-gated, like
 predicates 1 to 5. WAS-225 and this item both edit `clientAnnexClause.ts` and
 the clause's predicate count; whichever lands second updates the count. Related:
 WAS-209 (a ladder-signed delegation on a replica, under the clause).
+
+---
+
+### WAS-238: [M] (*) `serverDid` moves to the core `specs` entry, and the replication entry carries `url`
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: wire-contract, service-description, server-identity, replication
+- discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
+- touches:
+  - was-teaching-server (this repo): `src/serviceDescription.ts` (the
+    `instance` member it composes and the core entry beside `originId`; the
+    `REPLICATION_IDENTIFIER` entry's members), `src/config.default.ts` (the
+    "no `url` until the text is published" comment), the two server-identity
+    tests, `docs/service-description.md`, `docs/server-identity-and-provenance.md`,
+    `docs/replication.md` (what a wallet reads to find the DID to delegate
+    to), ARCHITECTURE.md (the service description paragraph), CHANGELOG.md
+  - storage-core: the `ServiceDescription` type (the core entry gains
+    `serverDid`; `instance` loses it)
+  - freewallet / wallet-core: whatever reads the replica server's DID off
+    `/service` before delegating the pull capability (FW-638, FW-688)
+  - was-conformance-suite: a service-description case, if one asserts the
+    member's placement
+  - portable-web-spaces-spec: resolved 2026-10-29 -- the core version entry
+    defines `serverDid` beside `originId`, and the Instance Disclosure list
+    does not carry it
+- acceptance:
+  - [ ] `/service` carries `serverDid` on the `https://w3id.org/pws` entry,
+        beside `originId`, and `instance` no longer carries it
+  - [ ] The `https://w3id.org/pws/replication` entry carries `url`
+        (`https://w3c-ccg.github.io/portable-web-spaces-spec/replication/`)
+  - [ ] `assertPeerServes` still reads `originId` and the replication entry
+        and nothing else; no registration check reads `instance`
+  - [ ] The server-identity tests assert the new placement; docs and
+        ARCHITECTURE.md name it
+  - [ ] CHANGELOG entry names the move as a wire change to `/service`
+
+Context: the replication companion decided 2026-10-29 where the server's DID is
+advertised. Core's Instance Disclosure says `instance` is optional operator
+disclosure a client may not gate on, and a wallet gates on the DID: it is the
+`controller` it delegates the pull capability to, and a server without one
+cannot hold a replica. So the member sits on the core entry, as `originId` does
+and for the same reason. The companion text now exists, so the replication
+entry's `url` can be served. Related: WAS-235 (the other `instance` member that
+moves or is renamed).
+
+---
+
+### WAS-239: [M] (*) Refuse a second registration of one source Space sharing a Collection on the same local Space
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: replication, registration
+- discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
+- touches:
+  - was-teaching-server (this repo): `src/sync/registration.ts`
+    (`assertReplicaAcceptable`), `src/lib/webvhLogLocation.ts`
+    (`replicaMappingConflict`), docs/replication.md ("Two registrations on one
+    local Space may overlap" goes), ARCHITECTURE.md (the `src/sync/` entry)
+  - was-conformance-suite: PWSCS-23's registration-refusal cases gain the
+    same-Space overlap
+  - portable-web-spaces-spec: resolved 2026-10-29 -- the companion's Space
+    checks refuse the overlap "on this or any other local Space"
+- acceptance:
+  - [ ] A `POST` of a registration whose `fromSpace` equals that of a
+        registration already on the same local Space, and whose Collection
+        selection overlaps it (an absent `collections` meaning all, the
+        controller-log Collection always selected), is refused with
+        `replica-refused` (409), with the pointer `#/collections/<i>` or
+        `#/fromSpace` as the cross-Space refusal gives today
+  - [ ] A `PUT` that creates a registration runs the same check; a `PUT`
+        against a stored record is unaffected, since `collections` and
+        `fromSpace` cannot change by `PUT`
+  - [ ] Two-server test: the second overlapping registration on one Space is
+        refused, and a second registration selecting disjoint Collections is
+        admitted
+  - [ ] docs/replication.md states the rule for both placements
+
+Context: `replicaMappingConflict` compares a new registration against
+registrations on other local Spaces only, and the docs say two registrations on
+one local Space may overlap. The companion text refuses the overlap wherever it
+is: two loops writing one copy of a Collection race each other's checkpoints and
+stamps for no benefit, and two registrations mapping one controller log give the
+registration-mapped resolver (`locateWebvhLog`, which requires exactly one
+holder) two answers, so the controller stops resolving. The check is not atomic
+with the write today; that stays as it is (WAS-206's note).
+
+---
+
+### WAS-240: [M] (*) The foreign `did:webvh` fetch and the companion's `space:server:id` bound
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: replication, webvh, security, spec
+- discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
+- touches:
+  - was-teaching-server (this repo): `src/lib/peerWebvh.ts` (`mayFetch`, the
+    module header), `src/lib/validateDid.ts` (`parseCrossHostWebvh`),
+    `src/zcap.ts` (`peerInvokerGrant`), docs/replication.md and the
+    server-identity docs, ARCHITECTURE.md
+  - portable-web-spaces-spec: the companion's "Verifying a replica server's
+    signature" section, if the decision widens it; core's Space Controller DID
+    Method Registry, if a wallet-agent fetch becomes a core rule
+  - wallet-core / freewallet: whichever flow relies on a wallet agent's
+    cross-host `did:webvh` being fetched by a source server
+- acceptance:
+  - [ ] Decision recorded in `decisions/`: either the fetch is narrowed to a
+        `did:webvh` whose path is `space:server:id` (the replica-server case
+        the companion bounds), or the wider fetch (any path, the wallets' own
+        agent DIDs included) is kept and the companion or core text is widened
+        to state its bounds as a rule of its own
+  - [ ] The server implements the decision; `mayFetch` and its header say which
+  - [ ] The outbound-fetch tests cover the refused path shape, or the admitted
+        one, as decided
+  - [ ] docs and ARCHITECTURE.md agree with the text
+
+Context: the replication companion requires a source server to fetch a
+cross-host `did:webvh` log only for a delegated capability's `controller` whose
+path is `space:server:id`, and says any other foreign DID stays refused. The
+server's `mayFetch` admits any `did:webvh` on a non-local host, any path, with
+the same chain condition and network bounds, because wallets' own agent DIDs use
+it too (`peerWebvh.ts` header). One of the two has to give: the text is
+narrower than the server, and the wider fetch is a feature the server relies on
+outside replication. The network bounds (https, default port, no redirect,
+address-range refusal, rate limit, concurrency, cache) match the text either
+way.
 
 ---
 
@@ -1727,8 +1867,6 @@ registration inside its critical section (`registrationStands` in
 registration still stands under that check. Extending the check to `pausedAt`
 (both backends read the stored record there already) puts the pause on the same
 mechanism as the removal, with no cancellation state in the manager.
-
----
 
 ## Performance
 

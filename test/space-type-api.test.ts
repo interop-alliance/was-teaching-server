@@ -36,13 +36,13 @@ function statusOf(err: any): number | undefined {
 }
 
 describe('Space Description type', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -64,7 +64,7 @@ describe('Space Description type', () => {
     body: object
   }): Promise<any> {
     return identity.was.request({
-      url: new URL('/spaces/', serverUrl).toString(),
+      url: new URL('/spaces/', baseServerUrl).toString(),
       method: 'POST',
       json: body
     })
@@ -91,7 +91,7 @@ describe('Space Description type', () => {
     body: object
   }): Promise<any> {
     return identity.was.request({
-      url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
+      url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
       method: 'PUT',
       json: body
     })

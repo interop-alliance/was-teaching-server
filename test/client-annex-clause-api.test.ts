@@ -67,7 +67,7 @@ const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 describe('client-annex clause (ladder-VM delegation bounds)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   /** The account identity every ladder delegation below is signed under. */
   let account: WebvhIdentity & Required<Pick<WebvhIdentity, 'ladderKeyPair'>>
@@ -81,22 +81,22 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   let openCollectionUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // The annex identity is provisioned first: the account document's service entry
     // has to name it, and a DID string is only known once its log is minted.
     clientAnnex = await provisionWebvhIdentity({
       owner: alice,
-      serverUrl,
+      baseServerUrl,
       withLadderKey: false,
       withTransientKey: true
     })
     account = await provisionWebvhIdentity({
       owner: alice,
-      serverUrl,
+      baseServerUrl,
       withLadderKey: true,
       services: [
         {
@@ -109,7 +109,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     accountSpaceUrl = new URL(
       `/space/${account.spaceId}/`,
-      serverUrl
+      baseServerUrl
     ).toString()
     accountSpaceMetaUrl = `${accountSpaceUrl}meta`
     accountLogUrl = `${accountSpaceUrl}id/did.jsonl`
@@ -132,7 +132,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     // Promotion by ordering: the Space is created under Alice's `did:key`,
     // populated, and only then handed to the account DID.
     const promoted = await alice.was.request({
-      url: `${serverUrl}/space/${account.spaceId}/meta`,
+      url: `${baseServerUrl}space/${account.spaceId}/meta`,
       method: 'PUT',
       json: {
         id: account.spaceId,
@@ -373,7 +373,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // cannot take the suite's shared Space with it.
       const other = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withLadderKey: true,
         services: [
           {
@@ -384,7 +384,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         ]
       })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${other.spaceId}/meta`,
+        url: `${baseServerUrl}space/${other.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: other.spaceId,
@@ -395,7 +395,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(promoted.status, 204)
       const otherSpaceUrl = new URL(
         `/space/${other.spaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const delegated = await delegate({
         signer: other.ladderKeyPair.signer(),
@@ -439,7 +439,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // links, which here carry the whole verb vocabulary.
       const other = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withLadderKey: true,
         services: [
           {
@@ -450,7 +450,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         ]
       })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${other.spaceId}/meta`,
+        url: `${baseServerUrl}space/${other.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: other.spaceId,
@@ -461,7 +461,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(promoted.status, 204)
       const otherSpaceUrl = new URL(
         `/space/${other.spaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
 
       const generationDelegation = await delegate({
@@ -516,7 +516,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await otherSpace.collection('notes').configure({ force: true })
       await otherSpace.collection('notes').put('note-1', { other: true })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${otherSpaceId}/meta`,
+        url: `${baseServerUrl}space/${otherSpaceId}/meta`,
         method: 'PUT',
         json: { id: otherSpaceId, name: 'Other', controller: account.did }
       })
@@ -524,7 +524,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
       const otherSpaceUrl = new URL(
         `/space/${otherSpaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const delegated = await delegate({
         signer: account.ladderKeyPair.signer(),
@@ -794,7 +794,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await decoySpace.configure({ name: 'Decoy', controller: alice.did })
       await decoySpace.collection('id').configure({ force: true })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${decoySpaceId}/meta`,
+        url: `${baseServerUrl}space/${decoySpaceId}/meta`,
         method: 'PUT',
         json: { id: decoySpaceId, name: 'Decoy', controller: account.did }
       })
@@ -802,7 +802,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
       const decoySpaceUrl = new URL(
         `/space/${decoySpaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const decoyLogUrl = `${decoySpaceUrl}id/did.jsonl`
       const delegated = await delegate({
@@ -823,12 +823,12 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // in a `keys` Collection reaches the same bridge.
       const keysAccount = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withLadderKey: true,
         collectionId: 'keys'
       })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${keysAccount.spaceId}/meta`,
+        url: `${baseServerUrl}space/${keysAccount.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: keysAccount.spaceId,
@@ -840,7 +840,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
       const keysSpaceUrl = new URL(
         `/space/${keysAccount.spaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const keysLogUrl = `${keysSpaceUrl}keys/did.jsonl`
       const delegated = await delegate({
@@ -869,11 +869,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // Creation is `did:key`-only, so the auxiliary Space is created (and its
       // Collection provisioned) under Alice, then promoted to the account DID.
       auxSpaceId = randomUUID()
-      auxSpaceUrl = new URL(`/space/${auxSpaceId}/`, serverUrl).toString()
+      auxSpaceUrl = new URL(`/space/${auxSpaceId}/`, baseServerUrl).toString()
       auxSpaceRoot = `urn:zcap:root:${encodeURIComponent(auxSpaceUrl)}`
 
       const created = await alice.was.request({
-        url: new URL('/spaces/', serverUrl).toString(),
+        url: new URL('/spaces/', baseServerUrl).toString(),
         method: 'POST',
         json: {
           id: auxSpaceId,
@@ -889,7 +889,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         .configure({ force: true })
 
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${auxSpaceId}/meta`,
+        url: `${baseServerUrl}space/${auxSpaceId}/meta`,
         method: 'PUT',
         json: {
           id: auxSpaceId,
@@ -1087,13 +1087,13 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     }
     if (controller !== undefined) {
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, name: 'Unlock Space', controller }
       })
       assert.equal(promoted.status, 204)
     }
-    const url = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    const url = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
     return {
       spaceId,
       url,
@@ -1358,7 +1358,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // shared one untouched.
       const retiring = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withLadderKey: true
       })
       const space = await makeSpace({ controller: retiring.did })
@@ -1405,7 +1405,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         ] as any
       })
       const published = await alice.was.request({
-        url: `${serverUrl}/space/${retiring.spaceId}/id/did.jsonl`,
+        url: `${baseServerUrl}space/${retiring.spaceId}/id/did.jsonl`,
         method: 'PUT',
         headers: { 'content-type': 'text/jsonl' },
         body: new Blob([logToJsonlString(removed.log)], { type: 'text/jsonl' })
@@ -1899,7 +1899,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     beforeAll(async () => {
       const config = await KmsClient.createKeystore({
-        url: `${serverUrl}/kms/keystores`,
+        url: `${baseServerUrl}kms/keystores`,
         config: { sequence: 0, controller: alice.did },
         invocationSigner: alice.signer
       })

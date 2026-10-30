@@ -355,7 +355,9 @@ describe('A did:webvh controller resolved from a replicated log', () => {
   }
 
   beforeAll(async () => {
-    ;({ alice } = await zcapClients({ serverUrl: 'https://unused.example' }))
+    ;({ alice } = await zcapClients({
+      baseServerUrl: 'https://unused.example'
+    }))
     origin = await boot('https://origin.example')
     mirror = await boot('https://mirror.example')
 

@@ -24,7 +24,10 @@ import {
 import { compareStamps } from '../src/lib/hlc.js'
 
 describe('Access-control policy validators and tombstones (HTTP)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, aliceSpace: Space
+  let fastify: FastifyInstance,
+    baseServerUrl: string,
+    alice: any,
+    aliceSpace: Space
   let spaceId: string
   const collectionId = 'docs'
   const resourceId = 'doc'
@@ -46,7 +49,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
   }): Promise<{ status: number; data: any; headers: Headers }> {
     try {
       const response = await alice.was.request({
-        url: new URL(url, serverUrl).toString(),
+        url: new URL(url, baseServerUrl).toString(),
         method,
         ...(json !== undefined && { json }),
         ...(headers !== undefined && { headers })
@@ -85,17 +88,17 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
    */
   async function anonymousRead(): Promise<number> {
     const response = await fetch(
-      new URL(`/space/${spaceId}/${collectionId}/${resourceId}`, serverUrl)
+      new URL(`/space/${spaceId}/${collectionId}/${resourceId}`, baseServerUrl)
     )
     await response.body?.cancel()
     return response.status
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     spaceId = alice.space1.id
     aliceSpace = await alice.was.createSpace({
       id: spaceId,
@@ -144,7 +147,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
         const { stamp } = parseEtagSegments(etag)
         assert.equal(
           created.headers.get('location'),
-          new URL(level.path(), serverUrl).toString()
+          new URL(level.path(), baseServerUrl).toString()
         )
         // The body's stamp members, `deleted` and `_feedPosition` are
         // ignored, and no read serves the stored `_feedPosition`.
@@ -313,11 +316,11 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
     )
     const collectionPolicyUrl = new URL(
       `/space/${spaceId}/${collectionId}/policy`,
-      serverUrl
+      baseServerUrl
     ).toString()
     const resourcePolicyUrl = new URL(
       `/space/${spaceId}/${collectionId}/${resourceId}/policy`,
-      serverUrl
+      baseServerUrl
     ).toString()
     assert.deepEqual(
       policies.map((document: any) => document.id).sort(),
@@ -344,7 +347,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
     assert.ok(
       response.data.documents.every(
         (document: any) =>
-          document.id !== `${serverUrl}/space/${spaceId}/policy`
+          document.id !== `${baseServerUrl}space/${spaceId}/policy`
       )
     )
   })
@@ -368,7 +371,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
       })
       assert.equal(written.status, 201)
       const anonymous = async () => {
-        const response = await fetch(new URL(resourceUrl('r1'), serverUrl))
+        const response = await fetch(new URL(resourceUrl('r1'), baseServerUrl))
         await response.body?.cancel()
         return response.status
       }
@@ -408,7 +411,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
       const policyIndex = documents.findIndex(
         (document: any) =>
           document.kind === 'policy' &&
-          document.id === new URL(policyUrl('r1'), serverUrl).toString()
+          document.id === new URL(policyUrl('r1'), baseServerUrl).toString()
       )
       assert.equal(documents[resourceIndex].deleted, true)
       assert.equal(documents[policyIndex].deleted, true)

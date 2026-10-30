@@ -15,13 +15,13 @@ import type { Space } from '@interop/was-client'
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Access-control policy cache', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -39,7 +39,7 @@ describe('Access-control policy cache', () => {
       name: 'Docs'
     })
     await collection.put('readme', { id: 'readme', name: 'Read Me' })
-    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, serverUrl)
+    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, baseServerUrl)
 
     // A prior anonymous read populates the cache with "no policy" at every
     // level (Space, Collection, Resource).
@@ -66,7 +66,7 @@ describe('Access-control policy cache', () => {
     })
     await collection.put('readme', { id: 'readme', name: 'Read Me' })
     await collection.setPublic()
-    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, serverUrl)
+    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, baseServerUrl)
 
     // A prior anonymous read populates the cache with the current grant.
     const before = await fetch(resourceUrl)
@@ -92,7 +92,7 @@ describe('Access-control policy cache', () => {
     })
     await collection.put('readme', { id: 'readme', name: 'Read Me' })
     await collection.setPublic()
-    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, serverUrl)
+    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, baseServerUrl)
 
     // Populate the cache with the grant, then delete the Collection outright.
     const beforeDelete = await fetch(resourceUrl)
@@ -122,8 +122,8 @@ describe('Access-control policy cache', () => {
     })
     await collection.put('docs', { id: 'docs', name: 'Same name' })
     await collection.put('other', { id: 'other', name: 'Other' })
-    const sameNameUrl = new URL(`/space/${spaceId}/docs/docs`, serverUrl)
-    const otherUrl = new URL(`/space/${spaceId}/docs/other`, serverUrl)
+    const sameNameUrl = new URL(`/space/${spaceId}/docs/docs`, baseServerUrl)
+    const otherUrl = new URL(`/space/${spaceId}/docs/other`, baseServerUrl)
 
     // A Resource-level grant on `docs/docs` must not open the Collection.
     await collection.resource('docs').setPublic()
@@ -154,7 +154,7 @@ describe('Access-control policy cache', () => {
       name: 'Docs'
     })
     await collection.put('readme', { id: 'readme', name: 'Read Me' })
-    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, serverUrl)
+    const resourceUrl = new URL(`/space/${spaceId}/docs/readme`, baseServerUrl)
 
     // Populate the cache with "no policy" at the Space level.
     const before = await fetch(resourceUrl)

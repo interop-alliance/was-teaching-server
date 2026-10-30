@@ -25,15 +25,18 @@
 
 ### Added
 
-- `startTestServer` (the `was-teaching-server/testing` entry point) returns
-  `baseServerUrl` beside `serverUrl`: the listen origin with its trailing slash,
-  the base under which the server serves `service`, `spaces/` and `space/{id}/`,
-  and the value a `@interop/was-client` is now built from
-  (`new WasClient({ baseServerUrl })`). The in-repo suites and the perf scripts
-  build their clients that way, and a new suite asserts the layout the spec's
-  Server Discovery section fixes. `provisionWebvhIdentity` publishes the history
+- **Breaking (testing entry point):** `startTestServer` (the
+  `was-teaching-server/testing` entry point) returns `baseServerUrl` in place of
+  `serverUrl`: the listen origin with its trailing slash, the base under which
+  the server serves `service`, `spaces/` and `space/{id}/`, and the value a
+  `@interop/was-client` is built from (`new WasClient({ baseServerUrl })`). A
+  test that calls a server-internal function taking `serverUrl` reads the
+  no-slash form from the returned instance's `fastify.serverUrl`.
+  `provisionWebvhIdentity` takes `baseServerUrl` too, and publishes the history
   log through the owner client's `request({ url })`, the shape
-  `@interop/was-client` 0.100 gives that escape hatch.
+  `@interop/was-client` 0.100 gives that escape hatch. The in-repo suites and
+  the perf scripts build their clients and URLs from `baseServerUrl`, and a new
+  suite asserts the layout the spec's Server Discovery section fixes.
 - The conformance suite devDependency is `@interop/pws-conformance-suite`
   0.35.0, the release ported to `@interop/was-client` 0.100.
 - `pnpm perf:pg` runs the same local load-performance check as `pnpm perf:fs`

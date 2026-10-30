@@ -210,7 +210,9 @@ describe.skipIf(!connectionString)(
     const binary = Buffer.from([0, 1, 2, 3, 250, 251, 252])
 
     beforeAll(async () => {
-      ;({ alice } = await zcapClients({ serverUrl: 'https://unused.example' }))
+      ;({ alice } = await zcapClients({
+        baseServerUrl: 'https://unused.example'
+      }))
       source = await boot({
         serverUrl: 'https://source.example',
         postgres: true

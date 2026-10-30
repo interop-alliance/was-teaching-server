@@ -55,8 +55,8 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
   let alice: any
   // Assigned by the first `bootServer()`. `boundPort` pins every later boot to
   // the same port, so a server booted over an existing `dataDir` keeps the
-  // `serverUrl` that the keystore and key ids already embed.
-  let serverUrl: string
+  // `baseServerUrl` that the keystore and key ids already embed.
+  let baseServerUrl: string
   let boundPort: number | undefined
 
   /**
@@ -85,10 +85,10 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     })
     const { fastify } = started
     boundPort = started.port
-    serverUrl = started.serverUrl
-    alice ??= (await zcapClients({ serverUrl })).alice
+    baseServerUrl = started.baseServerUrl
+    alice ??= (await zcapClients({ baseServerUrl })).alice
     const config = await KmsClient.createKeystore({
-      url: `${serverUrl}/kms/keystores`,
+      url: `${baseServerUrl}kms/keystores`,
       config: { sequence: 0, controller: alice.did },
       invocationSigner: alice.signer
     })
@@ -112,9 +112,9 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
 
   /** The on-disk record file for a key, given its full `kmsId` URL. */
   function keyFile(dataDir: string, kmsId: string): string {
-    // kmsId is `<serverUrl>/kms/keystores/<keystoreLocalId>/keys/<keyLocalId>`.
+    // kmsId is `<baseServerUrl>/kms/keystores/<keystoreLocalId>/keys/<keyLocalId>`.
     const [keystoreLocalId, keyLocalId] = kmsId
-      .slice(`${serverUrl}/kms/keystores/`.length)
+      .slice(`${baseServerUrl}kms/keystores/`.length)
       .split('/keys/')
     return path.join(
       dataDir,
@@ -225,10 +225,10 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     })
     try {
       const keystoreLocalId = kmsId
-        .slice(`${serverUrl}/kms/keystores/`.length)
+        .slice(`${baseServerUrl}kms/keystores/`.length)
         .split('/keys/')[0]!
       const keystoreAgent = reattach(
-        `${serverUrl}/kms/keystores/${keystoreLocalId}`
+        `${baseServerUrl}kms/keystores/${keystoreLocalId}`
       )
       const key = (await keystoreAgent.getAsymmetricKey({
         kmsId,
@@ -429,10 +429,10 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     })
     try {
       const keystoreLocalId = kmsId
-        .slice(`${serverUrl}/kms/keystores/`.length)
+        .slice(`${baseServerUrl}kms/keystores/`.length)
         .split('/keys/')[0]!
       const keystoreAgent = reattach(
-        `${serverUrl}/kms/keystores/${keystoreLocalId}`
+        `${baseServerUrl}kms/keystores/${keystoreLocalId}`
       )
       const key = (await keystoreAgent.getAsymmetricKey({
         kmsId,
@@ -490,10 +490,10 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     })
     try {
       const keystoreLocalId = kmsId
-        .slice(`${serverUrl}/kms/keystores/`.length)
+        .slice(`${baseServerUrl}kms/keystores/`.length)
         .split('/keys/')[0]!
       const keystoreAgent = reattach(
-        `${serverUrl}/kms/keystores/${keystoreLocalId}`
+        `${baseServerUrl}kms/keystores/${keystoreLocalId}`
       )
       const key = (await keystoreAgent.getAsymmetricKey({
         kmsId,
@@ -526,7 +526,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
       })) as AsymmetricKey
       oldKmsId = key.kmsId!
       keystoreLocalId = oldKmsId
-        .slice(`${serverUrl}/kms/keystores/`.length)
+        .slice(`${baseServerUrl}kms/keystores/`.length)
         .split('/keys/')[0]!
       assert.ok((await readRecord(dataDir, oldKmsId)).key.encrypted)
     } finally {
@@ -551,7 +551,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     })
     try {
       const keystoreAgent = reattach(
-        `${serverUrl}/kms/keystores/${keystoreLocalId}`
+        `${baseServerUrl}kms/keystores/${keystoreLocalId}`
       )
       // The old (kek1-wrapped) record still decrypts and signs.
       const oldKey = (await keystoreAgent.getAsymmetricKey({

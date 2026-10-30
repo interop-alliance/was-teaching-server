@@ -66,7 +66,7 @@ describe(
   () => {
     const binPath = diBinPath()
     let fastify: FastifyInstance,
-      serverUrl: string,
+      baseServerUrl: string,
       port: number,
       walletDir: string,
       dataDir: string,
@@ -102,14 +102,14 @@ describe(
     }
 
     async function serviceInstance(): Promise<any> {
-      const response = await fetch(`${serverUrl}/service`)
+      const response = await fetch(`${baseServerUrl}service`)
       assert.equal(response.status, 200)
       const document = (await response.json()) as any
       return document.instance
     }
 
     async function boot({ dir }: { dir: string }): Promise<void> {
-      ;({ fastify, serverUrl, port } = await startTestServer({
+      ;({ fastify, baseServerUrl, port } = await startTestServer({
         backend: await FileSystemBackend.open({ dataDir: dir }),
         serverKeySeed: seed,
         adminDid,
@@ -139,7 +139,7 @@ describe(
       return loadSyncSigner({
         storage: fastify.storage,
         serverBackends: fastify.serverBackends,
-        serverUrl,
+        serverUrl: fastify.serverUrl,
         signingKey: fastify.serverSigningKey,
         logger: pino({ level: 'silent' })
       })
@@ -187,7 +187,7 @@ describe(
         'was',
         'space',
         'add',
-        `${serverUrl}/space/server`,
+        `${baseServerUrl}space/server`,
         '--handle',
         'server',
         '--did',
@@ -213,7 +213,7 @@ describe(
         'create',
         'webvh',
         '--url',
-        `${serverUrl}/space/server/id`,
+        `${baseServerUrl}space/server/id`,
         '--verification-key',
         signingKeyMultibase(firstExportSigningKey),
         '--purpose',
@@ -242,7 +242,7 @@ describe(
       )
       assert.equal(advertised, serverDid)
 
-      const served = await fetch(`${serverUrl}/space/server/id/did.jsonl`)
+      const served = await fetch(`${baseServerUrl}space/server/id/did.jsonl`)
       assert.equal(served.status, 200)
       assert.equal(await served.text(), await readFile(logPath, 'utf8'))
       expect(await logVersion()).toMatch(/^1-/)
@@ -304,7 +304,7 @@ describe(
       await putLog()
 
       assert.equal((await serviceInstance()).serverDid, serverDid)
-      const served = await fetch(`${serverUrl}/space/server/id/did.jsonl`)
+      const served = await fetch(`${baseServerUrl}space/server/id/did.jsonl`)
       assert.equal(served.status, 200)
       assert.equal(await served.text(), await readFile(logPath, 'utf8'))
     })

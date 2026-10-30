@@ -36,17 +36,17 @@ const OVERSIZED = 'x'.repeat(600 * 1024)
 
 describe('Quota enforcement (API)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend
   let alice: any, aliceCredentials: any
   const spaceId = `quota-enforce-${crypto.randomUUID()}`
 
   beforeAll(async () => {
     backend = await openTempBackend({ capacityBytes: CAPACITY_BYTES })
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,
@@ -385,7 +385,7 @@ const MAX_UPLOAD_BYTES = 64 * 1024
 
 describe('Upload cap (maxUploadBytes) (API)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     backend: TempFileSystemBackend
   let alice: any, aliceCredentials: any
   const spaceId = `upload-cap-${crypto.randomUUID()}`
@@ -393,10 +393,10 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
   beforeAll(async () => {
     backend = await openTempBackend({ maxUploadBytes: MAX_UPLOAD_BYTES })
     // A per-upload cap but no cumulative Space quota: isolates 413 from 507.
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,
@@ -454,7 +454,7 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
 
   it('advertises maxUploadBytes in the quota report constraints', async () => {
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/quotas`,
+      url: `${baseServerUrl}space/${spaceId}/quotas`,
       method: 'GET'
     })
     assert.equal(response.status, 200)

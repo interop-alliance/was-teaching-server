@@ -43,23 +43,23 @@ interface WebvhIdentity {
 
 describe('did:webvh delegation and chain depth', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
   })
 
   /**
-   * Mints a `did:webvh` whose log is anchored at `<serverUrl>/space/<id>/id`,
+   * Mints a `did:webvh` whose log is anchored at `<baseServerUrl>/space/<id>/id`,
    * listing one enrolled client key under every verification relationship a
    * zcap needs.
    *
@@ -73,7 +73,7 @@ describe('did:webvh delegation and chain depth', () => {
     const clientKeyPair = await Ed25519VerificationKey.generate()
 
     const created = await createDID({
-      address: `${serverUrl}/space/${spaceId}/id`,
+      address: `${baseServerUrl}space/${spaceId}/id`,
       signer: logSigner,
       updateKeys: [updateKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -114,7 +114,7 @@ describe('did:webvh delegation and chain depth', () => {
 
     const minted = await mintWebvhDid({ spaceId })
     const published = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/id/did.jsonl`,
+      url: `${baseServerUrl}space/${spaceId}/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(minted.log)], { type: 'text/jsonl' })
@@ -140,7 +140,7 @@ describe('did:webvh delegation and chain depth', () => {
         .collection('credentials')
         .put('doc-1', { hello: 'world' })
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${account.spaceId}/meta`,
+        url: `${baseServerUrl}space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: account.spaceId,
@@ -156,14 +156,14 @@ describe('did:webvh delegation and chain depth', () => {
 
       collectionUrl = new URL(
         `/space/${account.spaceId}/credentials`,
-        serverUrl
+        baseServerUrl
       ).toString()
     })
 
     it('the account controller delegates to the delegate did:webvh', async () => {
       const spaceUrl = new URL(
         `/space/${account.spaceId}/`,
-        serverUrl
+        baseServerUrl
       ).toString()
       delegated = await delegate({
         signer: account.clientKeyPair.signer(),
@@ -250,10 +250,10 @@ describe('did:webvh delegation and chain depth', () => {
     let tailCap: any
 
     beforeAll(async () => {
-      spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
       collectionUrl = new URL(
         `/space/${spaceId}/${collectionId}`,
-        serverUrl
+        baseServerUrl
       ).toString()
       docUrl = `${collectionUrl}/doc-1`
 
@@ -342,7 +342,7 @@ describe('did:webvh delegation and chain depth', () => {
     let subtreeCap: any
 
     beforeAll(async () => {
-      spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
       const space = alice.was.space(spaceId)
       await space.configure({ name: 'Subtree Space', controller: alice.did })
       await space.collection(collectionId).configure({ force: true })
@@ -364,7 +364,7 @@ describe('did:webvh delegation and chain depth', () => {
     it('the delegate PUTs a Collection policy under the subtree target', async () => {
       const policyUrl = new URL(
         `/space/${spaceId}/${collectionId}/policy`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const response = await client({
         signer: aliceDelegatedApp.signer
@@ -380,7 +380,7 @@ describe('did:webvh delegation and chain depth', () => {
 
     it('the policy it wrote is in effect (anonymous read succeeds)', async () => {
       const response = await fetch(
-        new URL(`/space/${spaceId}/${collectionId}/note-1`, serverUrl)
+        new URL(`/space/${spaceId}/${collectionId}/note-1`, baseServerUrl)
       )
       assert.equal(response.status, 200)
       assert.deepStrictEqual(await response.json(), { open: true })
@@ -389,7 +389,7 @@ describe('did:webvh delegation and chain depth', () => {
     it('the same capability reads the policy back', async () => {
       const policyUrl = new URL(
         `/space/${spaceId}/${collectionId}/policy`,
-        serverUrl
+        baseServerUrl
       ).toString()
       const response = await client({
         signer: aliceDelegatedApp.signer

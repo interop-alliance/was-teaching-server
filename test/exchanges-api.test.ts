@@ -11,18 +11,18 @@ const EXCHANGES_PATH = '/workflows/ephemeral/exchanges'
  * minted for it (asserting the header and the body agree along the way).
  *
  * @param options {object}
- * @param options.serverUrl {string}
+ * @param options.baseServerUrl {string}
  * @param [options.request] {unknown}   the opaque request payload to store
  * @returns {Promise<{ exchangeId: string, url: string }>}
  */
 async function createExchange({
-  serverUrl,
+  baseServerUrl,
   request = { type: 'VerifiablePresentationRequest' }
 }: {
-  serverUrl: string
+  baseServerUrl: string
   request?: unknown
 }): Promise<{ exchangeId: string; url: string }> {
-  const response = await fetch(`${serverUrl}${EXCHANGES_PATH}`, {
+  const response = await fetch(new URL(EXCHANGES_PATH, baseServerUrl), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ request })
@@ -37,10 +37,10 @@ async function createExchange({
 
 describe('Ephemeral exchanges API', () => {
   let fastify: FastifyInstance
-  let serverUrl: string
+  let baseServerUrl: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend({ prefix: 'was-exchanges-' })
     }))
   })
@@ -51,16 +51,18 @@ describe('Ephemeral exchanges API', () => {
 
   describe('create', () => {
     it('creates an exchange and returns its URL in the header and body', async () => {
-      const { exchangeId, url } = await createExchange({ serverUrl })
+      const { exchangeId, url } = await createExchange({ baseServerUrl })
 
-      expect(url).toBe(`${serverUrl}${EXCHANGES_PATH}/${exchangeId}`)
+      expect(url).toBe(
+        new URL(`${EXCHANGES_PATH}/${exchangeId}`, baseServerUrl).href
+      )
       expect(exchangeId).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
       )
     })
 
     it('refuses a body with no "request" member', async () => {
-      const response = await fetch(`${serverUrl}${EXCHANGES_PATH}`, {
+      const response = await fetch(new URL(EXCHANGES_PATH, baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ notRequest: true })
@@ -76,7 +78,7 @@ describe('Ephemeral exchanges API', () => {
   describe('begin', () => {
     it('returns the stored request verbatim for an empty-object POST', async () => {
       const stored = { type: 'VerifiablePresentationRequest', challenge: 'abc' }
-      const { url } = await createExchange({ serverUrl, request: stored })
+      const { url } = await createExchange({ baseServerUrl, request: stored })
 
       const response = await fetch(url, {
         method: 'POST',
@@ -90,7 +92,7 @@ describe('Ephemeral exchanges API', () => {
 
     it('treats a POST with no body at all as a begin', async () => {
       const stored = { query: [{ type: 'DIDAuthentication' }] }
-      const { url } = await createExchange({ serverUrl, request: stored })
+      const { url } = await createExchange({ baseServerUrl, request: stored })
 
       const response = await fetch(url, { method: 'POST' })
 
@@ -101,7 +103,7 @@ describe('Ephemeral exchanges API', () => {
 
   describe('respond and poll', () => {
     it('reports a pending exchange before a response is posted', async () => {
-      const { exchangeId, url } = await createExchange({ serverUrl })
+      const { exchangeId, url } = await createExchange({ baseServerUrl })
 
       const response = await fetch(url)
 
@@ -114,7 +116,7 @@ describe('Ephemeral exchanges API', () => {
     })
 
     it('stores and echoes a response, then reports the exchange complete', async () => {
-      const { exchangeId, url } = await createExchange({ serverUrl })
+      const { exchangeId, url } = await createExchange({ baseServerUrl })
       const submitted = {
         type: 'VerifiablePresentation',
         holder: 'did:example:1'
@@ -140,7 +142,7 @@ describe('Ephemeral exchanges API', () => {
     })
 
     it('lets the last response write win', async () => {
-      const { url } = await createExchange({ serverUrl })
+      const { url } = await createExchange({ baseServerUrl })
 
       for (const attempt of [{ attempt: 1 }, { attempt: 2 }]) {
         await fetch(url, {
@@ -159,7 +161,7 @@ describe('Ephemeral exchanges API', () => {
 
   describe('protocols', () => {
     it('returns the VC API interaction URL', async () => {
-      const { url } = await createExchange({ serverUrl })
+      const { url } = await createExchange({ baseServerUrl })
 
       const response = await fetch(`${url}/protocols`)
 
@@ -168,7 +170,7 @@ describe('Ephemeral exchanges API', () => {
     })
 
     it('ignores the QR-carried iuv query parameter', async () => {
-      const { url } = await createExchange({ serverUrl })
+      const { url } = await createExchange({ baseServerUrl })
 
       const response = await fetch(`${url}/protocols?iuv=1`)
 
@@ -179,7 +181,10 @@ describe('Ephemeral exchanges API', () => {
 
   describe('unknown exchanges', () => {
     const unknownUrl = () =>
-      `${serverUrl}${EXCHANGES_PATH}/00000000-0000-4000-8000-000000000000`
+      new URL(
+        `${EXCHANGES_PATH}/00000000-0000-4000-8000-000000000000`,
+        baseServerUrl
+      ).href
 
     it('404s a poll', async () => {
       expect((await fetch(unknownUrl())).status).toBe(404)
@@ -210,7 +215,7 @@ describe('Ephemeral exchanges API', () => {
 
   describe('body limit', () => {
     it('rejects a body larger than 64 KiB', async () => {
-      const response = await fetch(`${serverUrl}${EXCHANGES_PATH}`, {
+      const response = await fetch(new URL(EXCHANGES_PATH, baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ request: { padding: 'x'.repeat(70 * 1024) } })

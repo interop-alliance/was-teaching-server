@@ -275,29 +275,30 @@ own suites use. It imports no test runner, so it works under Vitest,
 `node:test`, or any other runner. It adds nothing to the plugin's options. It is
 test support, not part of a production composition.
 
-| Export                      | What it is                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, serverUrl, baseServerUrl, port, faults }` |
-| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                               |
-| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function                   |
-| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                                     |
-| `RequestRecord`             | The type of one recorded request                                                                       |
-| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir                         |
-| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                                              |
-| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                                  |
-| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                                            |
-| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                                            |
-| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201                            |
+| Export                      | What it is                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------------- |
+| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, baseServerUrl, port, faults }` |
+| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                    |
+| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function        |
+| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                          |
+| `RequestRecord`             | The type of one recorded request                                                            |
+| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir              |
+| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                                   |
+| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                       |
+| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                                 |
+| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                                 |
+| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201                 |
 
 `startTestServer()` takes the `createApp()` options except `serverUrl`, plus an
 optional `port` and `logger`. The logger defaults to `false`. The server listens
 on an OS-assigned port, so parallel test workers do not collide. The returned
-`serverUrl` is `http://localhost:<port>` and `baseServerUrl` is the same origin
-with its trailing slash, `http://localhost:<port>/`: the base under which the
-server serves `service`, `spaces/` and `space/{id}/`, and what a
-`@interop/was-client` is built from (`new WasClient({ baseServerUrl })`). The
-host is `localhost` because `@interop/webkms-client` relaxes its loopback checks
-for that host alone.
+`baseServerUrl` is `http://localhost:<port>/`, the origin with its trailing
+slash: the base under which the server serves `service`, `spaces/` and
+`space/{id}/`, and what a `@interop/was-client` is built from
+(`new WasClient({ baseServerUrl })`). The no-slash form `createApp()` was given
+is the returned instance's `fastify.serverUrl`, for a test that calls a
+server-internal function taking `serverUrl`. The host is `localhost` because
+`@interop/webkms-client` relaxes its loopback checks for that host alone.
 
 ZCap `invocationTarget` URLs embed host and port. The port is not known until
 the server listens, so build every client from the returned values, after the
@@ -363,8 +364,8 @@ plugin option failed the registration. A repeat call is a no-op.
 A test that stops a server and boots a replacement over the same data needs a
 dir that outlives the first server. It opens a plain `FileSystemBackend` over
 its own dir through the async `open()` factory, and pins the replacement to the
-first server's `port`. Ids the first server minted embed its `serverUrl`, so
-they resolve only on the same port. The test removes its dir when it is done.
+first server's `port`. Ids the first server minted embed its URL, so they
+resolve only on the same port. The test removes its dir when it is done.
 
 ```ts
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -378,7 +379,7 @@ const dataDir = await mkdtemp(path.join(tmpdir(), 'my-suite-'))
 const first = await startTestServer({
   backend: await FileSystemBackend.open({ dataDir })
 })
-// ... write through clients built from first.serverUrl ...
+// ... write through clients built from first.baseServerUrl ...
 await first.fastify.close()
 
 const second = await startTestServer({
@@ -406,13 +407,13 @@ const ownerKey = await Ed25519VerificationKey.generate()
 const owner = {
   did: `did:key:${ownerKey.fingerprint()}`,
   was: WasClient.fromSigner({
-    baseServerUrl: serverUrl,
+    baseServerUrl,
     signer: ownerKey.didKeySigner()
   })
 }
 const account = await provisionWebvhIdentity({
   owner,
-  serverUrl,
+  baseServerUrl,
   withLadderKey: true
 })
 // account.did resolves on this server. account.clientKeyPair and
@@ -486,7 +487,7 @@ each retried write is applied again.
 nothing left to lose by the time the connection closes.
 
 ```ts
-const { fastify, serverUrl, faults } = await startTestServer({
+const { fastify, baseServerUrl, faults } = await startTestServer({
   backend: await openTempBackend()
 })
 // ... build clients, provision a Space and a `notes` Collection ...

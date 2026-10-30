@@ -21,7 +21,10 @@ import {
 import { compareStamps } from '../src/lib/hlc.js'
 
 describe('Collection tombstones (HTTP)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, aliceSpace: Space
+  let fastify: FastifyInstance,
+    baseServerUrl: string,
+    alice: any,
+    aliceSpace: Space
   let spaceId: string
 
   /**
@@ -41,7 +44,7 @@ describe('Collection tombstones (HTTP)', () => {
   }): Promise<{ status: number; data: any; headers: Headers }> {
     try {
       const response = await alice.was.request({
-        url: new URL(url, serverUrl).toString(),
+        url: new URL(url, baseServerUrl).toString(),
         method,
         ...(json !== undefined && { json }),
         ...(headers !== undefined && { headers })
@@ -78,10 +81,10 @@ describe('Collection tombstones (HTTP)', () => {
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     spaceId = alice.space1.id
     aliceSpace = await alice.was.createSpace({
       id: spaceId,
@@ -231,7 +234,7 @@ describe('Collection tombstones (HTTP)', () => {
     await space.setPublic()
 
     const anonymous = await fetch(
-      new URL(`/space/${publicSpaceId}/?include=deleted`, serverUrl)
+      new URL(`/space/${publicSpaceId}/?include=deleted`, baseServerUrl)
     )
     assert.equal(anonymous.status, 200)
     const body = (await anonymous.json()) as any

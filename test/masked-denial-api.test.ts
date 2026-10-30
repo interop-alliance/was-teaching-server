@@ -30,7 +30,7 @@ interface Probe {
 
 describe('Masked denials are indistinguishable', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     alice: any,
     keystoreId: string
   const spaceId = `masked-space-${crypto.randomUUID()}`
@@ -42,31 +42,31 @@ describe('Masked denials are indistinguishable', () => {
   let rogueSigner: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
 
     const rogueKeyPair = await Ed25519VerificationKey.generate()
     rogueSigner = rogueKeyPair.didKeySigner()
 
     await alice.was.request({
-      url: `${serverUrl}/spaces/`,
+      url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Masked Denial Space', controller: alice.did }
     })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Credentials' }
     })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/${collectionId}/`,
+      url: `${baseServerUrl}space/${spaceId}/${collectionId}/`,
       method: 'POST',
       json: { id: resourceId, name: 'A document' }
     })
     const keystore = await KmsClient.createKeystore({
-      url: `${serverUrl}/kms/keystores`,
+      url: `${baseServerUrl}kms/keystores`,
       config: { sequence: 0, controller: alice.did },
       invocationSigner: alice.signer
     })
@@ -191,28 +191,28 @@ describe('Masked denials are indistinguishable', () => {
     const targets = () => [
       {
         what: 'Space',
-        absent: `${serverUrl}/space/no-such-space-${crypto.randomUUID()}/`,
-        existing: `${serverUrl}/space/${spaceId}/`
+        absent: `${baseServerUrl}space/no-such-space-${crypto.randomUUID()}/`,
+        existing: `${baseServerUrl}space/${spaceId}/`
       },
       {
         what: 'Space Metadata',
-        absent: `${serverUrl}/space/no-such-space-${crypto.randomUUID()}/meta`,
-        existing: `${serverUrl}/space/${spaceId}/meta`
+        absent: `${baseServerUrl}space/no-such-space-${crypto.randomUUID()}/meta`,
+        existing: `${baseServerUrl}space/${spaceId}/meta`
       },
       {
         what: 'Collection',
-        absent: `${serverUrl}/space/${spaceId}/no-such-collection/`,
-        existing: `${serverUrl}/space/${spaceId}/${collectionId}/`
+        absent: `${baseServerUrl}space/${spaceId}/no-such-collection/`,
+        existing: `${baseServerUrl}space/${spaceId}/${collectionId}/`
       },
       {
         what: 'Resource',
-        absent: `${serverUrl}/space/${spaceId}/${collectionId}/no-such-doc`,
-        existing: `${serverUrl}/space/${spaceId}/${collectionId}/${resourceId}`
+        absent: `${baseServerUrl}space/${spaceId}/${collectionId}/no-such-doc`,
+        existing: `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`
       },
       {
         what: 'Keystore',
-        absent: `${serverUrl}/kms/keystores/nosuchkeystore`,
-        existing: `${serverUrl}/kms/keystores/${keystoreId}`
+        absent: `${baseServerUrl}kms/keystores/nosuchkeystore`,
+        existing: `${baseServerUrl}kms/keystores/${keystoreId}`
       }
     ]
 
@@ -239,7 +239,7 @@ describe('Masked denials are indistinguishable', () => {
 
     it('the masked 404 body names no entity', async () => {
       const probe = await unverifiable({
-        url: `${serverUrl}/space/${spaceId}/${collectionId}/${resourceId}`
+        url: `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`
       })
       assert.equal(probe.status, 404)
       assert.equal(probe.contentType, 'application/problem+json; charset=utf-8')
@@ -261,12 +261,12 @@ describe('Masked denials are indistinguishable', () => {
       const suffix = `zcaps/revocations/${encodeURIComponent(revocationId)}`
       assertIndistinguishable({
         absent: await unverifiable({
-          url: `${serverUrl}/space/no-such-space-${crypto.randomUUID()}/${suffix}`,
+          url: `${baseServerUrl}space/no-such-space-${crypto.randomUUID()}/${suffix}`,
           method: 'POST',
           json: { not: 'a capability' }
         }),
         denied: await unverifiable({
-          url: `${serverUrl}/space/${spaceId}/${suffix}`,
+          url: `${baseServerUrl}space/${spaceId}/${suffix}`,
           method: 'POST',
           json: { not: 'a capability' }
         }),
@@ -281,7 +281,7 @@ describe('Masked denials are indistinguishable', () => {
       // at the existing id would be an existence oracle for any caller.
       const bobKeyPair = await Ed25519VerificationKey.generate()
       const bobDid = `did:key:${bobKeyPair.fingerprint()}`
-      const url = `${serverUrl}/spaces/`
+      const url = `${baseServerUrl}spaces/`
       const existing = await unverifiable({
         url,
         method: 'POST',
@@ -304,7 +304,7 @@ describe('Masked denials are indistinguishable', () => {
     it('an authorized Create Space at an existing id is still a 409', async () => {
       const response = await alice.was
         .request({
-          url: `${serverUrl}/spaces/`,
+          url: `${baseServerUrl}spaces/`,
           method: 'POST',
           json: { id: spaceId, controller: alice.did }
         })
@@ -319,16 +319,16 @@ describe('Masked denials are indistinguishable', () => {
       // at the Collection it names, so the controller document does not
       // resolve. The keyId is entirely the caller's to choose, so this must
       // not be told apart from any other failed authorization.
-      const host = new URL(serverUrl).host.replace(':', '%3A')
+      const host = new URL(baseServerUrl).host.replace(':', '%3A')
       const keyPair = await Ed25519VerificationKey.generate()
       const did = `did:webvh:QmUnresolvableScid1111111111111:${host}:space:${spaceId}:${collectionId}`
       keyPair.id = `${did}#${keyPair.publicKeyMultibase}`
       keyPair.controller = did
 
-      const url = `${serverUrl}/space/${spaceId}/${collectionId}/${resourceId}`
+      const url = `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`
       assertIndistinguishable({
         absent: await unverifiable({
-          url: `${serverUrl}/space/${spaceId}/${collectionId}/no-such-doc`
+          url: `${baseServerUrl}space/${spaceId}/${collectionId}/no-such-doc`
         }),
         denied: await unverifiable({ url, signer: keyPair.signer() }),
         what: 'unresolvable did:webvh keyId',

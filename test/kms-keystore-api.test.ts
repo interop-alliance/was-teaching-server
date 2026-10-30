@@ -23,18 +23,18 @@ import {
 
 describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     keystoresUrl: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    keystoresUrl = `${serverUrl}/kms/keystores`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
+    keystoresUrl = `${baseServerUrl}kms/keystores`
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()

@@ -1,7 +1,7 @@
 /**
  * The `fastifyWas` composition options: `ownsBackend` (whether the plugin
  * wires the backend's logger and `close()`), `cors` (skip or
- * customize the `@fastify/cors` registration), and a `serverUrl` carrying a
+ * customize the `@fastify/cors` registration), and a `baseServerUrl` carrying a
  * trailing slash, which must not double the slash in the URLs the server
  * builds.
  */
@@ -335,18 +335,18 @@ describe('cors option', () => {
   })
 })
 
-describe('serverUrl with a trailing slash', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+describe('baseServerUrl with a trailing slash', () => {
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await FileSystemBackend.open({
         dataDir: path.join(dataDir, 'slash')
       })
     }))
     // The decorated base URL carries the trailing slash the validator admits.
-    fastify.serverUrl = `${serverUrl}/`
-    ;({ alice } = await zcapClients({ serverUrl }))
+    fastify.serverUrl = `${baseServerUrl}`
+    ;({ alice } = await zcapClients({ baseServerUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -361,11 +361,11 @@ describe('serverUrl with a trailing slash', () => {
       controller: alice.did
     })
     await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/`,
+      url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: collectionId }
     })
-    const metaUrl = `${serverUrl}/space/${spaceId}/${collectionId}/meta`
+    const metaUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/meta`
     const genesis = JSON.stringify({
       versionId: '1-hash1',
       versionTime: '2026-10-01T00:00:00Z',
@@ -400,15 +400,18 @@ describe('serverUrl with a trailing slash', () => {
   })
 
   it('builds the exchange URL without a doubled slash', async () => {
-    const response = await fetch(`${serverUrl}/workflows/ephemeral/exchanges`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ request: { type: 'Test' } })
-    })
+    const response = await fetch(
+      `${baseServerUrl}workflows/ephemeral/exchanges`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ request: { type: 'Test' } })
+      }
+    )
     expect(response.status).toBe(201)
     const { location } = (await response.json()) as { location: string }
     expect(location).toMatch(
-      new RegExp(`^${serverUrl}/workflows/ephemeral/exchanges/[0-9a-f-]+$`)
+      new RegExp(`^${baseServerUrl}workflows/ephemeral/exchanges/[0-9a-f-]+$`)
     )
     expect(response.headers.get('location')).toBe(location)
   })

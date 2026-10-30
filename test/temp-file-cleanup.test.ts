@@ -53,7 +53,7 @@ async function waitFor(
 
 describe('Staging temp-file cleanup (filesystem backend)', () => {
   let fastify: FastifyInstance,
-    serverUrl: string,
+    baseServerUrl: string,
     dataDir: string,
     alice: any,
     collectionDir: string
@@ -77,10 +77,10 @@ describe('Staging temp-file cleanup (filesystem backend)', () => {
     }
     // One another process sharing the data directory is still writing.
     await writeFile(path.join(dataDir, 'keystores', '.tmp-live'), 'partial')
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await FileSystemBackend.open({ dataDir })
     }))
-    ;({ alice } = await zcapClients({ serverUrl }))
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     const space = await alice.was.createSpace({
       id: alice.space1.id,
       controller: alice.did
@@ -101,7 +101,7 @@ describe('Staging temp-file cleanup (filesystem backend)', () => {
   })
 
   it('a streamed upload whose client disconnects mid-body leaves no temp file', async () => {
-    const url = `${serverUrl}/space/${alice.space1.id}/uploads/abandoned`
+    const url = `${baseServerUrl}space/${alice.space1.id}/uploads/abandoned`
     const body = Buffer.alloc(1024 * 1024, 7)
     const headers = await signCapabilityInvocation({
       url,

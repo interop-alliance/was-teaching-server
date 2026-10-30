@@ -26,7 +26,7 @@ import {
 
 describe('Provisioning gate', () => {
   let alice: any
-  let serverUrl: string
+  let baseServerUrl: string
   const TOKEN = 'super-secret-onboarding-token'
 
   // Per-test teardown: each `boot()` registers its server + temp dir here.
@@ -40,7 +40,7 @@ describe('Provisioning gate', () => {
 
   /**
    * Boots a server on an OS-assigned ephemeral port with the given provisioning
-   * config over a fresh temp dir, sets the suite `serverUrl` and rebuilds Alice's
+   * config over a fresh temp dir, sets the suite `baseServerUrl` and rebuilds Alice's
    * client to match, and registers its teardown for `afterEach`.
    * @param options {object}
    * @param [options.onboardingToken] {string}
@@ -61,8 +61,8 @@ describe('Provisioning gate', () => {
       ...(authorizeProvisioning !== undefined && { authorizeProvisioning })
     })
     const { fastify } = started
-    serverUrl = started.serverUrl
-    ;({ alice } = await zcapClients({ serverUrl }))
+    baseServerUrl = started.baseServerUrl
+    ;({ alice } = await zcapClients({ baseServerUrl }))
     cleanups.push(async () => {
       await fastify.close()
     })
@@ -91,7 +91,7 @@ describe('Provisioning gate', () => {
     token: string
     body: object
   }): Promise<Response> {
-    return fetch(new URL(`/space/${spaceId}/meta`, serverUrl), {
+    return fetch(new URL(`/space/${spaceId}/meta`, baseServerUrl), {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -105,7 +105,7 @@ describe('Provisioning gate', () => {
     it('POST /spaces/ with a correct Bearer token creates the space (201)', async () => {
       const { backend } = await boot({ onboardingToken: TOKEN })
       const spaceId = `token-space-${crypto.randomUUID()}`
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${TOKEN}`,
@@ -116,7 +116,7 @@ describe('Provisioning gate', () => {
       assert.equal(response.status, 201)
       assert.equal(
         response.headers.get('location'),
-        `${serverUrl}/space/${spaceId}/`
+        `${baseServerUrl}space/${spaceId}/`
       )
       // The space landed in storage with the body's controller.
       const stored = await backend.getSpaceMetadata({ spaceId })
@@ -126,7 +126,7 @@ describe('Provisioning gate', () => {
       // returns the Space Metadata object (200), proving the token gate does not
       // disturb the zcap path for subsequent operations.
       const signed = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'GET'
       })
       assert.equal(signed.status, 200)
@@ -135,7 +135,7 @@ describe('Provisioning gate', () => {
     it('POST /spaces/ with a Bearer token stores and echoes no client-supplied createdBy or unknown member', async () => {
       await boot({ onboardingToken: TOKEN })
       const spaceId = `token-strip-${crypto.randomUUID()}`
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${TOKEN}`,
@@ -154,7 +154,7 @@ describe('Provisioning gate', () => {
       assert.equal(echoed.name, 'Provisioned Space')
 
       const read = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'GET'
       })
       assert.equal(read.status, 200)
@@ -165,7 +165,7 @@ describe('Provisioning gate', () => {
 
     it('POST /spaces/ with no Authorization header returns 401', async () => {
       await boot({ onboardingToken: TOKEN })
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(createSpaceBody('no-auth'))
@@ -179,7 +179,7 @@ describe('Provisioning gate', () => {
 
     it('POST /spaces/ with a wrong Bearer token returns 403', async () => {
       await boot({ onboardingToken: TOKEN })
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: {
           Authorization: 'Bearer not-the-token',
@@ -208,7 +208,7 @@ describe('Provisioning gate', () => {
 
     it('POST /kms/keystores with a correct Bearer token creates the keystore (201)', async () => {
       await boot({ onboardingToken: TOKEN })
-      const response = await fetch(new URL('/kms/keystores', serverUrl), {
+      const response = await fetch(new URL('/kms/keystores', baseServerUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${TOKEN}`,
@@ -222,7 +222,7 @@ describe('Provisioning gate', () => {
 
     it('POST /kms/keystores with no token returns 401', async () => {
       await boot({ onboardingToken: TOKEN })
-      const response = await fetch(new URL('/kms/keystores', serverUrl), {
+      const response = await fetch(new URL('/kms/keystores', baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ controller: alice.did, sequence: 0 })
@@ -232,7 +232,7 @@ describe('Provisioning gate', () => {
 
     it('POST /spaces (no trailing slash) with a correct Bearer token gets the canonical 308 redirect', async () => {
       await boot({ onboardingToken: TOKEN })
-      const response = await fetch(new URL('/spaces', serverUrl), {
+      const response = await fetch(new URL('/spaces', baseServerUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${TOKEN}`,
@@ -256,7 +256,7 @@ describe('Provisioning gate', () => {
       assert.equal(response.status, 201)
       assert.equal(
         response.headers.get('location'),
-        `${serverUrl}/space/${spaceId}/`
+        `${baseServerUrl}space/${spaceId}/`
       )
       const stored = await backend.getSpaceMetadata({ spaceId })
       assert.equal(stored?.controller, alice.did)
@@ -270,7 +270,7 @@ describe('Provisioning gate', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${spaceId}/meta`,
+          url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
         })
@@ -297,7 +297,7 @@ describe('Provisioning gate', () => {
     it('an update of an existing Space by PUT is not gated (204)', async () => {
       await boot({ onboardingToken: TOKEN })
       const spaceId = `token-update-${crypto.randomUUID()}`
-      const created = await fetch(new URL('/spaces/', serverUrl), {
+      const created = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${TOKEN}`,
@@ -307,7 +307,7 @@ describe('Provisioning gate', () => {
       })
       assert.equal(created.status, 201)
       const updated = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/meta`,
+        url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { ...createSpaceBody(spaceId), name: 'Renamed' }
       })
@@ -335,7 +335,7 @@ describe('Provisioning gate', () => {
 
     it('non-provisioning routes are unaffected: anonymous GET /spaces/ is 200', async () => {
       await boot({ onboardingToken: TOKEN })
-      const response = await fetch(new URL('/spaces/', serverUrl))
+      const response = await fetch(new URL('/spaces/', baseServerUrl))
       assert.equal(response.status, 200)
     })
   })
@@ -343,7 +343,7 @@ describe('Provisioning gate', () => {
   describe('custom authorizeProvisioning', () => {
     it("a 'deny' decision returns 403 on POST /spaces/", async () => {
       await boot({ authorizeProvisioning: async () => 'deny' as const })
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(createSpaceBody('denied'))
@@ -360,7 +360,7 @@ describe('Provisioning gate', () => {
         authorizeProvisioning: async () => 'grant' as const
       })
       const spaceId = `granted-${crypto.randomUUID()}`
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(createSpaceBody(spaceId))
@@ -378,7 +378,7 @@ describe('Provisioning gate', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${spaceId}/meta`,
+          url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
         })
@@ -396,7 +396,7 @@ describe('Provisioning gate', () => {
           'allow') as unknown as AuthorizeProvisioning
       })
       const spaceId = `unknown-${crypto.randomUUID()}`
-      const response = await fetch(new URL('/spaces/', serverUrl), {
+      const response = await fetch(new URL('/spaces/', baseServerUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(createSpaceBody(spaceId))
@@ -424,7 +424,7 @@ describe('Provisioning gate', () => {
         }
       })
       const response = await fetch(
-        new URL(`/space/${spaceId}/meta`, serverUrl),
+        new URL(`/space/${spaceId}/meta`, baseServerUrl),
         {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
@@ -464,7 +464,7 @@ describe('Provisioning gate', () => {
       let thrown: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${spaceId}/meta`,
+          url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
         })
@@ -517,7 +517,10 @@ describe('Provisioning gate', () => {
           }
           return found
         }
-        const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+        const metaUrl = new URL(
+          `/space/${spaceId}/meta`,
+          baseServerUrl
+        ).toString()
         // The signature is never verified. The digest hook still needs the
         // `digest` header covered and a `Digest` that matches the body.
         const body = JSON.stringify(createSpaceBody(spaceId))
@@ -594,7 +597,7 @@ describe('Provisioning gate', () => {
     await boot()
     const spaceId = `default-put-${crypto.randomUUID()}`
     const response = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/meta`,
+      url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'PUT',
       json: createSpaceBody(spaceId)
     })

@@ -66,13 +66,13 @@ const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 describe('container rule (unsafe methods at a container URL)', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+  let fastify: FastifyInstance, baseServerUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer({
+    ;({ fastify, baseServerUrl } = await startTestServer({
       backend: await openTempBackend()
     }))
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    ;({ alice, bob } = await zcapClients({ baseServerUrl }))
   })
 
   afterAll(async () => {
@@ -100,7 +100,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
   }: { collectionId?: string } = {}): Promise<TestSpace> {
     const spaceId = `container-${randomUUID()}`
     const created = await alice.was.request({
-      url: `${serverUrl}/spaces/`,
+      url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Container Space', controller: alice.did }
     })
@@ -108,7 +108,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
     const space = alice.was.space(spaceId)
     await space.collection(collectionId).configure({ force: true })
     await space.collection(collectionId).put('doc-1', { hello: 'world' })
-    const spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    const spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
     return {
       spaceId,
       spaceUrl,
@@ -133,7 +133,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
     controller: string
   }): Promise<void> {
     const read = await alice.was.request({
-      url: `${serverUrl}/space/${space.spaceId}/meta`,
+      url: `${baseServerUrl}space/${space.spaceId}/meta`,
       method: 'GET'
     })
     assert.equal(read.status, 200)
@@ -156,7 +156,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
     collectionId: string
   }): Promise<any> {
     const read = await alice.was.request({
-      url: `${serverUrl}/space/${space.spaceId}/${collectionId}/meta`,
+      url: `${baseServerUrl}space/${space.spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     assert.equal(read.status, 200)
@@ -226,7 +226,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(response.status, 204)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/notes/meta`,
+          url: `${baseServerUrl}space/${space.spaceId}/notes/meta`,
           method: 'GET'
         })
       )
@@ -247,7 +247,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(response.status, 204)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/meta`,
+          url: `${baseServerUrl}space/${space.spaceId}/meta`,
           method: 'GET'
         })
       )
@@ -368,7 +368,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(response.status, 204)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/meta`,
+          url: `${baseServerUrl}space/${space.spaceId}/meta`,
           method: 'GET'
         })
       )
@@ -429,7 +429,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
-        invocationTarget: new URL('/space/', serverUrl).toString(),
+        invocationTarget: new URL('/space/', baseServerUrl).toString(),
         controller: bob.did,
         allowedActions: ['DELETE']
       })
@@ -615,7 +615,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(meta.encryption, undefined)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/notes/meta/log`,
+          url: `${baseServerUrl}space/${space.spaceId}/notes/meta/log`,
           method: 'GET'
         })
       )
@@ -685,12 +685,12 @@ describe('container rule (unsafe methods at a container URL)', () => {
     beforeAll(async () => {
       clientAnnex = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withTransientKey: true
       })
       account = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         services: [
           {
             id: '#delegated-clients',
@@ -711,7 +711,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
             .collection('credentials')
             .configure({ force: true })
           const promoted = await alice.was.request({
-            url: `${serverUrl}/space/${account.spaceId}/meta`,
+            url: `${baseServerUrl}space/${account.spaceId}/meta`,
             method: 'PUT',
             json: {
               id: account.spaceId,
@@ -723,7 +723,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
         })(),
         (async () => {
           const createdAux = await alice.was.request({
-            url: new URL('/spaces/', serverUrl).toString(),
+            url: new URL('/spaces/', baseServerUrl).toString(),
             method: 'POST',
             json: {
               id: auxSpaceId,
@@ -734,7 +734,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
           })
           assert.equal(createdAux.status, 201)
           const auxPromoted = await alice.was.request({
-            url: `${serverUrl}/space/${auxSpaceId}/meta`,
+            url: `${baseServerUrl}space/${auxSpaceId}/meta`,
             method: 'PUT',
             json: {
               id: auxSpaceId,
@@ -745,7 +745,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
           assert.equal(auxPromoted.status, 204)
         })()
       ])
-      const auxUrl = new URL(`/space/${auxSpaceId}/`, serverUrl).toString()
+      const auxUrl = new URL(`/space/${auxSpaceId}/`, baseServerUrl).toString()
       auxSpace = {
         spaceId: auxSpaceId,
         spaceUrl: auxUrl,
@@ -992,7 +992,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // the pointer's absence changes nothing.
       const retired = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withTransientKey: true
       })
       const parent = await delegate({
@@ -1064,7 +1064,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // decides alone and the per-visit invoker deletes the Space.
       const space = await provisionSpace()
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${space.spaceId}/meta`,
+        url: `${baseServerUrl}space/${space.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: space.spaceId,
@@ -1091,7 +1091,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(response.status, 204)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/meta`,
+          url: `${baseServerUrl}space/${space.spaceId}/meta`,
           method: 'GET'
         })
       )
@@ -1112,7 +1112,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
     beforeAll(async () => {
       ladderAccount = await provisionWebvhIdentity({
         owner: alice,
-        serverUrl,
+        baseServerUrl,
         withLadderKey: true
       })
     })
@@ -1149,7 +1149,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(response.status, 204)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/meta`,
+          url: `${baseServerUrl}space/${space.spaceId}/meta`,
           method: 'GET'
         })
       )
@@ -1162,7 +1162,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // the same canonical Space URL.
       const space = await provisionSpace()
       const promoted = await alice.was.request({
-        url: `${serverUrl}/space/${space.spaceId}/meta`,
+        url: `${baseServerUrl}space/${space.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: space.spaceId,
@@ -1188,7 +1188,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       assert.equal(response.status, 204)
       const err = await requestError(
         alice.was.request({
-          url: `${serverUrl}/space/${space.spaceId}/meta`,
+          url: `${baseServerUrl}space/${space.spaceId}/meta`,
           method: 'GET'
         })
       )
