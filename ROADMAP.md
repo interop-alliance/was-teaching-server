@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 242
+nextAvailableId: 243
 
 <!-- roadmap-order:index:start -->
 
@@ -27,6 +27,8 @@ Ready:
   write
 - WAS-220 [M] (*) A Resource write repairs a Collection copy the data backend
   lost
+- WAS-242 [M] (fs) A refused layout step strands the store between releases, and
+  the deploy has no rollback
 - WAS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
   both on each backend
 - WAS-83 [L] (*) Anonymous Get Policy with a malformed id now returns 401
@@ -494,6 +496,44 @@ plane's Metadata object and writes into a backend holding no copy. The container
 re-check there answers 404 for a Collection that exists, and retrying the
 Resource write never repairs it; only a Collection Metadata write does. The two
 writers of one state recover differently after the same torn write.
+
+### WAS-242: [M] (fs) A refused layout step strands the store between releases, and the deploy has no rollback
+
+- status: todo
+- priority: medium
+- backend: fs
+- labels: server, storage, deploy, ops
+- discovered-from: the v0.43.0 production deploy failure (2026-10-30)
+- acceptance:
+  - [ ] The migration runner evaluates every refusing step (one that only
+        inspects and throws) before any converting step writes, so a refused
+        boot leaves `store.json` and the data dir as the previous release wrote
+        them
+  - [ ] A test boots a store the previous layout wrote through a migration list
+        whose converting step precedes a refusing step, and asserts the refusal
+        leaves the store bootable by the previous migration list
+  - [ ] The Deploy workflow takes a volume snapshot before `flyctl deploy`
+        (`flyctl volumes snapshots create`), so a failed deploy has a restore
+        point of its own
+  - [ ] docs/deployment-fly.io.md gains a "Rolling back" section: dispatch the
+        workflow on the previous tag, when that works, and restore the snapshot
+        into a new volume when it does not
+
+The v0.43.0 release deploy failed its health check. The boot ran layout steps 6,
+7 and 8 (step 8 moves each Space's revocation records into its Space dir),
+stamped `store.json` at 8 after each, and step 9 refused the Metadata files
+under their old names. Dispatching the Deploy workflow on the v0.42.3 tag then
+failed the same way: that release knows layouts up to 5 and refuses a
+`store.json` stamped newer. Neither release booted, and the only machine was
+left on a non-booting image, since Fly's rolling update replaces it in place
+with no automatic rollback. The only way out was a wipe.
+
+Two defects. The runner stamps converting steps before a later refusing step has
+had its say, so a refusal that is meant to be harmless (boot again after fixing
+the store) instead leaves the store readable by no release. And the deploy has
+no safety net: no snapshot before the roll, no documented rollback, and a
+dispatch on an older tag is only a rollback while the store is still at that
+tag's layout.
 
 ### WAS-181: [L] (*) Pin that a sidecar imported without timestamps is served with both on each backend
 
