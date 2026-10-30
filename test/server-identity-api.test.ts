@@ -32,7 +32,7 @@ import {
   openTempBackend,
   requestError,
   startTestServer,
-  wasClient,
+  pwsClient,
   zcapClients,
   webvhLogSigner
 } from './helpers.js'
@@ -54,7 +54,7 @@ async function adminIdentity({
     did: `did:key:${keyPair.publicKeyMultibase}`,
     keyPair,
     logSigner,
-    was: wasClient({ signer, baseServerUrl })
+    pws: pwsClient({ signer, baseServerUrl })
   }
 }
 
@@ -83,7 +83,7 @@ describe('Server identity', () => {
   }
 
   async function publishLog(jsonl: string): Promise<Response> {
-    return admin.was.request({
+    return admin.pws.request({
       url: `${baseServerUrl}space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
@@ -114,7 +114,7 @@ describe('Server identity', () => {
 
   describe('the `server` Space', () => {
     it('is provisioned at boot under the admin DID with the server subtype', async () => {
-      const metadata = await admin.was.space('server').describe()
+      const metadata = await admin.pws.space('server').describe()
       assert.ok(metadata)
       assert.equal(metadata.controller, admin.did)
       assert.deepStrictEqual([...metadata.type].sort(), [
@@ -125,7 +125,7 @@ describe('Server identity', () => {
     })
 
     it('is listed for the admin by List Spaces, with its type', async () => {
-      const listing = await admin.was.listSpaces()
+      const listing = await admin.pws.listSpaces()
       assert.deepStrictEqual(listing.items, [
         {
           id: 'server',
@@ -138,7 +138,7 @@ describe('Server identity', () => {
 
     it('is reserved: Create Space naming the id is `reserved-id`', async () => {
       const err = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}spaces/`,
           method: 'POST',
           json: { id: 'server', controller: alice.did }
@@ -151,7 +151,7 @@ describe('Server identity', () => {
 
     it('cannot be rewritten by another client (the existing Space masks as 404)', async () => {
       const err = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/server/meta`,
           method: 'PUT',
           json: { controller: alice.did }
@@ -163,7 +163,7 @@ describe('Server identity', () => {
     it('refuses the ServerInstanceSpace subtype on a client create', async () => {
       for (const create of [
         () =>
-          alice.was.request({
+          alice.pws.request({
             url: `${baseServerUrl}spaces/`,
             method: 'POST',
             json: {
@@ -173,7 +173,7 @@ describe('Server identity', () => {
             }
           }),
         () =>
-          alice.was.request({
+          alice.pws.request({
             url: `${baseServerUrl}space/${randomUUID()}/meta`,
             method: 'PUT',
             json: {
@@ -191,7 +191,7 @@ describe('Server identity', () => {
     })
 
     it('the admin can still update it, restating its stored type', async () => {
-      const response = await admin.was.request({
+      const response = await admin.pws.request({
         url: `${baseServerUrl}space/server/meta`,
         method: 'PUT',
         json: {
@@ -201,7 +201,7 @@ describe('Server identity', () => {
         }
       })
       assert.equal(response.status, 204)
-      const metadata = await admin.was.space('server').describe()
+      const metadata = await admin.pws.space('server').describe()
       assert.ok(metadata)
       assert.equal(metadata.name, 'Server identity')
     })
@@ -226,7 +226,7 @@ describe('Server identity', () => {
 
     beforeAll(async () => {
       ;({ etag: etagBefore } = await serviceEntry())
-      await admin.was
+      await admin.pws
         .space('server')
         .collection('id')
         .configure({ force: true })
@@ -486,14 +486,14 @@ describe('Server identity without a seed', () => {
   it('does not provision the `server` Space, and still reserves the id', async () => {
     const { alice } = await zcapClients({ baseServerUrl })
     const read = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/server/meta`,
         method: 'GET'
       })
     )
     assert.equal(read.status, 404)
     const create = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/server/meta`,
         method: 'PUT',
         json: { controller: alice.did }

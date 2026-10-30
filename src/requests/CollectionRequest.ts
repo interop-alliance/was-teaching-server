@@ -49,6 +49,7 @@ import {
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { restampFeedFromControlPlane } from '../lib/backendMirror.js'
 import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
+import { assertDeleteKeepsControllers } from '../lib/webvhLogLocation.js'
 import { invalidateCollectionPolicies } from '../lib/policyCache.js'
 import {
   getCachedGovernedDescriptors,
@@ -1309,7 +1310,9 @@ export class CollectionRequest {
   /**
    * DELETE /space/:spaceId/:collectionId/
    * Request handler for "Delete Collection" request (the Collection container
-   * URL, in its canonical trailing-slash form)
+   * URL, in its canonical trailing-slash form). Refused with `replica-refused`
+   * (409) while it holds the only copy of a log a Space's `did:webvh`
+   * controller resolves from.
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
@@ -1328,7 +1331,7 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { storage } = request.server
+    const { storage, serverUrl } = request.server
     const requestName = 'Delete Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -1348,6 +1351,13 @@ export class CollectionRequest {
       }),
       requestName,
       containerRule: 'controller-only'
+    })
+
+    await assertDeleteKeepsControllers({
+      storage,
+      serverUrl,
+      spaceId,
+      collectionId
     })
 
     // Delete Collection leaves a tombstone. A delete of an already deleted

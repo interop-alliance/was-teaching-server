@@ -63,7 +63,7 @@ describe('Space Description type', () => {
     identity: any
     body: object
   }): Promise<any> {
-    return identity.was.request({
+    return identity.pws.request({
       url: new URL('/spaces/', baseServerUrl).toString(),
       method: 'POST',
       json: body
@@ -90,7 +90,7 @@ describe('Space Description type', () => {
     spaceId: string
     body: object
   }): Promise<any> {
-    return identity.was.request({
+    return identity.pws.request({
       url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
       method: 'PUT',
       json: body
@@ -113,7 +113,7 @@ describe('Space Description type', () => {
       assert.deepStrictEqual(response.data.type, AUXILIARY_TYPE)
 
       // Get Space serves `type` lexically sorted (spec SHOULD).
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, [
         'AuxiliarySpace',
         'DelegatedClientsSpace',
@@ -130,7 +130,7 @@ describe('Space Description type', () => {
       assert.equal(response.status, 201)
       assert.deepStrictEqual(response.data.type, ['Space'])
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, ['Space'])
     })
 
@@ -162,7 +162,7 @@ describe('Space Description type', () => {
         assert.equal(err.data.errors[0].pointer, '#/type')
 
         // Nothing was stored.
-        assert.equal(await alice.was.space(spaceId).describe(), null)
+        assert.equal(await alice.pws.space(spaceId).describe(), null)
       })
     }
   })
@@ -182,7 +182,7 @@ describe('Space Description type', () => {
       })
       assert.equal(response.status, 201)
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, [
         'AuxiliarySpace',
         'DelegatedClientsSpace',
@@ -199,7 +199,7 @@ describe('Space Description type', () => {
       })
       assert.equal(response.status, 201)
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, ['Space'])
     })
 
@@ -214,7 +214,7 @@ describe('Space Description type', () => {
       )
       assert.equal(statusOf(err), 400)
       assert.equal(err.data.errors[0].pointer, '#/type')
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
   })
 
@@ -252,7 +252,7 @@ describe('Space Description type', () => {
       assert.equal(err.data.errors[0].pointer, '#/type')
 
       // Neither the type nor the rest of the description changed.
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, [
         'AuxiliarySpace',
         'DelegatedClientsSpace',
@@ -290,7 +290,7 @@ describe('Space Description type', () => {
       })
       assert.equal(response.status, 204)
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, [
         'AuxiliarySpace',
         'DelegatedClientsSpace',
@@ -307,7 +307,7 @@ describe('Space Description type', () => {
       })
       assert.equal(response.status, 204)
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.deepStrictEqual(description.type, [
         'AuxiliarySpace',
         'DelegatedClientsSpace',
@@ -358,7 +358,7 @@ describe('Space Description type', () => {
     })
 
     it('lists both Spaces, each with its type, and counts both', async () => {
-      const listing = await bob.was.listSpaces()
+      const listing = await bob.pws.listSpaces()
       const expected = [
         {
           id: ordinarySpaceId,
@@ -379,15 +379,15 @@ describe('Space Description type', () => {
     })
 
     it("each item's type matches the stored Space Metadata object", async () => {
-      const listing = await bob.was.listSpaces()
+      const listing = await bob.pws.listSpaces()
       for (const item of listing.items) {
-        const metadata = await bob.was.space(item.id).describe()
+        const metadata = await bob.pws.space(item.id).describe()
         assert.deepStrictEqual(item.type, metadata.type)
       }
     })
 
     it('the auxiliary Space is still directly readable by its controller', async () => {
-      const description = await bob.was.space(auxiliarySpaceId).describe()
+      const description = await bob.pws.space(auxiliarySpaceId).describe()
       assert.equal(description.id, auxiliarySpaceId)
       assert.equal(description.controller, bob.did)
       assert.deepStrictEqual(description.type, [

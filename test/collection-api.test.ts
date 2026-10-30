@@ -5,8 +5,8 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import { NotFoundError } from '@interop/was-client'
-import type { Space } from '@interop/was-client'
+import { NotFoundError } from '@interop/pws-client'
+import type { Space } from '@interop/pws-client'
 import type { CollectionMetadata } from '@interop/storage-core'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
@@ -37,7 +37,7 @@ describe('Collections API', () => {
     // Provision the Space this suite operates on. This suite uses its own
     // temp dataDir, so it must create the Space here rather than relying on
     // filesystem state left behind by other test files.
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -65,7 +65,7 @@ describe('Collections API', () => {
     // Adding a collection to a missing space is a write -- PWS does not
     // auto-create parents, so it surfaces as NotFoundError (server 404).
     await assert.rejects(
-      alice.was
+      alice.pws
         .space('space-id-that-does-not-exist')
         .createCollection({ name: 'Test Collection' }),
       (err: unknown) => err instanceof NotFoundError
@@ -74,7 +74,7 @@ describe('Collections API', () => {
 
   it('POST responses carry Cache-Control: no-store (non-idempotent, non-cacheable)', async () => {
     const collectionId = crypto.randomUUID()
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${alice.space1.id}/`,
       method: 'POST',
       json: { id: collectionId, name: 'No Store' }
@@ -84,7 +84,7 @@ describe('Collections API', () => {
 
     // A failed POST is marked the same way; a read is not marked at all.
     const conflict = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Conflict' }
@@ -92,7 +92,7 @@ describe('Collections API', () => {
     )
     assert.equal(conflict.status, 409)
     assert.equal(conflict.headers.get('cache-control'), 'no-store')
-    const read = await alice.was.request({
+    const read = await alice.pws.request({
       url: `${baseServerUrl}space/${alice.space1.id}/${collectionId}/`,
       method: 'GET'
     })
@@ -117,14 +117,14 @@ describe('Collections API', () => {
     )
     assert.equal(redirect.status, 308)
     assert.equal(redirect.headers.get('cache-control'), null)
-    const query = await alice.was.request({
+    const query = await alice.pws.request({
       url: `${baseServerUrl}space/${alice.space1.id}/${collectionId}/query`,
       method: 'POST',
       json: { profile: 'changes' }
     })
     assert.equal(query.status, 200)
     assert.equal(query.headers.get('cache-control'), null)
-    const exported = await alice.was.request({
+    const exported = await alice.pws.request({
       url: `${baseServerUrl}space/${alice.space1.id}/export`,
       method: 'POST'
     })
@@ -176,7 +176,7 @@ describe('Collections API', () => {
 
     let expectedError: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
         method: 'POST',
         json: { id: collectionId, name: 'Replacement' }
@@ -216,7 +216,7 @@ describe('Collections API', () => {
     const spaceId = crypto.randomUUID()
     const collectionId = crypto.randomUUID()
     const resourceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'List Collections Test Space',
       controller: alice.did
@@ -280,7 +280,7 @@ describe('Collections API', () => {
       name: 'Forged createdBy Collection'
     })
 
-    await alice.was.request({
+    await alice.pws.request({
       url: new URL(
         `/space/${alice.space1.id}/${collectionId}/meta`,
         baseServerUrl
@@ -320,7 +320,7 @@ describe('Collections API', () => {
     const collectionId = crypto.randomUUID()
     const metaUrl = `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`
 
-    const created = await alice.was.request({
+    const created = await alice.pws.request({
       url: `${baseServerUrl}space/${alice.space1.id}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Regenerated' }
@@ -332,7 +332,7 @@ describe('Collections API', () => {
 
     // Re-creating under the same id starts a fresh Collection Metadata record:
     // no generation survives a hard Collection delete.
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${alice.space1.id}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Regenerated Again' }
@@ -342,7 +342,7 @@ describe('Collections API', () => {
     // longer carries, so a conditional GET with it is the full Collection
     // Metadata object, never a 304.
     const conditional = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'GET',
         headers: { 'if-none-match': oldEtag }
@@ -358,7 +358,7 @@ describe('Collections API', () => {
     const collectionId = 'guarded-collection'
     const metaUrl = `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`
 
-    const created = await alice.was.request({
+    const created = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { id: collectionId, name: 'Winner' },
@@ -370,7 +370,7 @@ describe('Collections API', () => {
     // The loser of a create race: the same guarded PUT against the now-present
     // Collection is refused and the stored Collection Metadata is untouched.
     const thrown = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { id: collectionId, name: 'Loser' },
@@ -383,7 +383,7 @@ describe('Collections API', () => {
     assert.equal(stored!.name, 'Winner')
 
     // An unconditional PUT still upserts.
-    const replaced = await alice.was.request({
+    const replaced = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { id: collectionId, name: 'Replaced' }
@@ -406,7 +406,7 @@ describe('Collections API', () => {
     const collectionId = crypto.randomUUID()
     let expectedError: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: new URL(
           `/space/${alice.space1.id}/${collectionId}/meta`,
           baseServerUrl
@@ -432,7 +432,7 @@ describe('Collections API', () => {
   describe('Collection backend selection', () => {
     it('POST with backend { id: "default" } persists and echoes it', async () => {
       const collectionId = crypto.randomUUID()
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
         method: 'POST',
         json: {
@@ -452,7 +452,7 @@ describe('Collections API', () => {
     it('POST with an unknown backend id yields unsupported-backend (409)', async () => {
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
           method: 'POST',
           json: {
@@ -479,7 +479,7 @@ describe('Collections API', () => {
     it('POST with a malformed backend yields invalid-request-body (400)', async () => {
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: new URL(`/space/${alice.space1.id}/`, baseServerUrl).toString(),
           method: 'POST',
           json: {
@@ -504,7 +504,7 @@ describe('Collections API', () => {
     })
 
     it('GET :collectionId/backend returns the full backend descriptor', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL(
           `/space/${alice.space1.id}/credentials/backend`,
           baseServerUrl
@@ -523,7 +523,7 @@ describe('Collections API', () => {
     it('GET :collectionId/backend on a missing collection yields 404', async () => {
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: new URL(
             `/space/${alice.space1.id}/no-such-collection/backend`,
             baseServerUrl
@@ -545,7 +545,7 @@ describe('Collections API', () => {
     })
 
     it('Collection linkset advertises the backend and quota relations', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL(
           `/space/${alice.space1.id}/credentials/linkset`,
           baseServerUrl
@@ -586,7 +586,7 @@ describe('Collections API', () => {
 
     it('[signed] GET /meta of a collection with no annotations yet 200s with its create-time ETag', async () => {
       const collectionId = await freshCollection()
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -606,7 +606,7 @@ describe('Collections API', () => {
     it('[signed] GET /meta of a nonexistent collection 404s', async () => {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl('collection-that-does-not-exist'),
           method: 'GET'
         })
@@ -624,7 +624,7 @@ describe('Collections API', () => {
       const collectionId = await freshCollection()
       let thrown: any
       try {
-        await bob.was.request({ url: metaUrl(collectionId), method: 'GET' })
+        await bob.pws.request({ url: metaUrl(collectionId), method: 'GET' })
       } catch (err) {
         thrown = err
       }
@@ -651,9 +651,9 @@ describe('Collections API', () => {
     it('[signed] PUT /meta sets custom, round-tripped by GET with a matching ETag', async () => {
       const collectionId = await freshCollection()
       const createdEtag = (
-        await alice.was.request({ url: metaUrl(collectionId), method: 'GET' })
+        await alice.pws.request({ url: metaUrl(collectionId), method: 'GET' })
       ).headers.get('etag')
-      const put = await alice.was.request({
+      const put = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: {
@@ -670,7 +670,7 @@ describe('Collections API', () => {
         container: true
       })
 
-      const got = await alice.was.request({
+      const got = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -686,14 +686,14 @@ describe('Collections API', () => {
     it('[signed] PUT /meta is a full replacement; an empty body clears custom', async () => {
       const collectionId = await freshCollection()
       const annotatedEtag = (
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl(collectionId),
           method: 'PUT',
           json: { custom: { name: 'Temporary', tags: { a: 'b' } } }
         })
       ).headers.get('etag')
       // A body with no `custom` clears every user-writable property.
-      const cleared = await alice.was.request({
+      const cleared = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: {}
@@ -706,7 +706,7 @@ describe('Collections API', () => {
         container: true
       })
 
-      const got = await alice.was.request({
+      const got = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -715,17 +715,17 @@ describe('Collections API', () => {
 
     it('[signed] PUT /meta ignores server-managed top-level props (roundtrip)', async () => {
       const collectionId = await freshCollection()
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'Before' } }
       })
       // GET the whole Metadata object, tweak custom, and PUT it back unstripped.
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
-      const put = await alice.was.request({
+      const put = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: {
@@ -737,7 +737,7 @@ describe('Collections API', () => {
       })
       assert.equal(put.status, 204)
 
-      const { data: after } = await alice.was.request({
+      const { data: after } = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -750,7 +750,7 @@ describe('Collections API', () => {
       // `PUT .../meta` is Update (or Create by Id) Collection: an absent
       // Collection is created, annotations included.
       const collectionId = crypto.randomUUID()
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'Created by meta' } }
@@ -758,7 +758,7 @@ describe('Collections API', () => {
       assert.equal(created.status, 201)
       parseEtagSegments(created.headers.get('etag'), { container: true })
 
-      const got = await alice.was.request({
+      const got = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -771,7 +771,7 @@ describe('Collections API', () => {
       const collectionId = await freshCollection()
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl(collectionId),
           method: 'PUT',
           json: { custom: 'not-an-object' }
@@ -788,7 +788,7 @@ describe('Collections API', () => {
       const collectionId = await freshCollection()
       let thrown: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: metaUrl(collectionId),
           method: 'PUT',
           json: { custom: { name: 'hijack' } }
@@ -802,14 +802,14 @@ describe('Collections API', () => {
 
     it('[signed] a stale If-Match on /meta is rejected with 412', async () => {
       const collectionId = await freshCollection()
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'One' } }
       })
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl(collectionId),
           method: 'PUT',
           json: { custom: { name: 'Two' } },
@@ -824,7 +824,7 @@ describe('Collections API', () => {
 
     it('[signed] If-None-Match: * writes once, then 412s', async () => {
       const collectionId = crypto.randomUUID()
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'First' } },
@@ -835,7 +835,7 @@ describe('Collections API', () => {
 
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl(collectionId),
           method: 'PUT',
           json: { custom: { name: 'Second' } },
@@ -851,7 +851,7 @@ describe('Collections API', () => {
       // guarded write refuses even though no annotation was ever written.
       const postedId = await freshCollection()
       const refused = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl(postedId),
           method: 'PUT',
           json: { custom: { name: 'Too Late' } },
@@ -863,12 +863,12 @@ describe('Collections API', () => {
 
     it('[signed] an omitted epoch CLEARS the stored stamp', async () => {
       const collectionId = await freshCollection()
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'Stamped' }, epoch: 'epoch-1' }
       })
-      const stamped = await alice.was.request({
+      const stamped = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -876,12 +876,12 @@ describe('Collections API', () => {
 
       // Unlike the Resource-level rule, omitting `epoch` clears it: the write
       // replaced the whole `custom` envelope the stamp described.
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'Restamped' } }
       })
-      const cleared = await alice.was.request({
+      const cleared = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -891,13 +891,13 @@ describe('Collections API', () => {
     it('[signed] GET of /meta with a matching If-None-Match is 304, and a write moves the validator', async () => {
       const collectionId = await freshCollection()
 
-      const described = await alice.was.request({
+      const described = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
       const createdEtag = described.headers.get('etag')!
       const unchanged = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl(collectionId),
           method: 'GET',
           headers: { 'if-none-match': createdEtag }
@@ -908,7 +908,7 @@ describe('Collections API', () => {
       assert.equal(await unchanged.text(), '')
 
       // A stale validator gets the full Collection Metadata object.
-      const stale = await alice.was.request({
+      const stale = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET',
         headers: { 'if-none-match': '"99"' }
@@ -917,14 +917,14 @@ describe('Collections API', () => {
       assert.equal(stale.data.id, collectionId)
 
       // After a write, the new ETag is the one that validates.
-      const written = await alice.was.request({
+      const written = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'Meta' } }
       })
       const metaEtag = written.headers.get('etag')!
       const metaUnchanged = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl(collectionId),
           method: 'GET',
           headers: { 'if-none-match': metaEtag }
@@ -933,7 +933,7 @@ describe('Collections API', () => {
       assert.equal(metaUnchanged.status, 304)
       assert.equal(metaUnchanged.headers.get('etag'), metaEtag)
       const createdStale = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl(collectionId),
           method: 'GET',
           headers: { 'if-none-match': createdEtag }
@@ -948,7 +948,7 @@ describe('Collections API', () => {
       // in place.
       const collectionId = await freshCollection()
 
-      const described = await alice.was.request({
+      const described = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -956,7 +956,7 @@ describe('Collections API', () => {
       parseEtagSegments(createdEtag, { container: true })
 
       // An annotation write advances the validator...
-      const annotated = await alice.was.request({
+      const annotated = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { name: 'Meta Collection', custom: { name: 'Shared' } }
@@ -970,7 +970,7 @@ describe('Collections API', () => {
       assert.equal(etagGeneration(annotatedEtag), etagGeneration(createdEtag))
 
       // ...and so does a configuration write, under the same generation.
-      const configured = await alice.was.request({
+      const configured = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: {
@@ -988,7 +988,7 @@ describe('Collections API', () => {
       })
       assert.equal(etagGeneration(configuredEtag), etagGeneration(createdEtag))
 
-      const meta = await alice.was.request({
+      const meta = await alice.pws.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
@@ -1004,7 +1004,7 @@ describe('Collections API', () => {
       // to a request that asked about a method. The URL now registers its own
       // DELETE, which refuses the method and names what it accepts.
       const collectionId = 'credentials'
-      return alice.was
+      return alice.pws
         .request({
           url: `${baseServerUrl}space/${alice.space1.id}/${collectionId}/meta`,
           method: 'DELETE'

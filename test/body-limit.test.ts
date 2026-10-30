@@ -142,7 +142,7 @@ describe('Buffered body limit', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Body Limit Space',
       controller: alice.did
@@ -250,7 +250,7 @@ describe('Buffered body limit (did.jsonl append)', () => {
       backend: await openTempBackend()
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Log Body Limit Space',
       controller: alice.did
@@ -317,7 +317,7 @@ describe('Buffered body limit (default cap)', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Default Cap Space',
       controller: alice.did

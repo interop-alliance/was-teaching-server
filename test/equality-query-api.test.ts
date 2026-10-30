@@ -8,7 +8,7 @@
  *
  * These assert the server's wire contract directly (status codes, problem
  * `type`s / `pointer`s, the `{documents, hasMore, cursor?}` / `{count}` page
- * shapes) via the signed `was.request()` escape hatch, mirroring
+ * shapes) via the signed `pws.request()` escape hatch, mirroring
  * `blinded-index-query-api.test.ts` and `encryption-descriptor-api.test.ts`. They
  * cover the `plaintext` member and its `indexes` declaration (validation,
  * update, presence-based mutual exclusion with `encryption`), the query matcher
@@ -20,7 +20,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
@@ -54,7 +54,7 @@ describe('Collection equality query profile', () => {
     collectionId: string,
     plaintext: unknown
   ): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: collectionId, plaintext }
@@ -68,7 +68,7 @@ describe('Collection equality query profile', () => {
     data: Record<string, unknown>,
     who: any = alice
   ): Promise<any> {
-    return who.was.request({
+    return who.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/${resourceId}`,
       method: 'PUT',
       json: { id: resourceId, ...data }
@@ -82,7 +82,7 @@ describe('Collection equality query profile', () => {
     bytes: string,
     contentType = 'image/png'
   ): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/${resourceId}`,
       method: 'PUT',
       body: new TextEncoder().encode(bytes),
@@ -96,7 +96,7 @@ describe('Collection equality query profile', () => {
     resourceId: string,
     custom: Record<string, unknown>
   ): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/${resourceId}/meta`,
       method: 'PUT',
       json: { custom }
@@ -109,14 +109,14 @@ describe('Collection equality query profile', () => {
     body: Record<string, unknown>,
     who: any = alice
   ): Promise<any> {
-    return who.was.request({
+    return who.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/query`,
       method: 'POST',
       json: { profile: 'equality', ...body }
     })
   }
 
-  /** Captures the raw error from a `was.request()` rejection. */
+  /** Captures the raw error from a `pws.request()` rejection. */
   async function rejection(promise: Promise<unknown>): Promise<any> {
     try {
       await promise
@@ -132,7 +132,7 @@ describe('Collection equality query profile', () => {
     }))
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -161,7 +161,7 @@ describe('Collection equality query profile', () => {
         ]
       })
       assert.equal(created.data.indexes, undefined)
-      const desc = await alice.was.request({
+      const desc = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-echo/meta`,
         method: 'GET'
       })
@@ -177,7 +177,7 @@ describe('Collection equality query profile', () => {
     it('preserves a plaintext member other than indexes verbatim', async () => {
       // The whole `plaintext` object round-trips, like `encryption`: a member
       // the server does not type yet is stored and echoed, not dropped.
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-extra/meta`,
         method: 'PUT',
         json: {
@@ -187,7 +187,7 @@ describe('Collection equality query profile', () => {
         }
       })
       assert.equal(created.status, 201)
-      const desc = await alice.was.request({
+      const desc = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-extra/meta`,
         method: 'GET'
       })
@@ -198,7 +198,7 @@ describe('Collection equality query profile', () => {
     })
 
     it('a top-level indexes member is ignored, not read or stored', async () => {
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-flat/meta`,
         method: 'PUT',
         json: { id: 'decl-flat', name: 'decl-flat', indexes: ['parentId'] }
@@ -213,14 +213,14 @@ describe('Collection equality query profile', () => {
     it('POST create honors plaintext: persists the declaration and enforces the encryption exclusion', async () => {
       // POST /space/:spaceId/ (create with a server- or client-chosen id)
       // validates and persists `plaintext` on the same terms as PUT.
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/`,
         method: 'POST',
         json: { id: 'decl-post', plaintext: { indexes: ['parentId'] } }
       })
       assert.equal(created.status, 201)
       assert.deepStrictEqual(created.data.plaintext, { indexes: ['parentId'] })
-      const desc = await alice.was.request({
+      const desc = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-post/meta`,
         method: 'GET'
       })
@@ -229,7 +229,7 @@ describe('Collection equality query profile', () => {
       // The plaintext/encryption mutual exclusion holds on POST create too,
       // by presence: an empty `plaintext` still excludes `encryption`.
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/`,
           method: 'POST',
           json: {
@@ -247,12 +247,12 @@ describe('Collection equality query profile', () => {
     it('plaintext is updatable: a supplied object replaces it, an absent one leaves it untouched, {} is the empty state', async () => {
       await createIndexedCollection('decl-clear', ['parentId'])
       // A name-only update does not touch the stored `plaintext`.
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
         method: 'PUT',
         json: { id: 'decl-clear', name: 'Renamed' }
       })
-      let desc = await alice.was.request({
+      let desc = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
         method: 'GET'
       })
@@ -260,12 +260,12 @@ describe('Collection equality query profile', () => {
       assert.equal(desc.data.name, 'Renamed')
 
       // A changed declaration replaces the stored one.
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
         method: 'PUT',
         json: { id: 'decl-clear', plaintext: { indexes: ['author'] } }
       })
-      desc = await alice.was.request({
+      desc = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
         method: 'GET'
       })
@@ -274,12 +274,12 @@ describe('Collection equality query profile', () => {
       // `{}` is the empty state: the member stays present (so it keeps
       // excluding `encryption`) with no declaration, and a later query naming
       // the old attribute now 400s.
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
         method: 'PUT',
         json: { id: 'decl-clear', plaintext: {} }
       })
-      desc = await alice.was.request({
+      desc = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
         method: 'GET'
       })
@@ -287,7 +287,7 @@ describe('Collection equality query profile', () => {
       const err = await rejection(query('decl-clear', { has: ['author'] }))
       assert.equal(err.response.status, 400)
       const enc = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/decl-clear/meta`,
           method: 'PUT',
           json: { id: 'decl-clear', encryption: { scheme: 'edv' } }
@@ -364,7 +364,7 @@ describe('Collection equality query profile', () => {
 
     it('rejects declaring plaintext together with an encryption descriptor (400)', async () => {
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/mx-create/meta`,
           method: 'PUT',
           json: {
@@ -381,7 +381,7 @@ describe('Collection equality query profile', () => {
 
     it('rejects adding plaintext to an already-encrypted Collection (400), even an empty one', async () => {
       const descriptor = { scheme: 'edv' }
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/mx-enc-first/meta`,
         method: 'PUT',
         json: { id: 'mx-enc-first', encryption: descriptor }
@@ -391,7 +391,7 @@ describe('Collection equality query profile', () => {
       // exercises the mutual-exclusion check, not that immutability rail, so
       // both requests carry the descriptor forward alongside `plaintext`.
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/mx-enc-first/meta`,
           method: 'PUT',
           json: {
@@ -404,7 +404,7 @@ describe('Collection equality query profile', () => {
       assert.equal(err.response.status, 400)
       assert.equal(err.data.errors?.[0]?.pointer, '#/plaintext')
       const empty = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/mx-enc-first/meta`,
           method: 'PUT',
           json: { id: 'mx-enc-first', encryption: descriptor, plaintext: {} }
@@ -417,7 +417,7 @@ describe('Collection equality query profile', () => {
     it('rejects adding an encryption descriptor to an already-indexed Collection (400)', async () => {
       await createIndexedCollection('mx-idx-first', ['parentId'])
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/mx-idx-first/meta`,
           method: 'PUT',
           json: { id: 'mx-idx-first', encryption: { scheme: 'edv' } }
@@ -650,7 +650,7 @@ describe('Collection equality query profile', () => {
 
     it('a Collection with no declared indexes fails every named attribute (400)', async () => {
       // A plain Collection created without `plaintext`.
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/`,
         method: 'POST',
         json: { id: 'q-noindexes', name: 'q-noindexes' }
@@ -660,7 +660,7 @@ describe('Collection equality query profile', () => {
     })
 
     it('answers an equality query against an encrypted Collection with 501', async () => {
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/q-encrypted/meta`,
         method: 'PUT',
         json: { id: 'q-encrypted', encryption: { scheme: 'edv' } }
@@ -684,7 +684,7 @@ describe('Collection equality query profile', () => {
       assert.equal(before.response.status, 400)
 
       // Declare `author` (no reindex, no rewrite of the Resources).
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/u-reindex/meta`,
         method: 'PUT',
         json: {
@@ -706,7 +706,7 @@ describe('Collection equality query profile', () => {
     it('is capability-only: an authenticated non-controller is denied (404) even on a PublicCanRead Collection', async () => {
       await createIndexedCollection('a-public', ['parentId'])
       await putDoc('a-public', 'r1', { parentId: 'p1' })
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/a-public/policy`,
         method: 'PUT',
         json: { type: 'PublicCanRead' }
@@ -784,7 +784,7 @@ describe('Collection equality query profile', () => {
       // Promoting `slug` to unique must be rejected: the stored Resources
       // already violate it.
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId()}/uq-add/meta`,
           method: 'PUT',
           json: {

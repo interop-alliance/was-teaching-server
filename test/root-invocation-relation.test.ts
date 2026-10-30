@@ -35,7 +35,7 @@
  * relationships -- so nothing this suite measures applies to it.
  *
  * Invocations are raw `@interop/ezcap` requests: this is a wire-level
- * authorization shape, not the high-level `@interop/was-client` surface.
+ * authorization shape, not the high-level `@interop/pws-client` surface.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -107,7 +107,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
    */
   async function promotedSpace(): Promise<PromotedSpace> {
     const spaceId = randomUUID()
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Promoted Space', controller: alice.did })
     await space.collection('id').configure({ force: true })
 
@@ -165,7 +165,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
       keyPair.controller = created.did
     }
 
-    const published = await alice.was.request({
+    const published = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
@@ -175,7 +175,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
 
     // Promotion by ordering: created under Alice's `did:key`, handed to the
     // `did:webvh` by a PUT the stored `did:key` still authorizes.
-    const promoted = await alice.was.request({
+    const promoted = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'PUT',
       json: {

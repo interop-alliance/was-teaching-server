@@ -4,7 +4,7 @@
  * "Collection-level reserved endpoints"; the `blinded-index-query` backend
  * feature).
  *
- * Signed queries use the raw `was.request` escape hatch, like the `changes`
+ * Signed queries use the raw `pws.request` escape hatch, like the `changes`
  * profile tests. The stored documents are EDV encrypted-document envelopes
  * whose `indexed` attributes stand in for the client's HMAC-blinded base64url
  * strings -- the server matches them opaquely, so no real crypto is needed.
@@ -15,7 +15,7 @@ import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import type { JsonObject, Space } from '@interop/was-client'
+import type { JsonObject, Space } from '@interop/pws-client'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
@@ -72,7 +72,7 @@ describe('Collection blinded-index query profile', () => {
       `/space/${alice.space1.id}/${collectionId}/query`,
       baseServerUrl
     ).toString()
-    return signer.was.request({
+    return signer.pws.request({
       url,
       method: 'POST',
       json: { profile: 'blinded-index', index: HMAC_ID, ...body }
@@ -84,7 +84,7 @@ describe('Collection blinded-index query profile', () => {
     ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -282,7 +282,7 @@ describe('Collection blinded-index query profile', () => {
     // A second document claiming the same unique triple: 409 id-conflict.
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl('claimant'),
         method: 'PUT',
         json: envelope('claimant', [{ name: 'n1', value: 'v1', unique: true }])
@@ -337,7 +337,7 @@ describe('Collection blinded-index query profile', () => {
     // The unique-blinded conflict scan a write runs skips it too, so a claim
     // of the value it holds is admitted. The damaged Resource's own repair
     // is a rewrite, which runs its claim again.
-    const { status } = await alice.was.request({
+    const { status } = await alice.pws.request({
       url: new URL(
         `/space/${alice.space1.id}/vault-sidecar/gamma`,
         baseServerUrl

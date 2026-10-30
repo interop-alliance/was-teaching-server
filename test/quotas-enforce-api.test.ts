@@ -48,7 +48,7 @@ describe('Quota enforcement (API)', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Quota Enforce Space',
       controller: alice.did
@@ -398,7 +398,7 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Upload Cap Space',
       controller: alice.did
@@ -453,7 +453,7 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
   })
 
   it('advertises maxUploadBytes in the quota report constraints', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/quotas`,
       method: 'GET'
     })

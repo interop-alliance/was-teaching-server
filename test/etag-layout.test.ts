@@ -37,7 +37,7 @@ describe('Write stamp and ETag layout', () => {
     backend = await openTempBackend({ physicalClock: clock.read })
     ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: spaceId,
       name: 'ETag Layout Space',
       controller: alice.did
@@ -60,7 +60,7 @@ describe('Write stamp and ETag layout', () => {
    */
   async function freshCollection(): Promise<string> {
     const collectionId = `col-${crypto.randomUUID()}`
-    await alice.was.request({
+    await alice.pws.request({
       url: url(`/space/${spaceId}/`),
       method: 'POST',
       json: { id: collectionId, name: collectionId }
@@ -88,7 +88,7 @@ describe('Write stamp and ETag layout', () => {
     json: unknown
     headers?: Record<string, string>
   }): Promise<string> {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: resourceUrl(collectionId, resourceId),
       method: 'PUT',
       json,
@@ -109,7 +109,7 @@ describe('Write stamp and ETag layout', () => {
     headers: Record<string, string> = {}
   ): Promise<any> {
     return responseOf(
-      alice.was.request({ url: target, method: 'GET', headers })
+      alice.pws.request({ url: target, method: 'GET', headers })
     )
   }
 
@@ -221,7 +221,7 @@ describe('Write stamp and ETag layout', () => {
     // longer match.
     for (const stale of [etag, updated.replace(/\.[^.]+"$/, '.zOther"')]) {
       const refused = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: resourceUrl(collectionId, 'doc'),
           method: 'PUT',
           json: { n: 3 },
@@ -236,7 +236,7 @@ describe('Write stamp and ETag layout', () => {
     const collectionId = await freshCollection()
     clock.now += 1000
     await putResource({ collectionId, resourceId: 'big', json: { n: 1 } })
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${resourceUrl(collectionId, 'big')}/chunks/0`,
       method: 'PUT',
       body: new Uint8Array([1, 2, 3]),
@@ -267,7 +267,7 @@ describe('Write stamp and ETag layout', () => {
     assert.equal(before.headers.get('etag'), contentEtag)
 
     clock.now += 5000
-    const written = await alice.was.request({
+    const written = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { custom: { name: 'Doc' }, writerId: 'ignored-writer' }
@@ -306,7 +306,7 @@ describe('Write stamp and ETag layout', () => {
 
     // A second /meta write in the same millisecond moves the /meta validator
     // by its counter, and the content record still does not move.
-    const rewritten = await alice.was.request({
+    const rewritten = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { custom: { name: 'Doc again' } }
@@ -370,14 +370,14 @@ describe('Write stamp and ETag layout', () => {
 
     // Create Space (POST /spaces/), then the create-by-PUT of a Space meta.
     const postedSpaceId = `etag-layout-posted-${crypto.randomUUID()}`
-    const postedSpace = await alice.was.request({
+    const postedSpace = await alice.pws.request({
       url: url('/spaces/'),
       method: 'POST',
       json: { id: postedSpaceId, name: 'Posted', controller: alice.did }
     })
     assert.equal(postedSpace.status, 201)
     const putSpaceId = `etag-layout-put-${crypto.randomUUID()}`
-    const putSpace = await alice.was.request({
+    const putSpace = await alice.pws.request({
       url: url(`/space/${putSpaceId}/meta`),
       method: 'PUT',
       json: { name: 'Put', controller: alice.did }
@@ -387,14 +387,14 @@ describe('Write stamp and ETag layout', () => {
     // Create Collection (POST of the Space), then the create-by-PUT of a
     // Collection meta.
     const postedCollectionId = `col-${crypto.randomUUID()}`
-    const postedCollection = await alice.was.request({
+    const postedCollection = await alice.pws.request({
       url: url(`/space/${spaceId}/`),
       method: 'POST',
       json: { id: postedCollectionId, name: 'Posted' }
     })
     assert.equal(postedCollection.status, 201)
     const putCollectionId = `col-${crypto.randomUUID()}`
-    const putCollection = await alice.was.request({
+    const putCollection = await alice.pws.request({
       url: `${collectionUrl(putCollectionId)}meta`,
       method: 'PUT',
       json: { name: 'Put' }
@@ -427,11 +427,11 @@ describe('Write stamp and ETag layout', () => {
     const first = (await get(`${collectionUrl(collectionId)}meta`)).headers.get(
       'etag'
     )
-    await alice.was.request({
+    await alice.pws.request({
       url: collectionUrl(collectionId),
       method: 'DELETE'
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: url(`/space/${spaceId}/`),
       method: 'POST',
       json: { id: collectionId, name: collectionId }
@@ -444,7 +444,7 @@ describe('Write stamp and ETag layout', () => {
 
   it('a backend registration moves the Space Metadata local segment and leaves the stamp', async () => {
     const ownSpaceId = `etag-layout-backends-${crypto.randomUUID()}`
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: ownSpaceId,
       name: 'Backends',
       controller: alice.did
@@ -456,7 +456,7 @@ describe('Write stamp and ETag layout', () => {
     })
 
     clock.now += 1000
-    await alice.was.request({
+    await alice.pws.request({
       url: url(`/space/${ownSpaceId}/backends`),
       method: 'POST',
       json: {
@@ -483,7 +483,7 @@ describe('Write stamp and ETag layout', () => {
     assert.equal(registered.data.updatedAt, before.data.updatedAt)
     assert.equal(registered.data.updatedAtCounter, before.data.updatedAtCounter)
 
-    await alice.was.request({
+    await alice.pws.request({
       url: url(`/space/${ownSpaceId}/backends/gdrive-1`),
       method: 'DELETE'
     })
@@ -494,7 +494,7 @@ describe('Write stamp and ETag layout', () => {
     assert.equal(deregistered.local, beforeEtag.local! + 2)
 
     // A stamped write of the object resets the local segment.
-    const written = await alice.was.request({
+    const written = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { name: 'Renamed', controller: alice.did }
@@ -537,7 +537,7 @@ describe('Write stamp and ETag layout', () => {
       proof: []
     })
     clock.now += 1000
-    const logged = await alice.was.request({
+    const logged = await alice.pws.request({
       url: `${metaUrl}/log`,
       method: 'PUT',
       body: new TextEncoder().encode(`${genesis}\n`),
@@ -573,12 +573,12 @@ describe('Write stamp and ETag layout', () => {
       resourceId: 'doc',
       json: { n: 1 }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${resourceUrl(collectionId, 'doc')}/meta`,
       method: 'PUT',
       json: { custom: { name: 'Doc' } }
     })
-    const { data } = await alice.was.request({
+    const { data } = await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/query`),
       method: 'POST',
       json: { profile: 'changes', limit: 10 }

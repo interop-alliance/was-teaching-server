@@ -7,7 +7,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space, Collection } from '@interop/was-client'
+import type { Space, Collection } from '@interop/pws-client'
 
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 import { withoutStampMembers } from '../src/lib/hlc.js'
@@ -31,7 +31,7 @@ describe('Access-control policy API', () => {
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision the Space + a 'public-credentials' Collection with one resource.
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -73,7 +73,7 @@ describe('Access-control policy API', () => {
   it('a caller whose capability does not authorize falls back to policy (200)', async () => {
     // Bob signs the request, but he is not the Space controller, so his
     // capability does not verify. The PublicCanRead policy grants the read.
-    const response = await bob.was.request({
+    const response = await bob.pws.request({
       url: new URL(publicResourcePath(), baseServerUrl).href,
       method: 'GET'
     })
@@ -138,7 +138,7 @@ describe('Access-control policy API', () => {
   it('a space-level PublicCanRead policy is inherited by collections and resources', async () => {
     // Use a fresh Space so the space-wide policy does not affect other tests.
     const inheritedSpaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: inheritedSpaceId,
       name: 'Inherited Public Space',
       controller: alice.did
@@ -226,7 +226,7 @@ describe('Access-control policy API', () => {
     for (const controller of ['not-a-did', 'did:key:notbase58!', 'did:web:x']) {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}spaces/`,
           method: 'POST',
           json: { name: 'bad-controller', controller }
@@ -244,7 +244,7 @@ describe('Access-control policy API', () => {
     for (const type of ['', '   ']) {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${alice.space1.id}/public-credentials/policy`,
           method: 'PUT',
           json: { type }
@@ -272,7 +272,7 @@ describe('Access-control policy API', () => {
     for (const reserved of ['policy', 'linkset', 'export', 'quotas']) {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${alice.space1.id}/`,
           method: 'POST',
           json: { id: reserved, name: reserved }

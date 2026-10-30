@@ -125,7 +125,7 @@ describe('Provisioning gate', () => {
       // Normal auth still works afterwards: a signed GET by the controller
       // returns the Space Metadata object (200), proving the token gate does not
       // disturb the zcap path for subsequent operations.
-      const signed = await alice.was.request({
+      const signed = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'GET'
       })
@@ -153,7 +153,7 @@ describe('Provisioning gate', () => {
       assert.equal('foo' in echoed, false)
       assert.equal(echoed.name, 'Provisioned Space')
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'GET'
       })
@@ -198,7 +198,7 @@ describe('Provisioning gate', () => {
       await boot({ onboardingToken: TOKEN })
       let thrown: any
       try {
-        await alice.was.createSpace(createSpaceBody('signed-no-token'))
+        await alice.pws.createSpace(createSpaceBody('signed-no-token'))
       } catch (err) {
         thrown = err
       }
@@ -269,7 +269,7 @@ describe('Provisioning gate', () => {
       const spaceId = `signed-put-${crypto.randomUUID()}`
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
@@ -306,7 +306,7 @@ describe('Provisioning gate', () => {
         body: JSON.stringify(createSpaceBody(spaceId))
       })
       assert.equal(created.status, 201)
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { ...createSpaceBody(spaceId), name: 'Renamed' }
@@ -377,7 +377,7 @@ describe('Provisioning gate', () => {
       const spaceId = `denied-put-${crypto.randomUUID()}`
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
@@ -463,7 +463,7 @@ describe('Provisioning gate', () => {
       }
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
@@ -545,7 +545,7 @@ describe('Provisioning gate', () => {
 
     it("a 'verify' decision leaves the normal zcap create-space path working (201)", async () => {
       await boot({ authorizeProvisioning: async () => 'verify' as const })
-      const space = await alice.was.createSpace(
+      const space = await alice.pws.createSpace(
         createSpaceBody(`verified-${crypto.randomUUID()}`)
       )
       assert.ok(space.id)
@@ -596,7 +596,7 @@ describe('Provisioning gate', () => {
   it('default (neither option): a self-signed create by PUT still returns 201', async () => {
     await boot()
     const spaceId = `default-put-${crypto.randomUUID()}`
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'PUT',
       json: createSpaceBody(spaceId)
@@ -606,7 +606,7 @@ describe('Provisioning gate', () => {
 
   it('default (neither option): a zcap-signed create space still returns 201', async () => {
     await boot()
-    const space = await alice.was.createSpace(
+    const space = await alice.pws.createSpace(
       createSpaceBody(`default-${crypto.randomUUID()}`)
     )
     assert.ok(space.id)

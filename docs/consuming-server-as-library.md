@@ -303,8 +303,8 @@ optional `port` and `logger`. The logger defaults to `false`. The server listens
 on an OS-assigned port, so parallel test workers do not collide. The returned
 `baseServerUrl` is `http://localhost:<port>/`, the origin with its trailing
 slash: the base under which the server serves `service`, `spaces/` and
-`space/{id}/`, and what a `@interop/was-client` is built from
-(`new WasClient({ baseServerUrl })`). The no-slash form `createApp()` was given
+`space/{id}/`, and what a `@interop/pws-client` is built from
+(`new PwsClient({ baseServerUrl })`). The no-slash form `createApp()` was given
 is the returned instance's `fastify.serverUrl`, for a test that calls a
 server-internal function taking `serverUrl`. The host is `localhost` because
 `@interop/webkms-client` relaxes its loopback checks for that host alone.
@@ -324,7 +324,7 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { WasClient } from '@interop/was-client'
+import { PwsClient } from '@interop/pws-client'
 import {
   openTempBackend,
   startTestServer
@@ -333,7 +333,7 @@ import {
 let fastify: FastifyInstance
 let baseServerUrl: string
 let did: string
-let was: WasClient
+let pws: PwsClient
 
 beforeAll(async () => {
   const started = await startTestServer({ backend: await openTempBackend() })
@@ -345,7 +345,7 @@ beforeAll(async () => {
   // `spaces/` and `space/{id}/`.
   const keyPair = await Ed25519VerificationKey.generate()
   did = `did:key:${keyPair.fingerprint()}`
-  was = WasClient.fromSigner({
+  pws = PwsClient.fromSigner({
     baseServerUrl,
     signer: keyPair.didKeySigner()
   })
@@ -356,14 +356,14 @@ afterAll(async () => {
 })
 
 it('creates a Space', async () => {
-  const space = was.space(randomUUID())
+  const space = pws.space(randomUUID())
   await space.configure({ name: 'Test Space', controller: did })
   const metadata = await space.describe()
   assert.equal(metadata?.controller, did)
 })
 ```
 
-The examples here use `@interop/was-client` and
+The examples here use `@interop/pws-client` and
 `@interop/ed25519-verification-key`, which a consumer adds as its own dev
 dependencies.
 
@@ -407,9 +407,9 @@ await rm(dataDir, { recursive: true, force: true })
 a Space under a `did:key` owner, mints the DID in one of that Space's
 Collections (`id` by default), and publishes its `did.jsonl` log there. It fits
 a test about a server rule in which the identity is setup, not the thing under
-test. The `owner` is a `{ did, was }` pair, where `was` is a `WasClient` signed
+test. The `owner` is a `{ did, pws }` pair, where `pws` is a `PwsClient` signed
 by that `did:key`. The parameter is typed by the members the function calls,
-since this package does not depend on `@interop/was-client`. When a step fails
+since this package does not depend on `@interop/pws-client`. When a step fails
 after the Space was created, the Space is deleted before the error is rethrown.
 
 ```ts
@@ -418,7 +418,7 @@ import { provisionWebvhIdentity } from '@interop/web-spaces-server/testing'
 const ownerKey = await Ed25519VerificationKey.generate()
 const owner = {
   did: `did:key:${ownerKey.fingerprint()}`,
-  was: WasClient.fromSigner({
+  pws: PwsClient.fromSigner({
     baseServerUrl,
     signer: ownerKey.didKeySigner()
   })
@@ -589,7 +589,7 @@ header. A browser-driven test then reads the refusal's status instead of a CORS
 failure. A record's `status` is read when the response head is written, after
 every `onSend` hook.
 
-`@interop/was-client` retries a request that fails with a 5xx or a dropped
+`@interop/pws-client` retries a request that fails with a 5xx or a dropped
 connection. A fault that fires once is then absorbed by the retry, and the
 caller sees a success. Pass `times` (`Infinity` is allowed) to fail the retries
 too, or refuse with a 4xx status, which is not retried. Under `dropResponse()`
@@ -603,7 +603,7 @@ const { fastify, baseServerUrl, faults } = await startTestServer({
   backend: await openTempBackend()
 })
 // ... build clients, provision a Space and a `notes` Collection ...
-const notes = was.space(spaceId).collection('notes')
+const notes = pws.space(spaceId).collection('notes')
 const path = `/space/${spaceId}/notes/second`
 
 // A ceremony that writes two Resources, torn at the second write. The write

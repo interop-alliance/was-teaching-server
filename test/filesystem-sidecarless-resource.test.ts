@@ -43,7 +43,7 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
     ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -88,13 +88,13 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
 
   it('answers /meta with 404', async () => {
     const response = await responseOf(
-      alice.was.request({ url: `${resourceUrl(bareId)}/meta`, method: 'GET' })
+      alice.pws.request({ url: `${resourceUrl(bareId)}/meta`, method: 'GET' })
     )
     assert.equal(response.status, 404)
   })
 
   it('leaves the Resource out of the changes feed', async () => {
-    const { data } = await alice.was.request({
+    const { data } = await alice.pws.request({
       url: new URL(
         `/space/${alice.space1.id}/${collectionId}/query`,
         baseServerUrl
@@ -110,14 +110,14 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
 
   it('answers a read of its bytes with 404', async () => {
     const response = await responseOf(
-      alice.was.request({ url: resourceUrl(bareId), method: 'GET' })
+      alice.pws.request({ url: resourceUrl(bareId), method: 'GET' })
     )
     assert.equal(response.status, 404)
   })
 
   it('answers 500 when a live sidecar names a missing file', async () => {
     const resourceId = 'renamed'
-    await alice.was.request({
+    await alice.pws.request({
       url: resourceUrl(resourceId),
       method: 'PUT',
       json: { n: resourceId }
@@ -138,13 +138,13 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
       })
     )
     const response = await responseOf(
-      alice.was.request({ url: resourceUrl(resourceId), method: 'GET' })
+      alice.pws.request({ url: resourceUrl(resourceId), method: 'GET' })
     )
     assert.equal(response.status, 500)
   })
 
   it('still serves a Resource written through the API', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: resourceUrl('normal'),
       method: 'GET'
     })

@@ -3,7 +3,7 @@
  * served at `POST /space/:s/:c/query` (spec "Collection-level reserved
  * endpoints").
  *
- * Signed queries use the raw `was.request` escape hatch: the high-level client
+ * Signed queries use the raw `pws.request` escape hatch: the high-level client
  * does not yet surface the change feed. The query parameters ride the signed
  * JSON body.
  *
@@ -16,7 +16,7 @@ import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 import { base64urlnopad } from '@scure/base'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 import { isResourceChange } from '@interop/storage-core'
 
 import {
@@ -80,7 +80,7 @@ describe('Collection changes query profile', () => {
       `/space/${alice.space1.id}/${collectionId}/query`,
       baseServerUrl
     ).toString()
-    return signer.was.request({
+    return signer.pws.request({
       url,
       method: 'POST',
       json: { profile: 'changes', ...body }
@@ -93,7 +93,7 @@ describe('Collection changes query profile', () => {
     }))
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -240,14 +240,14 @@ describe('Collection changes query profile', () => {
       `/space/${alice.space1.id}/etag-feed/a`,
       baseServerUrl
     ).toString()
-    const getResponse = await alice.was.request({
+    const getResponse = await alice.pws.request({
       url: resourceUrl,
       method: 'GET'
     })
     assert.equal(typeof doc.etag, 'string')
     assert.equal(doc.etag, getResponse.headers.get('etag'))
 
-    const metaResponse = await alice.was.request({
+    const metaResponse = await alice.pws.request({
       url: `${resourceUrl}/meta`,
       method: 'GET'
     })
@@ -271,7 +271,7 @@ describe('Collection changes query profile', () => {
       `/space/${alice.space1.id}/etag-feed-premeta/a`,
       baseServerUrl
     ).toString()
-    const metaResponse = await alice.was.request({
+    const metaResponse = await alice.pws.request({
       url: `${resourceUrl}/meta`,
       method: 'GET'
     })
@@ -503,7 +503,7 @@ describe('Collection changes query profile', () => {
      * The `ETag` header a signed GET of `url` answers with.
      */
     async function etagOf(url: string): Promise<string> {
-      const response = await alice.was.request({ url, method: 'GET' })
+      const response = await alice.pws.request({ url, method: 'GET' })
       const etag = response.headers.get('etag')
       assert.ok(etag, `expected an ETag on GET ${url}`)
       return etag
@@ -546,7 +546,7 @@ describe('Collection changes query profile', () => {
       bytes: Uint8Array<ArrayBuffer>,
       type: string
     ): Promise<any> {
-      return alice.was.request({
+      return alice.pws.request({
         url,
         method: 'PUT',
         body: new Blob([bytes], { type })
@@ -562,7 +562,7 @@ describe('Collection changes query profile', () => {
       body: string,
       headers: Record<string, string>
     ): Promise<string> {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: logUrl(collectionId),
         method: 'PUT',
         body: new TextEncoder().encode(body),
@@ -598,7 +598,7 @@ describe('Collection changes query profile', () => {
       assert.equal(positionOf(doc.checkpoint), 1)
       assert.equal(data.checkpoint, doc.checkpoint)
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: metaUrl('kinds-meta'),
         method: 'GET'
       })
@@ -621,7 +621,7 @@ describe('Collection changes query profile', () => {
       const [created] = before.documents
       assert.equal(created.kind, 'collection-metadata')
 
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: metaUrl('kinds-meta-update'),
         method: 'PUT',
         json: { id: 'kinds-meta-update', name: 'Renamed' }
@@ -679,7 +679,7 @@ describe('Collection changes query profile', () => {
         parseEtagSegments(liveDoc.etag).generation
       )
 
-      await alice.was.request({ url: pngUrl, method: 'DELETE' })
+      await alice.pws.request({ url: pngUrl, method: 'DELETE' })
       const { data: gone } = await queryChanges(alice, 'kinds-binary', {
         limit: 10,
         checkpoint: live.checkpoint
@@ -730,7 +730,7 @@ describe('Collection changes query profile', () => {
         new Uint8Array([1, 2, 3]),
         'application/octet-stream'
       )
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl('kinds-binary-meta', 'other'),
         method: 'PUT',
         json: { n: 'other' }
@@ -740,7 +740,7 @@ describe('Collection changes query profile', () => {
       })
       const original = before.documents.find((doc: any) => doc.id === 'pic')
 
-      await alice.was.request({
+      await alice.pws.request({
         url: `${picUrl}/meta`,
         method: 'PUT',
         json: { custom: { name: 'labeled' } }
@@ -899,11 +899,11 @@ describe('Collection changes query profile', () => {
       await putLog('kinds-paging', genesisLine(oneEpoch) + '\n', {
         'if-none-match': '*'
       })
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl('kinds-paging', 'a'),
         method: 'DELETE'
       })
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl('kinds-paging'),
         method: 'PUT',
         json: { id: 'kinds-paging', name: 'Renamed' }

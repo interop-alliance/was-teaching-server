@@ -1,7 +1,7 @@
 /**
  * List Collection cursor-based pagination tests (Vitest, spec "Pagination").
  *
- * Signed paginated reads use the raw `was.request` escape hatch with a full URL
+ * Signed paginated reads use the raw `pws.request` escape hatch with a full URL
  * carrying `?limit`/`cursor`; the high-level `Collection.list()` does not yet
  * surface pagination parameters. Authorization tolerance for the query string is
  * exercised here too (the `next` URL is followed with the same authorization).
@@ -10,7 +10,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import {
   openTempBackend,
@@ -36,7 +36,7 @@ describe('List Collection pagination', () => {
     }))
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -245,7 +245,7 @@ describe('List Collection pagination', () => {
     // so authorization fails (merged 404) BEFORE any cursor validation.
     let expectedError: any
     try {
-      await bob.was.request({
+      await bob.pws.request({
         url: new URL(`${listPath}?cursor=garbage%%%`, baseServerUrl).toString(),
         method: 'GET'
       })

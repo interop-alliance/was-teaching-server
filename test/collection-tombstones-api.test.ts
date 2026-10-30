@@ -9,7 +9,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 import { isCollectionTombstoneSummary } from '@interop/storage-core'
 
 import {
@@ -43,7 +43,7 @@ describe('Collection tombstones (HTTP)', () => {
     headers?: Record<string, string>
   }): Promise<{ status: number; data: any; headers: Headers }> {
     try {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL(url, baseServerUrl).toString(),
         method,
         ...(json !== undefined && { json }),
@@ -86,7 +86,7 @@ describe('Collection tombstones (HTTP)', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
     spaceId = alice.space1.id
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: spaceId,
       name: 'Tombstones',
       controller: alice.did
@@ -186,7 +186,7 @@ describe('Collection tombstones (HTTP)', () => {
 
   it('pagination carries the flag forward, and the next link verifies', async () => {
     const pagedSpaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: pagedSpaceId,
       name: 'Paged',
       controller: alice.did
@@ -220,7 +220,7 @@ describe('Collection tombstones (HTTP)', () => {
 
   it('a listing served by the public-read policy ignores the flag', async () => {
     const publicSpaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: publicSpaceId,
       name: 'Public',
       controller: alice.did

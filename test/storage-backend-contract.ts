@@ -716,7 +716,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId: 'col',
           resourceId: 'swap',
-          input: jsonInput({ was: 'json' })
+          input: jsonInput({ pws: 'json' })
         })
         const { validator: secondWrite } = await backend.writeResource({
           spaceId,

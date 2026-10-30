@@ -50,7 +50,7 @@ import {
   requestError,
   rootZcap,
   startTestServer,
-  wasClient,
+  pwsClient,
   watchWitnessFetches,
   zcapClients,
   webvhLogSigner
@@ -67,8 +67,8 @@ interface WebvhSpace {
   logSigner: Signer
   /** the enrolled wallet client key listed in the DID document */
   clientKeyPair: any
-  /** a `WasClient` signing with that client key */
-  was: any
+  /** a `PwsClient` signing with that client key */
+  pws: any
 }
 
 describe('did:webvh Space controller', () => {
@@ -196,7 +196,7 @@ describe('did:webvh Space controller', () => {
     publicLogCollection?: boolean
   } = {}): Promise<WebvhSpace> {
     const spaceId = randomUUID()
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Promotable Space', controller: alice.did })
     await space.collection('credentials').configure({ force: true })
     await space.collection('credentials').put('doc-1', { hello: 'world' })
@@ -211,7 +211,7 @@ describe('did:webvh Space controller', () => {
       collectionId: logCollectionId
     })
     const published = await publishLog({
-      signerClient: alice.was,
+      signerClient: alice.pws,
       spaceId,
       collectionId: logCollectionId,
       jsonl: logToJsonlString(minted.log)
@@ -225,7 +225,7 @@ describe('did:webvh Space controller', () => {
       log: minted.log,
       logSigner: minted.logSigner,
       clientKeyPair: minted.clientKeyPair,
-      was: wasClient({ signer: minted.clientKeyPair.signer(), baseServerUrl })
+      pws: pwsClient({ signer: minted.clientKeyPair.signer(), baseServerUrl })
     }
   }
 
@@ -264,7 +264,7 @@ describe('did:webvh Space controller', () => {
 
     it('PUT Space Metadata with a self-hosted did:webvh controller succeeds (204)', async () => {
       const response = await promote({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId: space.spaceId,
         controller: space.did
       })
@@ -272,12 +272,12 @@ describe('did:webvh Space controller', () => {
     })
 
     it('the stored controller is the did:webvh', async () => {
-      const description = await space.was.space(space.spaceId).describe()
+      const description = await space.pws.space(space.spaceId).describe()
       assert.equal(description.controller, space.did)
     })
 
     it('the enrolled client key reads under the root capability', async () => {
-      const doc = await space.was
+      const doc = await space.pws
         .space(space.spaceId)
         .collection('credentials')
         .get('doc-1')
@@ -285,11 +285,11 @@ describe('did:webvh Space controller', () => {
     })
 
     it('the enrolled client key writes under the root capability', async () => {
-      await space.was
+      await space.pws
         .space(space.spaceId)
         .collection('credentials')
         .put('doc-2', { written: 'by webvh' })
-      const doc = await space.was
+      const doc = await space.pws
         .space(space.spaceId)
         .collection('credentials')
         .get('doc-2')
@@ -329,7 +329,7 @@ describe('did:webvh Space controller', () => {
     beforeAll(async () => {
       space = await provisionSpace()
       const response = await promote({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId: space.spaceId,
         controller: space.did
       })
@@ -387,7 +387,7 @@ describe('did:webvh Space controller', () => {
       })
       // The still-current client key authorizes the write of its own removal.
       const published = await publishLog({
-        signerClient: space.was,
+        signerClient: space.pws,
         spaceId: space.spaceId,
         jsonl: logToJsonlString(updated.log)
       })
@@ -407,7 +407,7 @@ describe('did:webvh Space controller', () => {
       // `id`-collection write took effect immediately).
       replacementKey.id = `${space.did}#${replacementKey.publicKeyMultibase}`
       replacementKey.controller = space.did
-      const rotatedClient = wasClient({
+      const rotatedClient = pwsClient({
         signer: replacementKey.signer(),
         baseServerUrl
       })
@@ -428,7 +428,7 @@ describe('did:webvh Space controller', () => {
       })
       const err = await requestError(
         promote({
-          signerClient: alice.was,
+          signerClient: alice.pws,
           spaceId: space.spaceId,
           controller: foreign.did
         })
@@ -436,7 +436,7 @@ describe('did:webvh Space controller', () => {
       assert.equal(err.status, 400)
       assert.equal(err.data.errors[0].pointer, '#/controller')
       // The stored controller is untouched.
-      const description = await alice.was.space(space.spaceId).describe()
+      const description = await alice.pws.space(space.spaceId).describe()
       assert.equal(description.controller, alice.did)
     })
 
@@ -444,7 +444,7 @@ describe('did:webvh Space controller', () => {
       const space = await provisionSpace()
       const err = await requestError(
         promote({
-          signerClient: alice.was,
+          signerClient: alice.pws,
           spaceId: space.spaceId,
           controller: 'did:web:localhost'
         })
@@ -455,13 +455,13 @@ describe('did:webvh Space controller', () => {
 
     it('a self-hosted did:webvh with no published log is refused (400)', async () => {
       const spaceId = randomUUID()
-      const space = alice.was.space(spaceId)
+      const space = alice.pws.space(spaceId)
       await space.configure({ name: 'No Log', controller: alice.did })
       // Mint the DID but never publish its log.
       const minted = await mintWebvhDid({ spaceId })
 
       const err = await requestError(
-        promote({ signerClient: alice.was, spaceId, controller: minted.did })
+        promote({ signerClient: alice.pws, spaceId, controller: minted.did })
       )
       assert.equal(err.status, 400)
       assert.equal(err.data.errors[0].pointer, '#/controller')
@@ -482,7 +482,7 @@ describe('did:webvh Space controller', () => {
 
       const err = await requestError(
         promote({
-          signerClient: alice.was,
+          signerClient: alice.pws,
           spaceId: space.spaceId,
           controller: wrongScidDid
         })
@@ -493,7 +493,7 @@ describe('did:webvh Space controller', () => {
 
     it('a tampered log (bad proof on the last entry) is refused (400)', async () => {
       const spaceId = randomUUID()
-      const space = alice.was.space(spaceId)
+      const space = alice.pws.space(spaceId)
       await space.configure({ name: 'Tampered', controller: alice.did })
       await space.collection('id').configure({ force: true })
       const minted = await mintWebvhDid({ spaceId })
@@ -502,14 +502,14 @@ describe('did:webvh Space controller', () => {
       const tampered = structuredClone(minted.log) as DIDLog
       tampered[tampered.length - 1]!.state.alsoKnownAs = ['did:example:pwned']
       const published = await publishLog({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId,
         jsonl: logToJsonlString(tampered)
       })
       assert.equal(published.status, 201)
 
       const err = await requestError(
-        promote({ signerClient: alice.was, spaceId, controller: minted.did })
+        promote({ signerClient: alice.pws, spaceId, controller: minted.did })
       )
       assert.equal(err.status, 400)
       assert.equal(err.data.errors[0].pointer, '#/controller')
@@ -538,7 +538,7 @@ describe('did:webvh Space controller', () => {
      */
     async function provisionWitnessedLog() {
       const spaceId = randomUUID()
-      const space = alice.was.space(spaceId)
+      const space = alice.pws.space(spaceId)
       await space.configure({ name: 'Witnessed', controller: alice.did })
       await space.collection('id').configure({ force: true })
       const witnessKey = await Ed25519VerificationKey.generate()
@@ -550,7 +550,7 @@ describe('did:webvh Space controller', () => {
         }
       })
       const published = await publishLog({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId,
         jsonl: logToJsonlString(minted.log)
       })
@@ -561,11 +561,11 @@ describe('did:webvh Space controller', () => {
     it('refuses a promotion to it (400, #/controller), fetching nothing', async () => {
       const { spaceId, did } = await provisionWitnessedLog()
       const err = await requestError(
-        promote({ signerClient: alice.was, spaceId, controller: did })
+        promote({ signerClient: alice.pws, spaceId, controller: did })
       )
       assert.equal(err.status, 400)
       assert.equal(err.data.errors[0].pointer, '#/controller')
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description.controller, alice.did)
       assert.deepStrictEqual(watch.witnessFetches, [])
     })
@@ -589,7 +589,7 @@ describe('did:webvh Space controller', () => {
       assert.equal(appended.log.length, 2)
       const err = await requestError(
         publishLog({
-          signerClient: alice.was,
+          signerClient: alice.pws,
           spaceId,
           jsonl: logToJsonlString(appended.log)
         })
@@ -606,7 +606,7 @@ describe('did:webvh Space controller', () => {
       assert.equal(
         (
           await promote({
-            signerClient: alice.was,
+            signerClient: alice.pws,
             spaceId: space.spaceId,
             controller: space.did
           })
@@ -615,7 +615,7 @@ describe('did:webvh Space controller', () => {
       )
       // Sanity: the enrolled key works before the forgery.
       assert.deepStrictEqual(
-        await space.was
+        await space.pws
           .space(space.spaceId)
           .collection('credentials')
           .get('doc-1'),
@@ -679,7 +679,7 @@ describe('did:webvh Space controller', () => {
       assert.equal(
         (
           await promote({
-            signerClient: alice.was,
+            signerClient: alice.pws,
             spaceId: space.spaceId,
             controller: space.did
           })
@@ -756,22 +756,22 @@ describe('did:webvh Space controller', () => {
 
     it('promotes the Space to it (204)', async () => {
       const response = await promote({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId: space.spaceId,
         controller: space.did
       })
       assert.equal(response.status, 204)
-      const description = await space.was.space(space.spaceId).describe()
+      const description = await space.pws.space(space.spaceId).describe()
       assert.equal(description.controller, space.did)
     })
 
     it('the enrolled client key invokes against the promoted Space', async () => {
-      const doc = await space.was
+      const doc = await space.pws
         .space(space.spaceId)
         .collection('credentials')
         .get('doc-1')
       assert.deepStrictEqual(doc, { hello: 'world' })
-      await space.was
+      await space.pws
         .space(space.spaceId)
         .collection('credentials')
         .put('doc-3', { written: 'by webvh' })
@@ -811,7 +811,7 @@ describe('did:webvh Space controller', () => {
       })
       // The still-current client key authorizes the write of its own removal.
       const published = await publishLog({
-        signerClient: space.was,
+        signerClient: space.pws,
         spaceId: space.spaceId,
         collectionId: 'clientAnnex-0',
         jsonl: logToJsonlString(updated.log)
@@ -821,7 +821,7 @@ describe('did:webvh Space controller', () => {
       // The rotated-in key is the one that verifies now...
       replacementKey.id = `${space.did}#${replacementKey.publicKeyMultibase}`
       replacementKey.controller = space.did
-      const rotatedClient = wasClient({
+      const rotatedClient = pwsClient({
         signer: replacementKey.signer(),
         baseServerUrl
       })
@@ -836,7 +836,7 @@ describe('did:webvh Space controller', () => {
       // ...and the rotated-out one no longer does: its keyId is absent from
       // the current document, so it does not resolve, which is the masked 404.
       const err = await requestError(
-        space.was.request({
+        space.pws.request({
           url: `${baseServerUrl}space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
@@ -854,19 +854,19 @@ describe('did:webvh Space controller', () => {
     beforeAll(async () => {
       logSpace = await provisionSpace({ logCollectionId: 'clientAnnex-1' })
       controlledSpaceId = randomUUID()
-      await alice.was
+      await alice.pws
         .space(controlledSpaceId)
         .configure({ name: 'Controlled Space', controller: alice.did })
     })
 
     it('promotes a second Space to a DID anchored in the first (204)', async () => {
       const response = await promote({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId: controlledSpaceId,
         controller: logSpace.did
       })
       assert.equal(response.status, 204)
-      const description = await logSpace.was.space(controlledSpaceId).describe()
+      const description = await logSpace.pws.space(controlledSpaceId).describe()
       assert.equal(description.controller, logSpace.did)
       // The DID's log is anchored in the *other* Space.
       assert.equal(logSpace.did.split(':')[5], logSpace.spaceId)
@@ -874,7 +874,7 @@ describe('did:webvh Space controller', () => {
     })
 
     it('the cross-Space controller key invokes on the controlled Space', async () => {
-      const response = await logSpace.was.request({
+      const response = await logSpace.pws.request({
         url: `${baseServerUrl}space/${controlledSpaceId}/`,
         method: 'POST',
         json: { id: 'cross-space-collection', name: 'Made by webvh' }
@@ -885,7 +885,7 @@ describe('did:webvh Space controller', () => {
     it('deleting the log Collection in the hosting Space stops those invocations', async () => {
       // A DELETE of the log itself is refused, whoever asks...
       const refused = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
           method: 'DELETE'
         })
@@ -895,7 +895,7 @@ describe('did:webvh Space controller', () => {
       // ...but the hosting Space is still controlled by Alice's did:key, so she
       // may remove the Collection holding the log -- which is the controlled
       // Space's only key material.
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: `${baseServerUrl}space/${logSpace.spaceId}/clientAnnex-1/`,
         method: 'DELETE'
       })
@@ -904,7 +904,7 @@ describe('did:webvh Space controller', () => {
       // The invalidation is keyed by the log's location, in the OTHER Space, so
       // the cross-Space cache entry must go with it.
       const err = await requestError(
-        logSpace.was.request({
+        logSpace.pws.request({
           url: `${baseServerUrl}space/${controlledSpaceId}/`,
           method: 'POST',
           json: { id: 'after-log-deletion' }
@@ -916,7 +916,7 @@ describe('did:webvh Space controller', () => {
       // document there is no key to verify against, which is a failed
       // authorization and so the same masked 404.
       const readErr = await requestError(
-        logSpace.was.request({
+        logSpace.pws.request({
           url: `${baseServerUrl}space/${controlledSpaceId}/`,
           method: 'GET'
         })
@@ -944,7 +944,7 @@ describe('did:webvh Space controller', () => {
       spaceUrl = new URL(`/space/${space.spaceId}/`, baseServerUrl).toString()
       logUrl = `${spaceUrl}id/did.jsonl`
       const promoted = await promote({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId: space.spaceId,
         controller: space.did
       })
@@ -973,7 +973,7 @@ describe('did:webvh Space controller', () => {
       retiredLog = space.log
       currentLog = updated.log
       const rotated = await publishLog({
-        signerClient: space.was,
+        signerClient: space.pws,
         spaceId: space.spaceId,
         jsonl: logToJsonlString(currentLog)
       })
@@ -1030,7 +1030,7 @@ describe('did:webvh Space controller', () => {
      * @returns {Promise<void>}
      */
     async function assertCurrentKeyReads() {
-      const currentClient = wasClient({
+      const currentClient = pwsClient({
         signer: currentKeyPair.signer(),
         baseServerUrl
       })
@@ -1051,7 +1051,7 @@ describe('did:webvh Space controller', () => {
 
       // The retired key still cannot root-invoke.
       const denied = await requestError(
-        space.was.request({
+        space.pws.request({
           url: `${baseServerUrl}space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
@@ -1120,7 +1120,7 @@ describe('did:webvh Space controller', () => {
       space = await provisionSpace()
       // Promote the Space itself first (the wallet's ordering).
       const promoted = await promote({
-        signerClient: alice.was,
+        signerClient: alice.pws,
         spaceId: space.spaceId,
         controller: space.did
       })

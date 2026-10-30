@@ -81,7 +81,7 @@ describe('Staging temp-file cleanup (filesystem backend)', () => {
       backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: alice.space1.id,
       controller: alice.did
     })

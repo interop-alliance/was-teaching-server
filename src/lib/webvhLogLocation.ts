@@ -42,8 +42,9 @@ import {
   selectedCollectionIds,
   selectionsOverlap
 } from '../sync/collectionSelection.js'
-import { ProblemError } from '../errors.js'
+import { ProblemError, ReplicaRefusedError } from '../errors.js'
 import type {
+  ListedSpaceMetadata,
   ReplicaRegistration,
   ResourceResult,
   StorageBackend
@@ -410,7 +411,7 @@ interface Mapping {
 }
 
 /**
- * The first local Space whose controller, a `did:webvh` hosted in the peer
+ * The first of `spaces` whose controller, a `did:webvh` hosted in the peer
  * Space `fromSpace`, has one log location under the `before` mapping and
  * none, or two, under the `after` one. `undefined` when there is none. A
  * controller two local Spaces map before the change has no location to lose,
@@ -420,6 +421,7 @@ interface Mapping {
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.serverUrl {string}   this server's base URL
+ * @param options.spaces {ListedSpaceMetadata[]}   the local Spaces to check
  * @param options.fromSpace {string}   the peer Space whose mapping changes
  * @param options.before {Mapping}   its registrations now
  * @param options.after {Mapping}   its registrations after the change
@@ -429,17 +431,19 @@ interface Mapping {
 async function controllerUnmappedBy({
   storage,
   serverUrl,
+  spaces,
   fromSpace,
   before,
   after
 }: {
   storage: StorageBackend
   serverUrl: string
+  spaces: ListedSpaceMetadata[]
   fromSpace: string
   before: Mapping
   after: Mapping
 }): Promise<{ did: string; spaceId: string } | undefined> {
-  for (const space of await storage.listSpaces()) {
+  for (const space of spaces) {
     const did = after.controllers.get(space.id) ?? space.controller
     const hosted = parsePeerHostedWebvh(did, { serverUrl })
     if (hosted === undefined || hosted.fromSpace !== fromSpace) {
@@ -546,6 +550,7 @@ export async function controllerChangeConflict({
   const unmapped = await controllerUnmappedBy({
     storage,
     serverUrl,
+    spaces: await storage.listSpaces(),
     fromSpace: lost.fromSpace,
     ...(await mappingsOf(lost.fromSpace))
   })
@@ -592,11 +597,126 @@ export async function controllerUnmappedByRemoval({
   return await controllerUnmappedBy({
     storage,
     serverUrl,
+    spaces: await storage.listSpaces(),
     fromSpace,
     before: { candidates, controllers },
     after: {
       candidates: candidates.filter(entry => entry !== removed),
       controllers
     }
+  })
+}
+
+/**
+ * The first Space controller that deleting a local Space, or one Collection
+ * of it, would leave with no log location: a `did:webvh` that is a local
+ * Space's stored controller and resolves from the only copy the delete would
+ * take. `undefined` when there is none. A Space's own controller goes with
+ * the Space, so Delete Space is not refused for it, while a Delete Collection
+ * is, since the Space stays. Reads the stored registrations and the Spaces'
+ * controllers afresh, past the caches.
+ *
+ * @param options {object}
+ * @param options.storage {StorageBackend}
+ * @param options.serverUrl {string}   this server's base URL
+ * @param options.spaceId {string}   the local Space
+ * @param [options.collectionId] {string}   the Collection a Delete Collection
+ *   names; absent for Delete Space
+ * @returns {Promise<{ did: string, spaceId: string } | undefined>}   the DID
+ *   with the local Space it controls
+ */
+async function controllerUnmappedByDelete({
+  storage,
+  serverUrl,
+  spaceId,
+  collectionId
+}: {
+  storage: StorageBackend
+  serverUrl: string
+  spaceId: string
+  collectionId?: string
+}): Promise<{ did: string; spaceId: string } | undefined> {
+  // A Space with no registration keeps no copy, and most Spaces have none.
+  if ((await storage.listReplicas({ spaceId })).length === 0) {
+    return undefined
+  }
+  // Delete Space checks every other Space, Delete Collection the Spaces whose
+  // controller's log that Collection holds.
+  const spaces = (await storage.listSpaces()).filter(space =>
+    collectionId === undefined
+      ? space.id !== spaceId
+      : parsePeerHostedWebvh(space.controller, { serverUrl })?.collectionId ===
+        collectionId
+  )
+  const index = await buildReplicaIndex({ storage })
+  for (const [fromSpace, candidates] of index) {
+    if (!candidates.some(entry => entry.spaceId === spaceId)) {
+      continue
+    }
+    const controllers = await storedControllers({ storage, candidates })
+    const unmapped = await controllerUnmappedBy({
+      storage,
+      serverUrl,
+      spaces,
+      fromSpace,
+      before: { candidates, controllers },
+      after: {
+        candidates: candidates.filter(entry => entry.spaceId !== spaceId),
+        controllers
+      }
+    })
+    if (unmapped !== undefined) {
+      return unmapped
+    }
+  }
+  return undefined
+}
+
+/**
+ * Refuses a Delete Space or Delete Collection that would take the only copy
+ * of a log a Space's controller resolves from (see
+ * {@link controllerUnmappedByDelete}). A `did:webvh` hosted on a peer resolves
+ * here only from the copy a registration keeps, so that Space would be left
+ * with no resolvable controller and no break-glass, as it would by a Delete
+ * Replica.
+ *
+ * @param options {object}
+ * @param options.storage {StorageBackend}
+ * @param options.serverUrl {string}   this server's base URL
+ * @param options.spaceId {string}   the local Space
+ * @param [options.collectionId] {string}   the Collection a Delete Collection
+ *   names; absent for Delete Space
+ * @returns {Promise<void>}
+ * @throws {ReplicaRefusedError}
+ */
+export async function assertDeleteKeepsControllers({
+  storage,
+  serverUrl,
+  spaceId,
+  collectionId
+}: {
+  storage: StorageBackend
+  serverUrl: string
+  spaceId: string
+  collectionId?: string
+}): Promise<void> {
+  const unmapped = await controllerUnmappedByDelete({
+    storage,
+    serverUrl,
+    spaceId,
+    collectionId
+  })
+  if (unmapped === undefined) {
+    return
+  }
+  const [holder, holds] =
+    collectionId === undefined ? ['Space', 'keeps'] : ['Collection', 'holds']
+  throw new ReplicaRefusedError({
+    title: `The ${holder} cannot be removed.`,
+    pointer: null,
+    detail:
+      `Space "${unmapped.spaceId}" is controlled by "${unmapped.did}", ` +
+      `which resolves only from the copy of its log this ${holder} ${holds}. ` +
+      'Change that controller first.'
   })
 }

@@ -16,7 +16,7 @@ import type { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
-import type { Space, Collection } from '@interop/was-client'
+import type { Space, Collection } from '@interop/pws-client'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
@@ -63,7 +63,7 @@ describe('Chunk API (chunked-streams)', () => {
     ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: spaceId,
       name: "Alice's Chunk Space",
       controller: alice.did
@@ -82,7 +82,7 @@ describe('Chunk API (chunked-streams)', () => {
     it('[signed] GET and HEAD of a chunk with a matching If-None-Match are 304', async () => {
       const resourceId = 'cond-read-chunk'
       await dataCollection.put(resourceId, { id: resourceId, name: 'Manifest' })
-      const written = await alice.was.request({
+      const written = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([new Uint8Array([1, 2, 3])], {
@@ -94,7 +94,7 @@ describe('Chunk API (chunked-streams)', () => {
       for (const method of ['GET', 'HEAD']) {
         const getChunk = vi.spyOn(fastify.storage, 'getChunk')
         const unchanged = await responseOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method,
             headers: { 'if-none-match': etag }
@@ -110,7 +110,7 @@ describe('Chunk API (chunked-streams)', () => {
 
       // A stale validator gets the full chunk.
       const stale = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: chunkUrl(resourceId, 0),
           method: 'GET',
           headers: { 'if-none-match': '"99"' }
@@ -139,7 +139,7 @@ describe('Chunk API (chunked-streams)', () => {
         new Uint8Array([9])
       )
       const response = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: chunkUrl('cond-read-orphan', 0),
           method: 'GET',
           headers: { 'if-none-match': '*' }
@@ -156,7 +156,7 @@ describe('Chunk API (chunked-streams)', () => {
       await dataCollection.put(resourceId, { id: resourceId, name: 'Manifest' })
 
       const bytes = new Uint8Array([0, 1, 2, 253, 254, 255])
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([bytes], { type: 'application/octet-stream' })
@@ -167,7 +167,7 @@ describe('Chunk API (chunked-streams)', () => {
       parseEtagSegments(putEtag)
 
       // GET streams back the exact stored bytes with the stored content-type.
-      const getResponse = await alice.was.request({
+      const getResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'GET'
       })
@@ -180,7 +180,7 @@ describe('Chunk API (chunked-streams)', () => {
       assert.deepEqual(new Uint8Array(await getResponse.arrayBuffer()), bytes)
 
       // HEAD carries the payload headers from stored metadata, no body.
-      const headResponse = await alice.was.request({
+      const headResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'HEAD'
       })
@@ -197,14 +197,14 @@ describe('Chunk API (chunked-streams)', () => {
       assert.equal(await headResponse.text(), '')
 
       // DELETE removes the chunk; a subsequent GET 404s.
-      const deleteResponse = await alice.was.request({
+      const deleteResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'DELETE'
       })
       assert.equal(deleteResponse.status, 204)
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'GET'
           })
@@ -218,14 +218,14 @@ describe('Chunk API (chunked-streams)', () => {
       await dataCollection.put(resourceId, { id: resourceId })
 
       const envelope = { index: 0, jwe: { ciphertext: 'AAAA' } }
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         json: envelope
       })
       assert.equal(putResponse.status, 204)
 
-      const getResponse = await alice.was.request({
+      const getResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'GET'
       })
@@ -249,13 +249,13 @@ describe('Chunk API (chunked-streams)', () => {
         [0, 'application/json'],
         [1, 'application/ld+json']
       ] as const) {
-        const putResponse = await alice.was.request({
+        const putResponse = await alice.pws.request({
           url: chunkUrl(resourceId, index),
           method: 'PUT',
           body: new Blob([slice], { type })
         })
         assert.equal(putResponse.status, 204)
-        // A plain signed fetch: was-client would parse a JSON content type.
+        // A plain signed fetch: pws-client would parse a JSON content type.
         const url = chunkUrl(resourceId, index)
         const headers = await signCapabilityInvocation({
           url,
@@ -277,13 +277,13 @@ describe('Chunk API (chunked-streams)', () => {
       // An astral-plane character: a string piped by UTF-16 code unit would
       // split it into lone surrogates.
       const slice = 'a range of text \u{1F600} cut mid-sentence'
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([slice], { type: 'text/plain' })
       })
       assert.equal(putResponse.status, 204)
-      const getResponse = await alice.was.request({
+      const getResponse = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'GET'
       })
@@ -305,7 +305,7 @@ describe('Chunk API (chunked-streams)', () => {
       // Write out of order to prove the listing sorts by index, not write order.
       const putEtags: Record<number, string> = {}
       for (const index of [2, 0, 1]) {
-        const response = await alice.was.request({
+        const response = await alice.pws.request({
           url: chunkUrl(resourceId, index),
           method: 'PUT',
           body: new Blob([chunkBytes[index]!], {
@@ -316,7 +316,7 @@ describe('Chunk API (chunked-streams)', () => {
         putEtags[index] = response.headers.get('etag')!
       }
 
-      const listing = await alice.was.request({
+      const listing = await alice.pws.request({
         url: listUrl(resourceId),
         method: 'GET'
       })
@@ -346,7 +346,7 @@ describe('Chunk API (chunked-streams)', () => {
       }
       const heads = await Promise.all(
         listing.data.chunks.map((chunk: { index: number }) =>
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, chunk.index),
             method: 'HEAD'
           })
@@ -364,7 +364,7 @@ describe('Chunk API (chunked-streams)', () => {
       const resourceId = 'listed-etag-delete'
       await dataCollection.put(resourceId, { id: resourceId })
       for (const index of [0, 1]) {
-        const response = await alice.was.request({
+        const response = await alice.pws.request({
           url: chunkUrl(resourceId, index),
           method: 'PUT',
           body: new Blob([new Uint8Array([index])], {
@@ -373,7 +373,7 @@ describe('Chunk API (chunked-streams)', () => {
         })
         assert.equal(response.status, 204)
       }
-      const listing = await alice.was.request({
+      const listing = await alice.pws.request({
         url: listUrl(resourceId),
         method: 'GET'
       })
@@ -381,7 +381,7 @@ describe('Chunk API (chunked-streams)', () => {
       // Another entry's etag is refused, and the chunk's own succeeds.
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'DELETE',
             headers: { 'if-match': listing.data.chunks[1].etag }
@@ -389,7 +389,7 @@ describe('Chunk API (chunked-streams)', () => {
         ),
         412
       )
-      const pinned = await alice.was.request({
+      const pinned = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'DELETE',
         headers: { 'if-match': listing.data.chunks[0].etag }
@@ -401,7 +401,7 @@ describe('Chunk API (chunked-streams)', () => {
       const resourceId = 'no-chunks'
       await dataCollection.put(resourceId, { id: resourceId })
 
-      const listing = await alice.was.request({
+      const listing = await alice.pws.request({
         url: listUrl(resourceId),
         method: 'GET'
       })
@@ -413,7 +413,7 @@ describe('Chunk API (chunked-streams)', () => {
     it('[signed] listing an absent Resource 404s', async () => {
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: listUrl('does-not-exist'),
             method: 'GET'
           })
@@ -462,7 +462,7 @@ describe('Chunk API (chunked-streams)', () => {
     it('[signed] PUT a chunk of an absent parent Resource 404s', async () => {
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl('parent-missing', 0),
             method: 'PUT',
             body: new Blob([new Uint8Array([9])], {
@@ -482,7 +482,7 @@ describe('Chunk API (chunked-streams)', () => {
       for (const badIndex of ['abc', '-1', '01', '1.5']) {
         assert.equal(
           await statusOf(
-            alice.was.request({
+            alice.pws.request({
               url: chunkUrl(resourceId, badIndex),
               method: 'GET'
             })
@@ -503,7 +503,7 @@ describe('Chunk API (chunked-streams)', () => {
       // filesystem to the same range) and is rejected up front.
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, '2147483647'),
             method: 'GET'
           })
@@ -512,7 +512,7 @@ describe('Chunk API (chunked-streams)', () => {
       )
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, '2147483648'),
             method: 'GET'
           })
@@ -542,7 +542,7 @@ describe('Chunk API (chunked-streams)', () => {
       for (const method of ['GET', 'HEAD', 'DELETE']) {
         assert.equal(
           await statusOf(
-            alice.was.request({
+            alice.pws.request({
               url: chunkUrl('orphan-parent', 0),
               method
             })
@@ -594,7 +594,7 @@ describe('Chunk API (chunked-streams)', () => {
         for (let probe = 0; probe < 5; probe++) {
           assert.equal(
             await statusOf(
-              alice.was.request({
+              alice.pws.request({
                 url: chunkUrl('orphan-leak', 0),
                 method: 'GET'
               })
@@ -629,7 +629,7 @@ describe('Chunk API (chunked-streams)', () => {
       const resourceId = 'conditional'
       await dataCollection.put(resourceId, { id: resourceId })
 
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([new Uint8Array([1])], {
@@ -642,7 +642,7 @@ describe('Chunk API (chunked-streams)', () => {
       // A stale If-Match is rejected...
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'PUT',
             body: new Blob([new Uint8Array([2])], {
@@ -655,7 +655,7 @@ describe('Chunk API (chunked-streams)', () => {
       )
 
       // ...the matching one succeeds and advances the stamp.
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([new Uint8Array([2])], {
@@ -671,7 +671,7 @@ describe('Chunk API (chunked-streams)', () => {
       // If-None-Match: * on an existing chunk 412s (create-if-absent fails).
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'PUT',
             body: new Blob([new Uint8Array([3])], {
@@ -691,7 +691,7 @@ describe('Chunk API (chunked-streams)', () => {
       // Unlike Delete Resource, deleting an absent chunk is a 404.
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'DELETE'
           })
@@ -699,21 +699,21 @@ describe('Chunk API (chunked-streams)', () => {
         404
       )
 
-      await alice.was.request({
+      await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([new Uint8Array([7])], {
           type: 'application/octet-stream'
         })
       })
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'GET'
           })
@@ -726,7 +726,7 @@ describe('Chunk API (chunked-streams)', () => {
       const resourceId = 'dir-cleanup'
       await dataCollection.put(resourceId, { id: resourceId })
       for (const index of [0, 1]) {
-        await alice.was.request({
+        await alice.pws.request({
           url: chunkUrl(resourceId, index),
           method: 'PUT',
           body: new Blob([new Uint8Array([index])], {
@@ -744,7 +744,7 @@ describe('Chunk API (chunked-streams)', () => {
       )
       await stat(chunkDir) // present while chunks remain
 
-      await alice.was.request({
+      await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'DELETE'
       })
@@ -752,7 +752,7 @@ describe('Chunk API (chunked-streams)', () => {
 
       // The last delete removes the emptied directory itself, so it neither
       // shows up in the export walk nor counts toward the du-based quota.
-      await alice.was.request({
+      await alice.pws.request({
         url: chunkUrl(resourceId, 1),
         method: 'DELETE'
       })
@@ -763,7 +763,7 @@ describe('Chunk API (chunked-streams)', () => {
       const resourceId = 'chunk-generation-reset'
       await dataCollection.put(resourceId, { id: resourceId })
 
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([new Uint8Array([1])], {
@@ -773,14 +773,14 @@ describe('Chunk API (chunked-streams)', () => {
       const oldEtag = created.headers.get('etag')!
       parseEtagSegments(oldEtag)
 
-      await alice.was.request({
+      await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'DELETE'
       })
 
       // Unlike a Resource tombstone, a chunk keeps no sidecar across the
       // delete, so re-creating it mints a fresh generation.
-      const recreated = await alice.was.request({
+      const recreated = await alice.pws.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
         body: new Blob([new Uint8Array([9, 9])], {
@@ -794,7 +794,7 @@ describe('Chunk API (chunked-streams)', () => {
       // The old ETag is not the current one: a conditional GET with it is the
       // full (new) representation, never a 304.
       const conditional = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: chunkUrl(resourceId, 0),
           method: 'GET',
           headers: { 'if-none-match': oldEtag }
@@ -811,7 +811,7 @@ describe('Chunk API (chunked-streams)', () => {
       // generation the current chunk no longer carries.
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'PUT',
             body: new Blob([new Uint8Array([3])], {
@@ -838,7 +838,7 @@ describe('Chunk API (chunked-streams)', () => {
       await feedCollection.put('manifest', { id: 'manifest', sequence: 0 })
 
       // Drain the feed and keep the checkpoint after the initial write.
-      const initial = await alice.was.request({
+      const initial = await alice.pws.request({
         url: queryUrl,
         method: 'POST',
         json: { profile: 'changes', limit: 10 }
@@ -853,7 +853,7 @@ describe('Chunk API (chunked-streams)', () => {
       // A chunk write and a chunk delete stamp only the chunk's own record:
       // neither touches the parent Resource's feed position.
       for (const index of [0, 1]) {
-        await alice.was.request({
+        await alice.pws.request({
           url: feedChunkUrl(index),
           method: 'PUT',
           body: new Blob([new Uint8Array([index])], {
@@ -861,8 +861,8 @@ describe('Chunk API (chunked-streams)', () => {
           })
         })
       }
-      await alice.was.request({ url: feedChunkUrl(1), method: 'DELETE' })
-      const afterChunks = await alice.was.request({
+      await alice.pws.request({ url: feedChunkUrl(1), method: 'DELETE' })
+      const afterChunks = await alice.pws.request({
         url: queryUrl,
         method: 'POST',
         json: { profile: 'changes', limit: 10, checkpoint }
@@ -872,7 +872,7 @@ describe('Chunk API (chunked-streams)', () => {
       // The intended flow -- write chunks, then PUT the parent manifest with
       // its new sequence -- is what surfaces the change to replicators.
       await feedCollection.put('manifest', { id: 'manifest', sequence: 1 })
-      const afterManifest = await alice.was.request({
+      const afterManifest = await alice.pws.request({
         url: queryUrl,
         method: 'POST',
         json: { profile: 'changes', limit: 10, checkpoint }
@@ -891,7 +891,7 @@ describe('Chunk API (chunked-streams)', () => {
       const resourceId = 'cascade'
       await dataCollection.put(resourceId, { id: resourceId })
       for (const index of [0, 1]) {
-        await alice.was.request({
+        await alice.pws.request({
           url: chunkUrl(resourceId, index),
           method: 'PUT',
           body: new Blob([new Uint8Array([index])], {
@@ -901,7 +901,7 @@ describe('Chunk API (chunked-streams)', () => {
       }
 
       // Delete the parent Resource.
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'DELETE'
       })
@@ -910,7 +910,7 @@ describe('Chunk API (chunked-streams)', () => {
       // The chunks are gone (404), and the listing 404s since the parent is gone.
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: chunkUrl(resourceId, 0),
             method: 'GET'
           })
@@ -919,7 +919,7 @@ describe('Chunk API (chunked-streams)', () => {
       )
       assert.equal(
         await statusOf(
-          alice.was.request({
+          alice.pws.request({
             url: listUrl(resourceId),
             method: 'GET'
           })
@@ -938,7 +938,7 @@ describe('Chunk API (chunked-streams)', () => {
         new Uint8Array([20, 21, 22])
       ]
       for (const index of [0, 1]) {
-        await alice.was.request({
+        await alice.pws.request({
           url: chunkUrl(resourceId, index),
           method: 'PUT',
           body: new Blob([chunkBytes[index]!], {
@@ -951,7 +951,7 @@ describe('Chunk API (chunked-streams)', () => {
 
       // Import into a fresh Space (merges into a pre-provisioned target).
       const targetSpaceId = '6b5be748-5f39-4936-a895-409e393c399c'
-      const targetSpace = await alice.was.createSpace({
+      const targetSpace = await alice.pws.createSpace({
         id: targetSpaceId,
         name: 'Import Target',
         controller: alice.did
@@ -962,7 +962,7 @@ describe('Chunk API (chunked-streams)', () => {
       const targetChunkUrl = (index: number) =>
         `${baseServerUrl}space/${targetSpaceId}/data/${resourceId}/chunks/${index}`
       for (const index of [0, 1]) {
-        const response = await alice.was.request({
+        const response = await alice.pws.request({
           url: targetChunkUrl(index),
           method: 'GET'
         })
@@ -974,7 +974,7 @@ describe('Chunk API (chunked-streams)', () => {
       }
 
       // The listing round-trips too.
-      const listing = await alice.was.request({
+      const listing = await alice.pws.request({
         url: `${baseServerUrl}space/${targetSpaceId}/data/${resourceId}/chunks/`,
         method: 'GET'
       })
@@ -1004,7 +1004,7 @@ describe('Chunk API (chunked-streams)', () => {
         baseServerUrl: capServerUrl
       }))
 
-      const space = await capAlice.was.createSpace({
+      const space = await capAlice.pws.createSpace({
         id: capSpaceId,
         name: 'Chunk Upload Cap Space',
         controller: capAlice.did
@@ -1018,7 +1018,7 @@ describe('Chunk API (chunked-streams)', () => {
 
     it('[signed] a chunk over maxUploadBytes is rejected with 413', async () => {
       const resourceId = 'too-big'
-      await capAlice.was
+      await capAlice.pws
         .space(capSpaceId)
         .collection('data')
         .put(resourceId, { id: resourceId })
@@ -1026,7 +1026,7 @@ describe('Chunk API (chunked-streams)', () => {
       const oversized = new Uint8Array(maxUploadBytes * 2)
       assert.equal(
         await statusOf(
-          capAlice.was.request({
+          capAlice.pws.request({
             url: `${capServerUrl}space/${capSpaceId}/data/${resourceId}/chunks/0`,
             method: 'PUT',
             body: new Blob([oversized], { type: 'application/octet-stream' })

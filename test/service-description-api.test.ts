@@ -8,7 +8,7 @@ import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
@@ -39,7 +39,7 @@ describe('Service description API', () => {
     ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space",
       controller: alice.did
@@ -277,7 +277,7 @@ describe('Service description API', () => {
     })
 
     it('is on an authorized listing (200)', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/private-notes/`,
         method: 'GET'
       })
@@ -370,7 +370,7 @@ describe('Service description API', () => {
     ]
 
     it('the Space linkset carries the service relation', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/linkset`,
         method: 'GET'
       })
@@ -379,7 +379,7 @@ describe('Service description API', () => {
     })
 
     it('the Collection linkset carries the service relation', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/private-notes/linkset`,
         method: 'GET'
       })

@@ -10,7 +10,7 @@
  * much as on a plaintext one -- an absent value is the absence of
  * annotations, not a malformed encryption envelope.
  *
- * These drive the server through the `was.request()` escape hatch rather than
+ * These drive the server through the `pws.request()` escape hatch rather than
  * the high-level handles: the point is the wire behavior of one `PUT`, and the
  * assertions read the stored object back over the same wire.
  */
@@ -57,7 +57,7 @@ describe('Collection Metadata full replacement', () => {
   /** Provisions a fresh Space and returns its id. */
   async function freshSpace(): Promise<string> {
     const spaceId = `replace-space-${crypto.randomUUID()}`
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Replacement Space', controller: alice.did }
@@ -67,7 +67,7 @@ describe('Collection Metadata full replacement', () => {
 
   /** Reads a Collection Metadata object over the wire (raw JSON). */
   async function readMeta(spaceId: string, collectionId: string): Promise<any> {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
@@ -77,7 +77,7 @@ describe('Collection Metadata full replacement', () => {
   describe('`backend` survives an update that omits it', () => {
     it('keeps a registered selection, and the Resources stay reachable', async () => {
       const spaceId = await freshSpace()
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/backends`,
         method: 'POST',
         json: {
@@ -88,7 +88,7 @@ describe('Collection Metadata full replacement', () => {
         }
       })
 
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/photos/meta`,
         method: 'PUT',
         json: { id: 'photos', backend: { id: 'mem-1' } }
@@ -102,7 +102,7 @@ describe('Collection Metadata full replacement', () => {
         collectionId: 'photos',
         controller: alice.did
       })
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/photos/r1`,
         method: 'PUT',
         json: { hello: 'world' }
@@ -110,7 +110,7 @@ describe('Collection Metadata full replacement', () => {
 
       // A rename: the body carries no `backend`. Clearing it here would
       // repoint the data plane at the server default and strand `r1`.
-      const renamed = await alice.was.request({
+      const renamed = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/photos/meta`,
         method: 'PUT',
         json: { id: 'photos', name: 'Renamed' }
@@ -122,7 +122,7 @@ describe('Collection Metadata full replacement', () => {
       assert.deepStrictEqual(meta.backend, { id: 'mem-1' })
 
       // The Resource is still listed and still readable.
-      const listing = await alice.was.request({
+      const listing = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/photos/`,
         method: 'GET'
       })
@@ -130,7 +130,7 @@ describe('Collection Metadata full replacement', () => {
         listing.data.items.map((item: { id: string }) => item.id),
         ['r1']
       )
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/photos/r1`,
         method: 'GET'
       })
@@ -139,7 +139,7 @@ describe('Collection Metadata full replacement', () => {
 
     it('still defaults to the server backend on a create that omits it', async () => {
       const spaceId = await freshSpace()
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/notes/meta`,
         method: 'PUT',
         json: { id: 'notes' }
@@ -150,7 +150,7 @@ describe('Collection Metadata full replacement', () => {
 
     it('refuses an explicit change of the selection (409 backend-immutable)', async () => {
       const spaceId = await freshSpace()
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/backends`,
         method: 'POST',
         json: {
@@ -160,13 +160,13 @@ describe('Collection Metadata full replacement', () => {
           connection: { kind: 'inmem' }
         }
       })
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/docs/meta`,
         method: 'PUT',
         json: { id: 'docs' }
       })
       const moved = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/docs/meta`,
           method: 'PUT',
           json: { id: 'docs', backend: { id: 'mem-2' } }
@@ -185,7 +185,7 @@ describe('Collection Metadata full replacement', () => {
 
     it('lets an encrypted Collection created without `custom` be updated', async () => {
       const spaceId = await freshSpace()
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/vault/meta`,
         method: 'PUT',
         json: { id: 'vault', encryption: descriptor }
@@ -196,7 +196,7 @@ describe('Collection Metadata full replacement', () => {
       // The same descriptor plus a name, still carrying no `custom`. Judging
       // the absent value as an envelope would refuse this with a 422 and
       // freeze the Collection for good.
-      const renamed = await alice.was.request({
+      const renamed = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/vault/meta`,
         method: 'PUT',
         json: { id: 'vault', name: 'Vault', encryption: descriptor }
@@ -211,7 +211,7 @@ describe('Collection Metadata full replacement', () => {
 
     it('clears a stored envelope when a later update omits it', async () => {
       const spaceId = await freshSpace()
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/vault/meta`,
         method: 'PUT',
         json: {
@@ -226,7 +226,7 @@ describe('Collection Metadata full replacement', () => {
       })
       assert.notEqual((await readMeta(spaceId, 'vault')).custom, undefined)
 
-      const cleared = await alice.was.request({
+      const cleared = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/vault/meta`,
         method: 'PUT',
         json: { id: 'vault', encryption: descriptor }

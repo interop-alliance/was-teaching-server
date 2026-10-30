@@ -50,17 +50,17 @@ describe('Masked denials are indistinguishable', () => {
     const rogueKeyPair = await Ed25519VerificationKey.generate()
     rogueSigner = rogueKeyPair.didKeySigner()
 
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Masked Denial Space', controller: alice.did }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Credentials' }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/`,
       method: 'POST',
       json: { id: resourceId, name: 'A document' }
@@ -302,7 +302,7 @@ describe('Masked denials are indistinguishable', () => {
     })
 
     it('an authorized Create Space at an existing id is still a 409', async () => {
-      const response = await alice.was
+      const response = await alice.pws
         .request({
           url: `${baseServerUrl}spaces/`,
           method: 'POST',

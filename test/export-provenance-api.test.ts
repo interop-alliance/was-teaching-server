@@ -21,7 +21,7 @@ import {
   openTempBackend,
   startTestServer,
   verifyProvenanceOffline,
-  wasClient,
+  pwsClient,
   zcapClients
 } from './helpers.js'
 
@@ -37,7 +37,7 @@ describe('Export provenance (wire level)', () => {
   const logLines: { level: number; msg: string; reason?: string }[] = []
 
   async function exportArchive() {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/export`,
       method: 'POST'
     })
@@ -67,15 +67,15 @@ describe('Export provenance (wire level)', () => {
         }
       }
     }))
-    admin = wasClient({ signer: adminKeyPair.didKeySigner(), baseServerUrl })
+    admin = pwsClient({ signer: adminKeyPair.didKeySigner(), baseServerUrl })
     ;({ alice } = await zcapClients({ baseServerUrl }))
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       controller: alice.did
     })
     await space.createCollection({ id: 'notes' })
     for (const resourceId of ['one', 'two', 'three']) {
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/notes/${resourceId}`,
         method: 'PUT',
         json: { resourceId }

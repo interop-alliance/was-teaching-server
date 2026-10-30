@@ -540,11 +540,11 @@ files. In the encrypted Collection a 100 KiB file is one EDV document, while a
 (the document, each chunk, the document again) and one read is 11.
 
 The encrypted Collection is set up the way freewallet sets up its own: the seed
-uses `@interop/was-client` with a throwaway X25519 key, installs the key epoch
+uses `@interop/pws-client` with a throwaway X25519 key, installs the key epoch
 with a blinded-index key, and writes real EDV envelopes and chunks. That part of
 the seed runs over signed HTTP (through an in-process server on the same backend
 for `pnpm perf:pg:seed` and `pnpm perf:fs:seed`, and against the server under
-test for a fresh `pnpm perf:fs` run), because was-client is what makes the
+test for a fresh `pnpm perf:fs` run), because pws-client is what makes the
 envelopes. Timed encrypted writes send copies of the stored envelopes and chunks
 at fresh ids, and no read decrypts, so the numbers measure the server rather
 than client-side crypto. Binary writes in every Collection create a file, timed,
@@ -579,7 +579,7 @@ does not list. `--split fs=100` measures one backend alone.
 ```bash
 # Measure both backends side by side, half the Collections on each.
 # `--payloads json,small` leaves out the 10 MiB file, which an uplink slower
-# than about 1 MB/s can't send within was-client's 10 s request timeout:
+# than about 1 MB/s can't send within pws-client's 10 s request timeout:
 pnpm perf:remote --url https://staging.freewallet.me --payloads json,small
 # Weight the run toward one backend, here 30% of the Collections on Postgres:
 pnpm perf:remote --url https://staging.freewallet.me --split postgres=30,fs=70

@@ -6,8 +6,8 @@ import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
-import { NotFoundError } from '@interop/was-client'
-import type { Space, Collection } from '@interop/was-client'
+import { NotFoundError } from '@interop/pws-client'
+import type { Space, Collection } from '@interop/pws-client'
 
 import {
   assertEtagAdvanced,
@@ -38,7 +38,7 @@ describe('Resource API', () => {
     // Provision the Space and 'credentials' Collection this suite operates on.
     // This suite uses its own temp dataDir, so these must be created here
     // rather than relying on filesystem state left behind by other test files.
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -70,7 +70,7 @@ describe('Resource API', () => {
 
   // TODO: make sure all iterations return ResourceNotFound error
   it('GET resource in a not-found space returns null (404 conflation)', async () => {
-    const fetched = await alice.was
+    const fetched = await alice.pws
       .space('space-id-that-does-not-exist')
       .collection('unknown-collection')
       .get('unknown-resource')
@@ -200,7 +200,7 @@ describe('Resource API', () => {
 
     // Bob reads via his own client and gets null (404 conflated: not-found vs
     // unauthorized), so the resource's existence is not revealed.
-    const seenByBob = await bob.was
+    const seenByBob = await bob.pws
       .space(alice.space1.id)
       .collection('credentials')
       .get(result.id)
@@ -263,7 +263,7 @@ describe('Resource API', () => {
       const blob = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
       const result = await aliceCredentials.add(blob)
 
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: result.url,
         method: 'HEAD'
       })
@@ -328,7 +328,7 @@ describe('Resource API', () => {
         name: 'Meta JSON Resource'
       })
 
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -347,7 +347,7 @@ describe('Resource API', () => {
       const blob = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
       const result = await aliceCredentials.add(blob)
 
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${result.url}/meta`,
         method: 'GET'
       })
@@ -360,7 +360,7 @@ describe('Resource API', () => {
     it('[signed] GET /meta of a nonexistent resource 404s', async () => {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl('does-not-exist'),
           method: 'GET'
         })
@@ -380,7 +380,7 @@ describe('Resource API', () => {
 
       let thrown: any
       try {
-        await bob.was.request({ url: metaUrl(resourceId), method: 'GET' })
+        await bob.pws.request({ url: metaUrl(resourceId), method: 'GET' })
       } catch (err) {
         thrown = err
       }
@@ -426,7 +426,7 @@ describe('Resource API', () => {
       const resourceId = 'meta-timestamps'
       await aliceCredentials.put(resourceId, { id: resourceId })
 
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -446,7 +446,7 @@ describe('Resource API', () => {
       const resourceId = 'meta-created-by'
       await aliceCredentials.put(resourceId, { id: resourceId })
 
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -457,7 +457,7 @@ describe('Resource API', () => {
       const resourceId = 'meta-writable'
       await aliceCredentials.put(resourceId, { id: resourceId })
 
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'PUT',
         json: {
@@ -470,7 +470,7 @@ describe('Resource API', () => {
       assert.equal(putResponse.status, 200)
 
       // GET /meta reflects the new custom object (server-managed fields intact).
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -479,7 +479,7 @@ describe('Resource API', () => {
       assert.deepEqual(meta.custom.tags, { project: 'demo', status: 'draft' })
 
       // The List Collection result now shows the custom.name as the Resource name.
-      const { data: listing } = await alice.was.request({
+      const { data: listing } = await alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/credentials/`,
         method: 'GET'
       })
@@ -491,19 +491,19 @@ describe('Resource API', () => {
       const resourceId = 'meta-clear'
       await aliceCredentials.put(resourceId, { id: resourceId })
 
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'PUT',
         json: { custom: { name: 'Temporary' } }
       })
       // An empty body object clears all user-writable properties.
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'PUT',
         json: {}
       })
 
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -515,11 +515,11 @@ describe('Resource API', () => {
       await aliceCredentials.put(resourceId, { id: resourceId })
 
       // GET the whole Metadata object, tweak custom, and PUT it back unstripped.
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'PUT',
         json: {
@@ -531,7 +531,7 @@ describe('Resource API', () => {
       })
       assert.equal(putResponse.status, 200)
 
-      const { data: after } = await alice.was.request({
+      const { data: after } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -545,14 +545,14 @@ describe('Resource API', () => {
       const resourceId = 'meta-created-by-preserved'
       await aliceCredentials.put(resourceId, { id: resourceId })
 
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'PUT',
         json: { custom: { name: 'Some Custom Data' } }
       })
       assert.equal(putResponse.status, 200)
 
-      const { data: meta } = await alice.was.request({
+      const { data: meta } = await alice.pws.request({
         url: metaUrl(resourceId),
         method: 'GET'
       })
@@ -563,7 +563,7 @@ describe('Resource API', () => {
     it('[signed] PUT /meta of a nonexistent resource 404s (does not create)', async () => {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl('does-not-exist'),
           method: 'PUT',
           json: { custom: { name: 'nope' } }
@@ -584,7 +584,7 @@ describe('Resource API', () => {
 
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: metaUrl(resourceId),
           method: 'PUT',
           json: { custom: 'not-an-object' }
@@ -603,7 +603,7 @@ describe('Resource API', () => {
 
       let thrown: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: metaUrl(resourceId),
           method: 'PUT',
           json: { custom: { name: 'hijack' } }
@@ -628,7 +628,7 @@ describe('Resource API', () => {
       resourceId: string
     ): Promise<{ url: string; etag: string }> {
       const url = resourceUrl(resourceId)
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url,
         method: 'PUT',
         body: new Blob(['hello'], { type: 'text/plain' })
@@ -640,7 +640,7 @@ describe('Resource API', () => {
       const { url, etag } = await textResource('cond-read-get-match')
       const getResource = vi.spyOn(fastify.storage, 'getResource')
       const response = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url,
           method: 'GET',
           headers: { 'if-none-match': etag }
@@ -658,13 +658,13 @@ describe('Resource API', () => {
 
     it('[signed] GET with a stale If-None-Match is the full 200', async () => {
       const { url, etag } = await textResource('cond-read-get-stale')
-      await alice.was.request({
+      await alice.pws.request({
         url,
         method: 'PUT',
         body: new Blob(['hello again'], { type: 'text/plain' })
       })
       const response = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url,
           method: 'GET',
           headers: { 'if-none-match': etag }
@@ -681,7 +681,7 @@ describe('Resource API', () => {
       const { url, etag } = await textResource('cond-read-get-forms')
       for (const ifNoneMatch of [`W/${etag}`, `"99", ${etag}`, '*']) {
         const response = await responseOf(
-          alice.was.request({
+          alice.pws.request({
             url,
             method: 'GET',
             headers: { 'if-none-match': ifNoneMatch }
@@ -694,7 +694,7 @@ describe('Resource API', () => {
     it('[signed] HEAD with a matching If-None-Match is 304', async () => {
       const { url, etag } = await textResource('cond-read-head-match')
       const response = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url,
           method: 'HEAD',
           headers: { 'if-none-match': etag }
@@ -709,14 +709,14 @@ describe('Resource API', () => {
       const resourceId = 'cond-read-meta'
       const { url } = await textResource(resourceId)
       const metaUrl = `${url}/meta`
-      const written = await alice.was.request({
+      const written = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'Meta' } }
       })
       const metaEtag = written.headers.get('etag')!
       const unchanged = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'GET',
           headers: { 'if-none-match': metaEtag }
@@ -727,14 +727,14 @@ describe('Resource API', () => {
       assert.equal(unchanged.headers.get('content-length'), null)
 
       // A superseded /meta ETag misses.
-      const rewritten = await alice.was.request({
+      const rewritten = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'Meta 2' } }
       })
       assert.notEqual(rewritten.headers.get('etag'), metaEtag)
       const stale = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'GET',
           headers: { 'if-none-match': metaEtag }
@@ -749,14 +749,14 @@ describe('Resource API', () => {
       const { url, etag: contentEtag } = await textResource(
         'cond-read-meta-unwritten'
       )
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${url}/meta`,
         method: 'GET'
       })
       assert.equal(read.headers.get('etag'), contentEtag)
       for (const ifNoneMatch of [contentEtag, '*']) {
         const conditional = await responseOf(
-          alice.was.request({
+          alice.pws.request({
             url: `${url}/meta`,
             method: 'GET',
             headers: { 'if-none-match': ifNoneMatch }
@@ -772,14 +772,14 @@ describe('Resource API', () => {
         'cond-read-meta-composite'
       )
       const metaUrl = `${url}/meta`
-      const before = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const before = await alice.pws.request({ url: metaUrl, method: 'GET' })
       const beforeEtag = before.headers.get('etag')!
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'Composite' } }
       })
-      const after = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const after = await alice.pws.request({ url: metaUrl, method: 'GET' })
       const afterEtag = after.headers.get('etag')!
       // Eight segments: the content ETag, then the /meta record's validator.
       const parts = splitResourceMetaEtag(afterEtag)
@@ -788,7 +788,7 @@ describe('Resource API', () => {
       parseEtagSegments(parts.meta)
       assert.equal(afterEtag.split('.').length, 8)
       const stale = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'GET',
           headers: { 'if-none-match': beforeEtag }
@@ -801,23 +801,23 @@ describe('Resource API', () => {
     it('[signed] a content write that changes the content type moves the /meta ETag', async () => {
       const { url } = await textResource('cond-read-meta-content-type')
       const metaUrl = `${url}/meta`
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'Typed' } }
       })
       const held = (
-        await alice.was.request({ url: metaUrl, method: 'GET' })
+        await alice.pws.request({ url: metaUrl, method: 'GET' })
       ).headers.get('etag')!
       // The content write leaves the /meta record alone, but the body it
       // serves changes (`contentType`, `size`, the content stamp).
-      const rewritten = await alice.was.request({
+      const rewritten = await alice.pws.request({
         url,
         method: 'PUT',
         body: new Blob(['<p>hello</p>'], { type: 'text/html' })
       })
       const response = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'GET',
           headers: { 'if-none-match': held }
@@ -842,7 +842,7 @@ describe('Resource API', () => {
       })
       assert.equal(anonymous.status, 404)
       const other = await responseOf(
-        bob.was.request({
+        bob.pws.request({
           url,
           method: 'GET',
           headers: { 'if-none-match': etag }
@@ -878,7 +878,7 @@ describe('Resource API', () => {
 
     it('surfaces an ETag on write and GET that advances on each write', async () => {
       const resourceId = 'cond-etag-roundtrip'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
@@ -888,14 +888,14 @@ describe('Resource API', () => {
       parseEtagSegments(createdEtag)
 
       // GET echoes the same validator.
-      const got = await alice.was.request({
+      const got = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'GET'
       })
       assert.equal(got.headers.get('etag'), createdEtag)
 
       // A second (unconditional) write advances the version, same generation.
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
@@ -910,13 +910,13 @@ describe('Resource API', () => {
       // a HEAD carries none, so a JSON content-type would make it choke on the
       // empty body. The ETag header path is identical to GET / `/meta`.
       const resourceId = 'cond-etag-head'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         body: new Blob(['hello'], { type: 'text/plain' })
       })
       const etag = created.headers.get('etag')!
-      const head = await alice.was.request({
+      const head = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'HEAD'
       })
@@ -926,14 +926,14 @@ describe('Resource API', () => {
 
     it('a matching If-Match succeeds and advances the ETag', async () => {
       const resourceId = 'cond-ifmatch-ok'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
       })
       const etag = created.headers.get('etag')!
 
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 },
@@ -947,14 +947,14 @@ describe('Resource API', () => {
 
     it('a stale If-Match is rejected with 412 precondition-failed', async () => {
       const resourceId = 'cond-ifmatch-stale'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
       })
       const staleEtag = created.headers.get('etag')!
       // Advance the version so the original validator is now stale.
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
@@ -962,7 +962,7 @@ describe('Resource API', () => {
 
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: resourceUrl(resourceId),
           method: 'PUT',
           json: { id: resourceId, n: 3 },
@@ -977,7 +977,7 @@ describe('Resource API', () => {
 
     it('If-None-Match: * creates when absent and 412s when the target exists', async () => {
       const resourceId = 'cond-ifnonematch'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 },
@@ -989,7 +989,7 @@ describe('Resource API', () => {
       // A second create-if-absent against the now-existing resource fails.
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: resourceUrl(resourceId),
           method: 'PUT',
           json: { id: resourceId, n: 2 },
@@ -1007,7 +1007,7 @@ describe('Resource API', () => {
 
     it('serializes concurrent If-Match writers: exactly one wins, the other 412s', async () => {
       const resourceId = 'cond-concurrent'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 0 }
@@ -1017,13 +1017,13 @@ describe('Resource API', () => {
       // Two writers race with the same prior ETag; the per-resource lock lets
       // only one observe the matching version, so the other gets a 412.
       const results = await Promise.allSettled([
-        alice.was.request({
+        alice.pws.request({
           url: resourceUrl(resourceId),
           method: 'PUT',
           json: { id: resourceId, n: 1 },
           headers: { 'if-match': etag }
         }),
-        alice.was.request({
+        alice.pws.request({
           url: resourceUrl(resourceId),
           method: 'PUT',
           json: { id: resourceId, n: 2 },
@@ -1042,7 +1042,7 @@ describe('Resource API', () => {
 
     it('checks authorization before the precondition: Bob gets 404, not 412', async () => {
       const resourceId = 'cond-authz-first'
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
@@ -1052,7 +1052,7 @@ describe('Resource API', () => {
       // get the privacy-merged 404, never a 412 (a 412 would leak existence).
       let thrown: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: resourceUrl(resourceId),
           method: 'PUT',
           json: { id: resourceId, n: 2 },
@@ -1067,7 +1067,7 @@ describe('Resource API', () => {
 
     it('DELETE honors If-Match: a stale validator 412s, the matching one succeeds', async () => {
       const resourceId = 'cond-delete'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
@@ -1077,7 +1077,7 @@ describe('Resource API', () => {
       // A stale If-Match delete is rejected...
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: resourceUrl(resourceId),
           method: 'DELETE',
           headers: { 'if-match': '"999"' }
@@ -1089,7 +1089,7 @@ describe('Resource API', () => {
       assert.equal(thrown.response.status, 412)
 
       // ...and the matching one succeeds, removing the resource.
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'DELETE',
         headers: { 'if-match': etag }
@@ -1101,7 +1101,7 @@ describe('Resource API', () => {
 
     it('a tombstone keeps the generation: PUT / DELETE / PUT continues the stamp', async () => {
       const resourceId = 'cond-tombstone-generation'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
@@ -1110,14 +1110,14 @@ describe('Resource API', () => {
       parseEtagSegments(createdEtag)
 
       // The tombstone sidecar survives the content, continuing the stamp.
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'DELETE'
       })
 
       // Re-creating under the same id keeps the generation and mints a later
       // stamp, rather than starting a fresh generation.
-      const recreated = await alice.was.request({
+      const recreated = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
@@ -1130,15 +1130,15 @@ describe('Resource API', () => {
     it('PUT /meta with If-Match from a GET of /meta succeeds, and a stale one is 412', async () => {
       const resourceId = 'cond-meta-if-match'
       const metaUrl = `${resourceUrl(resourceId)}/meta`
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
       })
       // Before any metadata write, the ETag a GET serves is the content ETag,
       // and it still gates the first metadata write.
-      const unwritten = await alice.was.request({ url: metaUrl, method: 'GET' })
-      const first = await alice.was.request({
+      const unwritten = await alice.pws.request({ url: metaUrl, method: 'GET' })
+      const first = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'first' } },
@@ -1146,10 +1146,10 @@ describe('Resource API', () => {
       })
       assert.equal(first.status, 200)
 
-      const read = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const read = await alice.pws.request({ url: metaUrl, method: 'GET' })
       const readEtag = read.headers.get('etag')!
       assert.equal(readEtag, first.headers.get('etag'))
-      const second = await alice.was.request({
+      const second = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'second' } },
@@ -1159,7 +1159,7 @@ describe('Resource API', () => {
 
       // The ETag read before the second write is now stale ...
       const staleMeta = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'PUT',
           json: { custom: { name: 'stale' } },
@@ -1169,13 +1169,13 @@ describe('Resource API', () => {
       assert.equal(staleMeta.status, 412)
       // ... and so is the current one once a content write lands.
       const current = second.headers.get('etag')!
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
       })
       const staleContent = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'PUT',
           json: { custom: { name: 'stale' } },
@@ -1190,13 +1190,13 @@ describe('Resource API', () => {
     it('a tombstone drops the /meta validator: PUT /meta, DELETE, PUT, PUT /meta starts a new meta generation', async () => {
       const resourceId = 'cond-tombstone-meta-generation'
       const metaUrl = `${resourceUrl(resourceId)}/meta`
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
       })
       const createdEtag = created.headers.get('etag')!
-      const preDeleteMeta = await alice.was.request({
+      const preDeleteMeta = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'before' } }
@@ -1211,11 +1211,11 @@ describe('Resource API', () => {
         'the /meta record carries its own generation'
       )
 
-      await alice.was.request({
+      await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'DELETE'
       })
-      const recreated = await alice.was.request({
+      const recreated = await alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
@@ -1232,7 +1232,7 @@ describe('Resource API', () => {
 
       // A replica still holding the pre-delete /meta ETag is refused ...
       const stale = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl,
           method: 'PUT',
           json: { custom: { name: 'stale replica' } },
@@ -1242,7 +1242,7 @@ describe('Resource API', () => {
       assert.equal(stale.status, 412)
       // ... while a guarded create of the metadata object succeeds, under a
       // fresh generation rather than the old one.
-      const revivedMeta = await alice.was.request({
+      const revivedMeta = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { custom: { name: 'after' } },
@@ -1336,7 +1336,7 @@ describe('Resource API', () => {
         const meta = await aliceCredentials.resource(resourceId).meta()
         assert.equal(meta!.contentType, type)
         assert.equal(meta!.size, Buffer.byteLength(body))
-        const response = await alice.was.request({
+        const response = await alice.pws.request({
           url: `${baseServerUrl}space/${alice.space1.id}/credentials/${resourceId}`,
           method: 'GET'
         })
@@ -1354,7 +1354,7 @@ describe('Resource API', () => {
       const meta = await aliceCredentials.resource('mixed').meta()
       assert.equal(meta!.contentType, type)
       assert.equal(meta!.size, Buffer.byteLength(body))
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/credentials/mixed`,
         method: 'GET'
       })
@@ -1487,7 +1487,7 @@ describe('Resource API', () => {
       ;({ alice: openAlice } = await zcapClients({
         baseServerUrl: openServerUrl
       }))
-      const space = await openAlice.was.createSpace({
+      const space = await openAlice.pws.createSpace({
         id: openSpaceId,
         name: 'Multipart Open Space',
         controller: openAlice.did
@@ -1531,7 +1531,7 @@ describe('Resource API', () => {
       ;({ alice: capAlice } = await zcapClients({
         baseServerUrl: capServerUrl
       }))
-      const space = await capAlice.was.createSpace({
+      const space = await capAlice.pws.createSpace({
         id: capSpaceId,
         name: 'Multipart Cap Space',
         controller: capAlice.did

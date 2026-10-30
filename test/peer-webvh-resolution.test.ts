@@ -172,7 +172,7 @@ describe('peer server did:webvh resolution', () => {
       `/space/${spaceId}/credentials/doc-1`,
       baseServerUrl
     ).toString()
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Replicated Space', controller: alice.did })
     await space.collection('credentials').configure({ force: true })
     await space.collection('credentials').put('doc-1', { hello: 'world' })
@@ -711,7 +711,7 @@ describe('peer server did:webvh resolution', () => {
         })
       )
       assert.deepStrictEqual(
-        await alice.was.space(spaceId).collection('credentials').get('doc-1'),
+        await alice.pws.space(spaceId).collection('credentials').get('doc-1'),
         { hello: 'world' }
       )
     })
@@ -966,7 +966,7 @@ describe('peer server did:webvh resolution', () => {
       const { alice: blockedAlice } = await zcapClients({
         baseServerUrl: blockedUrl
       })
-      const space = blockedAlice.was.space(blockedSpaceId)
+      const space = blockedAlice.pws.space(blockedSpaceId)
       await space.configure({ name: 'Blocklist Space', controller: alice.did })
       await space.collection('credentials').configure({ force: true })
       await space.collection('credentials').put('doc-1', { hello: 'world' })

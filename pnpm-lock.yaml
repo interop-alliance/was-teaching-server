@@ -126,12 +126,12 @@ importers:
       '@interop/did-cli':
         specifier: ^0.17.0
         version: 0.17.0(@interop/jsonld-signatures@11.9.0)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
+      '@interop/pws-client':
+        specifier: ^0.104.0
+        version: 0.104.0(@interop/jsonld-signatures@11.9.0)
       '@interop/pws-conformance-suite':
         specifier: ^0.35.0
         version: 0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
-      '@interop/was-client':
-        specifier: ^0.103.0
-        version: 0.103.0(@interop/jsonld-signatures@11.9.0)
       '@interop/webkms-client':
         specifier: ^15.0.3
         version: 15.0.3
@@ -696,6 +696,10 @@ packages:
 
   '@interop/minimal-cipher@7.11.1':
     resolution: {integrity: sha512-2IW190KLOH7GmUqwD7Wg82bc9dC5DYxRpgW5Z+MV87CxsVOu5wRNXr7Bd7Bne0bo3XU04r4lAVq4KB3eJuHbig==}
+    engines: {node: '>=24.0'}
+
+  '@interop/pws-client@0.104.0':
+    resolution: {integrity: sha512-If1ZihvdZBdCc/RHnjCacDISmx7SMXBPvRcMeJeGsOwY6Vi9fgy66+4dBaOFF0LDjOXnfzZsPn0xCbzMVDz8pQ==}
     engines: {node: '>=24.0'}
 
   '@interop/pws-conformance-suite@0.35.0':
@@ -3532,6 +3536,27 @@ snapshots:
       '@scure/base': 2.4.0
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
+
+  '@interop/pws-client@0.104.0(@interop/jsonld-signatures@11.9.0)':
+    dependencies:
+      '@interop/capability-agent': 0.2.2
+      '@interop/data-integrity-core': 8.9.0
+      '@interop/ed25519-signature': 7.2.5(@interop/jsonld-signatures@11.9.0)
+      '@interop/edv-client': 17.9.4
+      '@interop/ezcap': 7.5.4
+      '@interop/http-client': 1.0.5
+      '@interop/minimal-cipher': 7.11.1
+      '@interop/storage-core': 0.43.0
+      '@interop/vh-resource-log': 0.10.1
+      '@interop/x25519-key-agreement-key': 5.4.3
+      '@interop/zcap': 11.4.0
+      '@noble/hashes': 2.4.0
+      '@scure/base': 2.4.0
+      json-canonicalize: 3.0.0
+    transitivePeerDependencies:
+      - '@interop/jsonld-signatures'
+      - expo-crypto
+      - react-native-get-random-values
 
   '@interop/pws-conformance-suite@0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
     dependencies:

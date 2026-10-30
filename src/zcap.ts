@@ -1752,9 +1752,9 @@ export async function verifyRevocationChain({
  * `CapabilityDelegation` purpose, which also requires the proof's
  * verification method to be one `rootController`'s resolved document lists
  * under `capabilityDelegation`. A `did:webvh` root controller resolves
- * through `webvh`: from storage when this server holds its log, else through
- * the grant the context carries. The replica registration's bootstrap branch
- * verifies the pull capability this way.
+ * through `webvh`, under the rules of the grant the context carries, else
+ * from storage. The replica registration's bootstrap branch verifies the
+ * pull capability this way.
  *
  * A server fault met under the document loader (a storage error under a
  * `did:webvh` log read) is thrown, as it is not the capability's doing. Any
@@ -1766,8 +1766,8 @@ export async function verifyRevocationChain({
  *   target, the only target the chain may root in
  * @param options.rootController {string}   the root capability's controller
  * @param options.webvh {WebvhResolverContext}   storage + serverUrl for the
- *   local `did:webvh` resolver, with a peer grant for a controller whose log
- *   this server does not store
+ *   local `did:webvh` resolver, with a peer grant when the caller holds the
+ *   controller's document
  * @returns {Promise<Error | undefined>}   why the chain does not verify, or
  *   `undefined` when it does
  */

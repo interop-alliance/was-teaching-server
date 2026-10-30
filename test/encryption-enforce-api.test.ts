@@ -11,7 +11,7 @@
  * writer can ever land server-visible plaintext in an encrypted Collection. The
  * server validates structure only and never decrypts.
  *
- * These drive the wire contract directly via the signed `was.request()` escape
+ * These drive the wire contract directly via the signed `pws.request()` escape
  * hatch (raw `HttpResponse` / raw errors), mirroring `encryption-descriptor-api`.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
@@ -43,18 +43,18 @@ describe('Encryption enforcement API', () => {
     }))
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: spaceId,
       name: 'Encryption Enforce Space',
       controller: alice.did
     })
     // An encrypted Collection and a plaintext one, both owned by Alice.
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: edvCollection, name: 'Vault', encryption: { scheme: 'edv' } }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: plainCollection, name: 'Plain' }
@@ -73,7 +73,7 @@ describe('Encryption enforcement API', () => {
     contentType: string
   }): Promise<any> {
     const { who = alice, collectionId, resourceId, body, contentType } = options
-    return who.was.request({
+    return who.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`,
       method: 'PUT',
       body: new TextEncoder().encode(
@@ -83,7 +83,7 @@ describe('Encryption enforcement API', () => {
     })
   }
 
-  /** Captures the raw error from a `was.request()` rejection. */
+  /** Captures the raw error from a `pws.request()` rejection. */
   async function rejection(promise: Promise<unknown>): Promise<any> {
     try {
       await promise
@@ -94,7 +94,7 @@ describe('Encryption enforcement API', () => {
   }
 
   it('accepts a conforming EDV Document on POST (create) into an edv Collection', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/`,
       method: 'POST',
       body: new TextEncoder().encode(JSON.stringify(envelope)),
@@ -159,7 +159,7 @@ describe('Encryption enforcement API', () => {
 
   it('rejects a plaintext JSON body into an edv Collection (422 scheme-mismatch)', async () => {
     const err = await rejection(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-plain`,
         method: 'PUT',
         json: { hello: 'world' }
@@ -211,7 +211,7 @@ describe('Encryption enforcement API', () => {
   })
 
   it('a plaintext Collection still accepts any body (no enforcement)', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${plainCollection}/plain-doc`,
       method: 'PUT',
       json: { hello: 'world' }
@@ -245,7 +245,7 @@ describe('Encryption enforcement API', () => {
       contentType: JSON_TYPE
     })
     const err = await rejection(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
         method: 'PUT',
         json: { custom: { name: 'labeled' } }
@@ -259,7 +259,7 @@ describe('Encryption enforcement API', () => {
     // A conforming envelope custom is accepted (204) and carries its own `/meta`
     // ETag (the `/meta` stamp), independent of the content ETag. GET /meta returns
     // the opaque envelope verbatim (no plaintext name leaked).
-    const put1 = await alice.was.request({
+    const put1 = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'PUT',
       json: { custom: envelope }
@@ -268,7 +268,7 @@ describe('Encryption enforcement API', () => {
     const metaEtag1 = put1.headers.get('etag')
     assert.ok(metaEtag1, 'PUT /meta returns a /meta ETag')
 
-    const read = await alice.was.request({
+    const read = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'GET'
     })
@@ -277,7 +277,7 @@ describe('Encryption enforcement API', () => {
     assert.equal(read.headers.get('etag'), metaEtag1)
 
     // A second meta write moves the /meta ETag.
-    const put2 = await alice.was.request({
+    const put2 = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'PUT',
       json: { custom: envelope }
@@ -288,7 +288,7 @@ describe('Encryption enforcement API', () => {
 
   it('PUT .../meta honors If-Match on the /meta ETag (412 on mismatch)', async () => {
     const err = await rejection(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${edvCollection}/doc-meta/meta`,
         method: 'PUT',
         json: { custom: envelope },
@@ -299,12 +299,12 @@ describe('Encryption enforcement API', () => {
   })
 
   it('a plaintext Collection still accepts a plaintext /meta custom', async () => {
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${plainCollection}/plain-meta`,
       method: 'PUT',
       json: { hello: 'world' }
     })
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${plainCollection}/plain-meta/meta`,
       method: 'PUT',
       json: { custom: { name: 'labeled' } }
@@ -319,7 +319,7 @@ describe('Encryption enforcement API', () => {
     // must be resent alongside `custom` or the write never reaches the
     // envelope check (it 409s as an attempted clear instead).
     const err = await rejection(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${edvCollection}/meta`,
         method: 'PUT',
         json: {
@@ -333,7 +333,7 @@ describe('Encryption enforcement API', () => {
   })
 
   it('PUT the Collection /meta of an edv Collection accepts an envelope custom', async () => {
-    const put = await alice.was.request({
+    const put = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/meta`,
       method: 'PUT',
       json: { encryption: { scheme: 'edv' }, custom: envelope }
@@ -343,7 +343,7 @@ describe('Encryption enforcement API', () => {
     assert.ok(metaEtag, 'PUT the Collection /meta returns a /meta ETag')
 
     // The envelope is returned verbatim (no plaintext name leaked).
-    const read = await alice.was.request({
+    const read = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/meta`,
       method: 'GET'
     })
@@ -353,7 +353,7 @@ describe('Encryption enforcement API', () => {
   })
 
   it('scope: PUT .../policy on an edv Collection still accepts application/json', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${edvCollection}/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }

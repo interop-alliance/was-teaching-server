@@ -1,12 +1,12 @@
 /**
  * Fills a server with everything the load tests read and write, over signed
- * HTTP through `@interop/was-client`: the Collection-size Spaces, then the
+ * HTTP through `@interop/pws-client`: the Collection-size Spaces, then the
  * payload matrix. It works against any server, a local one `pnpm perf:fs`
  * starts or a deployed one `pnpm perf:remote` targets. Each test's
  * Collection is made once per pool member, on that member's backend.
  */
-import type { Collection, JsonObject, WasClient } from '@interop/was-client'
-import { spaceIdOfUrl } from '@interop/was-client/paths'
+import type { Collection, JsonObject, PwsClient } from '@interop/pws-client'
+import { spaceIdOfUrl } from '@interop/pws-client/paths'
 
 import {
   backendPool,
@@ -53,7 +53,7 @@ async function fillViaHttp({
  * Creates a Space holding one Collection of `size` Resources per pool member
  * (`items<suffix>`, on the member's backend) over signed HTTP.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.name {string}
  * @param options.size {number}
  * @param options.pool {PoolMember[]}
@@ -61,18 +61,18 @@ async function fillViaHttp({
  *   slash, its backend and its handle, in pool order
  */
 async function seedSpaceViaHttp({
-  was,
+  pws,
   name,
   size,
   pool
 }: {
-  was: WasClient
+  pws: PwsClient
   name: string
   size: number
   pool: PoolMember[]
 }): Promise<EdgeTarget[]> {
   const space = await retryOnNetworkFault({
-    op: () => was.createSpace({ name })
+    op: () => pws.createSpace({ name })
   })
   const targets: EdgeTarget[] = []
   for (const member of pool) {
@@ -99,9 +99,9 @@ async function seedSpaceViaHttp({
  * Seeds every Space the tests need, fresh, over signed HTTP: the
  * Collection-size Spaces, then the payload matrix.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.serverUrl {string}   the server's base URL
- * @param options.seed {Uint8Array}   the identity `was` signs with
+ * @param options.seed {Uint8Array}   the identity `pws` signs with
  * @param options.sizes {number[]}
  * @param options.edgeSizes {number[]}
  * @param [options.payloads] {MatrixPayload[]}   the matrix payloads to seed;
@@ -113,7 +113,7 @@ async function seedSpaceViaHttp({
  * }>}
  */
 export async function seedViaHttp({
-  was,
+  pws,
   serverUrl,
   seed,
   sizes,
@@ -121,7 +121,7 @@ export async function seedViaHttp({
   payloads,
   pool = backendPool()
 }: {
-  was: WasClient
+  pws: PwsClient
   serverUrl: string
   seed: Uint8Array
   sizes: number[]
@@ -136,10 +136,10 @@ export async function seedViaHttp({
   console.log('Filling Collections and the payload matrix...')
 
   const publicSpace = await retryOnNetworkFault({
-    op: () => was.createSpace({ name: 'perf-public' })
+    op: () => pws.createSpace({ name: 'perf-public' })
   })
   const privateSpace = await retryOnNetworkFault({
-    op: () => was.createSpace({ name: 'perf-private' })
+    op: () => pws.createSpace({ name: 'perf-private' })
   })
   for (const size of sizes) {
     for (const member of pool) {
@@ -161,7 +161,7 @@ export async function seedViaHttp({
   const edgeSpaces = []
   for (const size of edgeSizes) {
     const seed = (label: string) =>
-      seedSpaceViaHttp({ was, name: `${label}-${size}`, size, pool })
+      seedSpaceViaHttp({ pws, name: `${label}-${size}`, size, pool })
     edgeSpaces.push({
       size,
       write: await seed(edgeSpaceLabels.write),

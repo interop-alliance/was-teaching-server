@@ -12,7 +12,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import {
   assertEtagAdvanced,
@@ -48,7 +48,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
     headers?: Record<string, string>
   }): Promise<{ status: number; data: any; headers: Headers }> {
     try {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL(url, baseServerUrl).toString(),
         method,
         ...(json !== undefined && { json }),
@@ -100,7 +100,7 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
     spaceId = alice.space1.id
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: spaceId,
       name: 'Policy versioning',
       controller: alice.did

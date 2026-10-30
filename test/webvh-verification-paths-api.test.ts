@@ -7,7 +7,7 @@
  * with.
  *
  * Invocations are raw `@interop/ezcap` requests: these are wire-level
- * authorization shapes, not the high-level `@interop/was-client` surface.
+ * authorization shapes, not the high-level `@interop/pws-client` surface.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -57,7 +57,7 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
         baseServerUrl
       ).toString()
       docUrl = `${collectionUrl}/doc-1`
-      const space = alice.was.space(spaceId)
+      const space = alice.pws.space(spaceId)
       await space.configure({ name: 'Unlock-shaped', controller: alice.did })
       await space.collection('credentials').configure({ force: true })
       await space.collection('credentials').put('doc-1', { hello: 'world' })
@@ -208,7 +208,7 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
         json: { id: spaceId, name: 'Provisioned', controller: alice.did }
       })
       assert.equal(response.status, 201)
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.controller, alice.did)
     })
 
@@ -233,7 +233,7 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
       assert.equal(err.status, 400)
       assert.equal(err.data.type, ProblemTypes.INVALID_REQUEST_BODY)
       assert.equal(err.data.errors[0].pointer, '#/controller')
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
   })
 
@@ -244,7 +244,7 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
     beforeAll(async () => {
       spacesUrl = new URL('/spaces/', baseServerUrl).toString()
       account = await provisionWebvhIdentity({ owner: alice, baseServerUrl })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {

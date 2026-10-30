@@ -15,7 +15,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
@@ -33,20 +33,20 @@ describe('GET Collection equality filter', () => {
     indexes: unknown,
     documents: Array<{ id: string } & Record<string, unknown>>
   ): Promise<void> {
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: collectionId, plaintext: { indexes } }
     })
     for (const document of documents) {
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId()}/${collectionId}/${document.id}`,
         method: 'PUT',
         json: document
       })
     }
     // PublicCanRead so an anonymous GET (with a filter) is served.
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/${collectionId}/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
@@ -69,7 +69,7 @@ describe('GET Collection equality filter', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -262,12 +262,12 @@ describe('GET Collection equality filter', () => {
   })
 
   it('a filter on an encrypted Collection is a 400 (it can never carry plaintext)', async () => {
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/f-encrypted/meta`,
       method: 'PUT',
       json: { id: 'f-encrypted', encryption: { scheme: 'edv' } }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/f-encrypted/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
@@ -305,7 +305,7 @@ describe('GET Collection equality filter', () => {
         { id: 'r2', parentId: 'p2' }
       ]
     )
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId()}/f-authed/?filter[parentId]=p1`,
       method: 'GET'
     })

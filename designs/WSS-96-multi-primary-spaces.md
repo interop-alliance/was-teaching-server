@@ -182,7 +182,7 @@ Changed in this repo:
   entry.
 
 Outside this repo, recorded as `touches` on the roadmap items: storage-core's
-record types, `ReplicaStallReason` and `ServiceDescription`; was-client's
+record types, `ReplicaStallReason` and `ServiceDescription`; pws-client's
 `parseEtag` and acks; wallet-core's push and remint paths and its single-host
 account invariants; pws-sync's persisted RxDB schema and `statesEqual`;
 was-react; dcw's schema; `@interop/space-archive`'s codec and fixtures;

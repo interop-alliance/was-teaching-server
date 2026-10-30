@@ -41,7 +41,7 @@ describe('Quotas API', () => {
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     // Provision a Space + Collection with one Resource so usage is non-zero.
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Quotas Test Space',
       controller: alice.did
@@ -61,7 +61,7 @@ describe('Quotas API', () => {
   })
 
   it('[root] reports the Space quota grouped by backend', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/quotas`,
       method: 'GET'
     })
@@ -95,7 +95,7 @@ describe('Quotas API', () => {
     // A query string on a capability-signed request: the `allowTargetQuery` ZCap
     // path authorizes it against the bare `/quotas` target (the query selects a
     // representation, not a different target).
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/quotas?include=collections`,
       method: 'GET'
     })
@@ -126,7 +126,7 @@ describe('Quotas API', () => {
     // capability does not authorize the read: the report 404s like any other.
     let thrown: any
     try {
-      await bob.was.request({
+      await bob.pws.request({
         url: `${baseServerUrl}space/${spaceId}/quotas`,
         method: 'GET'
       })
@@ -139,7 +139,7 @@ describe('Quotas API', () => {
 
   describe('Per-Collection quota', () => {
     it('[root] reports a single Collection scoped to its backend', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/quota`,
         method: 'GET'
       })
@@ -162,7 +162,7 @@ describe('Quotas API', () => {
     it('an unauthorized caller gets 404 (maximum-privacy), not 403', async () => {
       let thrown: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: `${baseServerUrl}space/${spaceId}/${collectionId}/quota`,
           method: 'GET'
         })
@@ -176,7 +176,7 @@ describe('Quotas API', () => {
     it('a missing Collection yields 404', async () => {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/no-such-collection/quota`,
           method: 'GET'
         })

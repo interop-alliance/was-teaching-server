@@ -10,7 +10,7 @@
  *   URL, invoked against a Collection's `policy` resource underneath it.
  *
  * Invocations are raw `@interop/ezcap` requests: these are wire-level
- * authorization shapes, not the high-level `@interop/was-client` surface.
+ * authorization shapes, not the high-level `@interop/pws-client` surface.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -106,14 +106,14 @@ describe('did:webvh delegation and chain depth', () => {
    */
   async function provisionWebvhIdentity(): Promise<WebvhIdentity> {
     const spaceId = randomUUID()
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Identity Space', controller: alice.did })
     const idCollection = space.collection('id')
     await idCollection.configure({ force: true })
     await idCollection.setPublic()
 
     const minted = await mintWebvhDid({ spaceId })
-    const published = await alice.was.request({
+    const published = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
@@ -134,12 +134,12 @@ describe('did:webvh delegation and chain depth', () => {
       // The account DID: its log is anchored in the Space it goes on to
       // control (the wallet's own ordering).
       account = await provisionWebvhIdentity()
-      const accountSpace = alice.was.space(account.spaceId)
+      const accountSpace = alice.pws.space(account.spaceId)
       await accountSpace.collection('credentials').configure({ force: true })
       await accountSpace
         .collection('credentials')
         .put('doc-1', { hello: 'world' })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {
@@ -257,7 +257,7 @@ describe('did:webvh delegation and chain depth', () => {
       ).toString()
       docUrl = `${collectionUrl}/doc-1`
 
-      const space = alice.was.space(spaceId)
+      const space = alice.pws.space(spaceId)
       await space.configure({ name: 'Chain Space', controller: alice.did })
       await space.collection(collectionId).configure({ force: true })
       await space.collection(collectionId).put('doc-1', { hello: 'world' })
@@ -306,7 +306,7 @@ describe('did:webvh delegation and chain depth', () => {
       )
       assert.equal(err.status, 404)
       assert.deepStrictEqual(
-        await alice.was.space(spaceId).collection(collectionId).get('doc-1'),
+        await alice.pws.space(spaceId).collection(collectionId).get('doc-1'),
         { hello: 'world' }
       )
     })
@@ -343,7 +343,7 @@ describe('did:webvh delegation and chain depth', () => {
 
     beforeAll(async () => {
       spaceUrl = new URL(`/space/${spaceId}/`, baseServerUrl).toString()
-      const space = alice.was.space(spaceId)
+      const space = alice.pws.space(spaceId)
       await space.configure({ name: 'Subtree Space', controller: alice.did })
       await space.collection(collectionId).configure({ force: true })
       await space.collection(collectionId).put('note-1', { open: true })

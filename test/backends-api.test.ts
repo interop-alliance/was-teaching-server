@@ -68,7 +68,7 @@ describe('Space backend registration (/backends)', () => {
 
   async function freshSpace(name: string): Promise<string> {
     const spaceId = crypto.randomUUID()
-    await alice.was.createSpace({ id: spaceId, name, controller: alice.did })
+    await alice.pws.createSpace({ id: spaceId, name, controller: alice.did })
     return spaceId
   }
 
@@ -89,7 +89,7 @@ describe('Space backend registration (/backends)', () => {
 
   it('POST registers an external backend (201, sanitized descriptor)', async () => {
     const spaceId = await freshSpace('Register Space')
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: sampleRegistration()
@@ -113,13 +113,13 @@ describe('Space backend registration (/backends)', () => {
 
   it('GET /backends lists [default, registered] without secrets', async () => {
     const spaceId = await freshSpace('Listing Space')
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: sampleRegistration()
     })
 
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'GET'
     })
@@ -132,7 +132,7 @@ describe('Space backend registration (/backends)', () => {
 
   it('POST a duplicate id yields id-conflict (409)', async () => {
     const spaceId = await freshSpace('Duplicate Space')
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: sampleRegistration()
@@ -140,7 +140,7 @@ describe('Space backend registration (/backends)', () => {
 
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: backendsUrl(spaceId),
         method: 'POST',
         json: sampleRegistration()
@@ -157,7 +157,7 @@ describe('Space backend registration (/backends)', () => {
     const spaceId = await freshSpace('Reserved Id Space')
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: backendsUrl(spaceId),
         method: 'POST',
         json: { ...sampleRegistration(), id: 'default' }
@@ -179,7 +179,7 @@ describe('Space backend registration (/backends)', () => {
     ] as const) {
       let thrown: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: backendsUrl(spaceId),
           method: 'POST',
           json: body
@@ -210,7 +210,7 @@ describe('Space backend registration (/backends)', () => {
     const spaceId = await freshSpace('Foreign Controller Space')
     let thrown: any
     try {
-      await bob.was.request({
+      await bob.pws.request({
         url: backendsUrl(spaceId),
         method: 'POST',
         json: sampleRegistration()
@@ -224,7 +224,7 @@ describe('Space backend registration (/backends)', () => {
 
   it('PUT updates an existing backend (204) and the change is reflected', async () => {
     const spaceId = await freshSpace('Update Space')
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: sampleRegistration()
@@ -232,14 +232,14 @@ describe('Space backend registration (/backends)', () => {
 
     const updated = sampleRegistration()
     updated.connection.account = 'alice-new@example.com'
-    const putResponse = await alice.was.request({
+    const putResponse = await alice.pws.request({
       url: backendsUrl(spaceId, 'gdrive-1'),
       method: 'PUT',
       json: updated
     })
     assert.equal(putResponse.status, 204)
 
-    const listing = await alice.was.request({
+    const listing = await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'GET'
     })
@@ -250,7 +250,7 @@ describe('Space backend registration (/backends)', () => {
 
   it('PUT creates a new backend at a chosen id (201)', async () => {
     const spaceId = await freshSpace('Upsert Create Space')
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: backendsUrl(spaceId, 'gdrive-2'),
       method: 'PUT',
       json: sampleRegistration('gdrive-2')
@@ -268,7 +268,7 @@ describe('Space backend registration (/backends)', () => {
     const spaceId = await freshSpace('Mismatch Space')
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: backendsUrl(spaceId, 'gdrive-1'),
         method: 'PUT',
         json: sampleRegistration('different-id')
@@ -283,19 +283,19 @@ describe('Space backend registration (/backends)', () => {
 
   it('DELETE deregisters a backend (204) and it no longer lists', async () => {
     const spaceId = await freshSpace('Delete Space')
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: sampleRegistration()
     })
 
-    const deleteResponse = await alice.was.request({
+    const deleteResponse = await alice.pws.request({
       url: backendsUrl(spaceId, 'gdrive-1'),
       method: 'DELETE'
     })
     assert.equal(deleteResponse.status, 204)
 
-    const listing = await alice.was.request({
+    const listing = await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'GET'
     })
@@ -309,17 +309,17 @@ describe('Space backend registration (/backends)', () => {
     // validator gets the new object, not a 304.
     const spaceId = await freshSpace('ETag Space')
     const metaUrl = new URL(`/space/${spaceId}/meta`, baseServerUrl).toString()
-    const before = await alice.was.request({ url: metaUrl, method: 'GET' })
+    const before = await alice.pws.request({ url: metaUrl, method: 'GET' })
     const etagBefore = before.headers.get('etag')!
     assert.deepStrictEqual(before.data.backends, serverBackendDescriptors)
 
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: sampleRegistration()
     })
     const registered = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'GET',
         headers: { 'if-none-match': etagBefore }
@@ -339,12 +339,12 @@ describe('Space backend registration (/backends)', () => {
       'expected the same generation'
     )
 
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId, 'gdrive-1'),
       method: 'DELETE'
     })
     const deregistered = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'GET',
         headers: { 'if-none-match': etagRegistered }
@@ -360,12 +360,12 @@ describe('Space backend registration (/backends)', () => {
 
     // Deregistering an absent record changes nothing, so the validator holds
     // and the conditional read is a 304.
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(spaceId, 'gdrive-1'),
       method: 'DELETE'
     })
     const unchanged = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'GET',
         headers: { 'if-none-match': etagDeregistered }
@@ -376,7 +376,7 @@ describe('Space backend registration (/backends)', () => {
 
   it('registration records do not travel in a Space export', async () => {
     const src = await freshSpace('Export Source Space')
-    await alice.was.request({
+    await alice.pws.request({
       url: backendsUrl(src),
       method: 'POST',
       json: sampleRegistration()
@@ -391,7 +391,7 @@ describe('Space backend registration (/backends)', () => {
     // The registration did not travel: the target has no registered backends,
     // so its GET /backends reports only the server default.
     assert.deepStrictEqual(await backend.listBackends({ spaceId: dst }), [])
-    const listing = await alice.was.request({
+    const listing = await alice.pws.request({
       url: backendsUrl(dst),
       method: 'GET'
     })

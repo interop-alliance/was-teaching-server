@@ -355,12 +355,12 @@ describe('baseServerUrl with a trailing slash', () => {
   it('builds the governed log URL without a doubled slash', async () => {
     const spaceId = `slash-space-${crypto.randomUUID()}`
     const collectionId = `col-${crypto.randomUUID()}`
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: spaceId,
       name: 'Slash Space',
       controller: alice.did
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: collectionId }
@@ -388,14 +388,14 @@ describe('baseServerUrl with a trailing slash', () => {
       },
       proof: []
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${metaUrl}/log`,
       method: 'PUT',
       body: new TextEncoder().encode(genesis + '\n'),
       headers: { 'content-type': 'text/jsonl', 'if-none-match': '*' }
     })
 
-    const described = await alice.was.request({ url: metaUrl, method: 'GET' })
+    const described = await alice.pws.request({ url: metaUrl, method: 'GET' })
     expect(described.data.encryption.history.resource).toBe(`${metaUrl}/log`)
   })
 

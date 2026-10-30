@@ -10,7 +10,7 @@
  * the whole object; one omitting it keeps the stored value.
  *
  * These assert the server's wire contract directly (status codes, problem
- * `type`s, pointers, the echoed Metadata object) via the signed `was.request()`
+ * `type`s, pointers, the echoed Metadata object) via the signed `pws.request()`
  * escape hatch (raw `HttpResponse` / raw errors).
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
@@ -36,7 +36,7 @@ describe('Collection generator attribution API', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: spaceId,
       name: 'Generator Attribution Space',
       controller: alice.did
@@ -50,7 +50,7 @@ describe('Collection generator attribution API', () => {
    * Reads a Collection Metadata object over the wire (raw JSON).
    */
   async function readDesc(collectionId: string): Promise<any> {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
@@ -58,7 +58,7 @@ describe('Collection generator attribution API', () => {
   }
 
   /**
-   * Captures the raw error from a `was.request()` rejection.
+   * Captures the raw error from a `pws.request()` rejection.
    */
   async function rejection(promise: Promise<unknown>): Promise<any> {
     try {
@@ -73,7 +73,7 @@ describe('Collection generator attribution API', () => {
    * Creates a Collection with the given body members.
    */
   async function create(json: Record<string, unknown>): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json
@@ -87,7 +87,7 @@ describe('Collection generator attribution API', () => {
     collectionId: string,
     json: Record<string, unknown>
   ): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, ...json }

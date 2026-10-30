@@ -29,7 +29,7 @@ describe('request faults', () => {
     const started = await startTestServer({ backend: await openTempBackend() })
     ;({ fastify, baseServerUrl, faults } = started)
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Faults', controller: alice.did })
     await space.collection('notes').configure({ force: true })
   })
@@ -43,7 +43,7 @@ describe('request faults', () => {
   })
 
   function notes() {
-    return alice.was.space(spaceId).collection('notes')
+    return alice.pws.space(spaceId).collection('notes')
   }
 
   it('records every request in order with method, path, and DID', async () => {
@@ -169,7 +169,7 @@ describe('request faults', () => {
   it('matches on the invoking DID', async () => {
     const { fired } = faults.refuse({ match: { did: bob.did }, status: 400 })
     await notes().put('by-did', { n: 1 })
-    await assert.rejects(bob.was.space(randomUUID()).describe())
+    await assert.rejects(bob.pws.space(randomUUID()).describe())
     assert.equal((await fired).did, bob.did)
   })
 

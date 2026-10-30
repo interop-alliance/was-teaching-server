@@ -56,7 +56,7 @@ describe('revisions descriptor API', () => {
     backend = await openTempBackend()
     ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: spaceId,
       name: 'Revisions Space',
       controller: alice.did
@@ -76,7 +76,7 @@ describe('revisions descriptor API', () => {
    */
   async function createCollection(body: object = {}): Promise<string> {
     const collectionId = `col-${crypto.randomUUID()}`
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, ...body }
@@ -90,7 +90,7 @@ describe('revisions descriptor API', () => {
    * @returns {Promise<any>}
    */
   async function readMeta(collectionId: string): Promise<any> {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: metaUrl(collectionId),
       method: 'GET'
     })
@@ -109,7 +109,7 @@ describe('revisions descriptor API', () => {
     json: object,
     headers: Record<string, string> = {}
   ): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url: metaUrl(collectionId),
       method: 'PUT',
       json,
@@ -129,7 +129,7 @@ describe('revisions descriptor API', () => {
     body: string,
     contentType = JSON_TYPE
   ): Promise<any> {
-    return alice.was.request({
+    return alice.pws.request({
       url,
       method: 'PUT',
       body: new TextEncoder().encode(body),
@@ -359,7 +359,7 @@ describe('revisions descriptor API', () => {
       body: string,
       headers: Record<string, string>
     ): Promise<any> {
-      return alice.was.request({
+      return alice.pws.request({
         url: `${metaUrl(collectionId)}/log`,
         method: 'PUT',
         body: new TextEncoder().encode(body),
@@ -544,7 +544,7 @@ describe('revisions descriptor API', () => {
           status: 409,
           type: 'resource-immutable'
         })
-        const read = await alice.was.request({
+        const read = await alice.pws.request({
           url: docUrl,
           method: 'GET'
         })
@@ -552,7 +552,7 @@ describe('revisions descriptor API', () => {
         assert.equal(read.headers.get('etag'), etag)
 
         // Create Resource mints a fresh id, so it is always a create.
-        const posted = await alice.was.request({
+        const posted = await alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/${collectionId}/`,
           method: 'POST',
           body: new TextEncoder().encode(second),
@@ -568,7 +568,7 @@ describe('revisions descriptor API', () => {
         })
         const docUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/doc`
         const created = await putRaw(docUrl, first)
-        const deleted = await alice.was.request({
+        const deleted = await alice.pws.request({
           url: docUrl,
           method: 'DELETE'
         })
@@ -579,7 +579,7 @@ describe('revisions descriptor API', () => {
           recreated.headers.get('etag'),
           created.headers.get('etag')
         )
-        const read = await alice.was.request({
+        const read = await alice.pws.request({
           url: docUrl,
           method: 'GET'
         })
@@ -649,7 +649,7 @@ describe('revisions descriptor API', () => {
       assert.equal(created.status, 201)
       const etag = created.headers.get('etag')
       assert.ok(etag, 'expected the create to answer a validator')
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: docUrl,
         method: 'GET'
       })
@@ -693,7 +693,7 @@ describe('revisions descriptor API', () => {
         )
         const docUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/doc`
         await putRaw(docUrl, '{"v":1}')
-        await alice.was.request({
+        await alice.pws.request({
           url: docUrl,
           method: 'DELETE'
         })
@@ -707,7 +707,7 @@ describe('revisions descriptor API', () => {
         assert.equal(healed.status, 201)
         assert.equal(healed.data.createdBy, alice.did)
         assert.equal(healed.data.createdAt, healed.data.updatedAt)
-        const read = await alice.was.request({
+        const read = await alice.pws.request({
           url: docUrl,
           method: 'GET'
         })
@@ -722,7 +722,7 @@ describe('revisions descriptor API', () => {
       })
       const docUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/doc`
       await putRaw(docUrl, '{"v":1}')
-      const meta = await alice.was.request({
+      const meta = await alice.pws.request({
         url: `${docUrl}/meta`,
         method: 'PUT',
         json: { custom: { name: 'annotated' } }
@@ -735,7 +735,7 @@ describe('revisions descriptor API', () => {
     it('skips a Resource the immutable destination holds rather than refusing it', async () => {
       const collectionId = `col-${crypto.randomUUID()}`
       // The destination: an immutable Collection holding `doc`.
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, revisions: { immutable: true } }
@@ -748,12 +748,12 @@ describe('revisions descriptor API', () => {
       // The source: a mutable Collection of the same id holding a different
       // `doc` and a new `other`.
       const sourceSpaceId = `revisions-source-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: sourceSpaceId,
         name: 'Revisions Source',
         controller: alice.did
       })
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/`,
         method: 'POST',
         json: { id: collectionId }
@@ -766,13 +766,13 @@ describe('revisions descriptor API', () => {
         `${baseServerUrl}space/${sourceSpaceId}/${collectionId}/other`,
         '{"v":3}'
       )
-      const exported = await alice.was.request({
+      const exported = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/export`,
         method: 'POST'
       })
       const tarBytes = new Uint8Array(await exported.arrayBuffer())
 
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -782,12 +782,12 @@ describe('revisions descriptor API', () => {
       assert.equal(imported.data.resourcesSkipped, 1)
       assert.equal(imported.data.resourcesCreated, 1)
 
-      const kept = await alice.was.request({
+      const kept = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/doc`,
         method: 'GET'
       })
       assert.deepEqual(kept.data, { v: 1 })
-      const added = await alice.was.request({
+      const added = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/other`,
         method: 'GET'
       })

@@ -155,7 +155,7 @@ describe('testing export', () => {
         new URL('id/did.jsonl', identity.spaceUrl).toString()
       )
       assert.notEqual(log.status, 200, 'the log is not world-readable')
-      const metadata = await alice.was.space(identity.spaceId).describe()
+      const metadata = await alice.pws.space(identity.spaceId).describe()
       assert.equal(metadata?.controller, alice.did)
     } finally {
       await fastify.close()
@@ -176,7 +176,7 @@ describe('testing export', () => {
           collectionId: 'meta'
         })
       )
-      const listing = await alice.was.listSpaces()
+      const listing = await alice.pws.listSpaces()
       assert.deepEqual(listing.items, [])
     } finally {
       await fastify.close()

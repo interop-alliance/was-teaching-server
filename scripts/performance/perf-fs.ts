@@ -16,7 +16,7 @@
  *   install it.
  * - signed read of one Resource of each size, and signed write (a new
  *   Resource) and signed delete in the smallest and the largest size, through
- *   `@interop/was-client`. A delete test runs in rounds: each client
+ *   `@interop/pws-client`. A delete test runs in rounds: each client
  *   re-creates the same few Resources, untimed, then deletes them, timed, so
  *   the Collection stays near its size.
  *
@@ -28,15 +28,15 @@
  * a 100 KiB file and a 10 MiB file, in a public, a private plaintext and a
  * private encrypted Collection, each counted in whole files. It is reported
  * as a table of its own. Its Spaces are seeded over signed HTTP through
- * `@interop/was-client` (`scripts/performance/perf-matrix-seed.ts`), since
- * was-client makes the encrypted Collection's key epoch and EDV envelopes.
+ * `@interop/pws-client` (`scripts/performance/perf-matrix-seed.ts`), since
+ * pws-client makes the encrypted Collection's key epoch and EDV envelopes.
  * Unlike `pnpm perf:pg:seed`, no binary ballast is seeded: the filesystem
  * backend's cache is the OS page cache, which ballast small enough to copy
  * every run cannot outgrow.
  *
  * A write or delete test gets a Space of its own, since the byte quota, when
  * set, measures the whole Space. The server's other settings come from the
- * environment as usual, e.g. `STORAGE_LIMIT_PER_SPACE=1000000000`. was-client
+ * environment as usual, e.g. `STORAGE_LIMIT_PER_SPACE=1000000000`. pws-client
  * retries a 5xx, so a failing request can show as a slow one rather than a
  * failure. The table and the server log are kept in a temp dir, printed at the
  * end.
@@ -204,28 +204,28 @@ async function main(): Promise<void> {
     env: { DATABASE_URL: undefined, WAS_DATA_DIR: dataDir },
     afterStop: () => rm(dataDir, { recursive: true, force: true }),
     run: async () => {
-      const was = await connect({ serverUrl: localServerUrl, seed })
+      const pws = await connect({ serverUrl: localServerUrl, seed })
       const { targets, encryptedIds } = seededIds
         ? {
-            targets: seededTargets({ was, edgeSizes }),
+            targets: seededTargets({ pws, edgeSizes }),
             encryptedIds: seededIds
           }
         : await seedViaHttp({
-            was,
+            pws,
             serverUrl: localServerUrl,
             seed,
             sizes,
             edgeSizes
           })
       const rows = await runTests({
-        was,
+        pws,
         sizes,
         targets,
         settings,
         publicRead
       })
       const matrixRows = await runPayloadMatrix({
-        was,
+        pws,
         settings,
         encryptedIds,
         publicRead

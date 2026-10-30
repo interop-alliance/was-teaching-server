@@ -16,8 +16,8 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { WasClient } from '@interop/was-client'
-import type { Collection } from '@interop/was-client'
+import { PwsClient } from '@interop/pws-client'
+import type { Collection } from '@interop/pws-client'
 
 import {
   backendCell,
@@ -516,7 +516,7 @@ export async function runAgainstServer<Result>({
  * @param options {object}
  * @param options.serverUrl {string}   the server's base server URL
  * @param options.seed {Uint8Array}
- * @returns {Promise<WasClient>}
+ * @returns {Promise<PwsClient>}
  */
 export async function connect({
   serverUrl,
@@ -524,9 +524,9 @@ export async function connect({
 }: {
   serverUrl: string
   seed: Uint8Array
-}): Promise<WasClient> {
+}): Promise<PwsClient> {
   const keyPair = await Ed25519VerificationKey.generate({ seed })
-  return WasClient.fromSigner({
+  return PwsClient.fromSigner({
     baseServerUrl: serverUrl,
     signer: keyPair.didKeySigner()
   })
@@ -687,24 +687,24 @@ export interface TestTargets {
  * ids `seedSizeSpaces` (in `perf-lib.ts`) uses: `perf-public`,
  * `perf-private`, and `edgeSpaceLabels`' three per edge size, each with a
  * pool of one Collection on the server's default backend. No I/O:
- * `WasClient`'s Space/Collection handles are lazy.
+ * `PwsClient`'s Space/Collection handles are lazy.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.edgeSizes {number[]}
  * @returns {TestTargets}
  */
 export function seededTargets({
-  was,
+  pws,
   edgeSizes
 }: {
-  was: WasClient
+  pws: PwsClient
   edgeSizes: number[]
 }): TestTargets {
   const edgeSpaces = edgeSizes.map(size => {
     const target = (label: string): EdgeTarget[] => [
       {
         path: `/space/${label}-${size}/items`,
-        collection: was.space(`${label}-${size}`).collection('items')
+        collection: pws.space(`${label}-${size}`).collection('items')
       }
     ]
     return {
@@ -726,7 +726,7 @@ export function seededTargets({
  * Runs every Collection-size test in order against already-seeded Spaces,
  * each one spread over its pool of Collections.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.sizes {number[]}
  * @param options.targets {TestTargets}
  * @param options.settings {LoadSettings}
@@ -735,13 +735,13 @@ export function seededTargets({
  * @returns {Promise<Row[]>}
  */
 export async function runTests({
-  was,
+  pws,
   sizes,
   targets,
   settings,
   publicRead
 }: {
-  was: WasClient
+  pws: PwsClient
   sizes: number[]
   targets: TestTargets
   settings: LoadSettings
@@ -785,7 +785,7 @@ export async function runTests({
       clients,
       durationSeconds,
       pool: sizeTargets({ spaceId: privateSpaceId, size, path: 'vc-1' }),
-      op: ({ path }) => was.request({ url: serverPathUrl({ was, path }) })
+      op: ({ path }) => pws.request({ url: serverPathUrl({ pws, path }) })
     })
     await record({ rows, row: { test: 'Signed read', size, result } })
   }
@@ -795,8 +795,8 @@ export async function runTests({
       durationSeconds,
       pool: write,
       op: ({ path }, worker, count) =>
-        was.request({
-          url: serverPathUrl({ was, path: `${path}/w-${worker}-${count}` }),
+        pws.request({
+          url: serverPathUrl({ pws, path: `${path}/w-${worker}-${count}` }),
           method: 'PUT',
           json: { worker, count }
         })
@@ -808,14 +808,14 @@ export async function runTests({
       clients,
       durationSeconds,
       deleteRoundSize,
-      was,
+      pws,
       pool: remove
     })
     await record({ rows, row: { test: 'Signed delete', size, result } })
   }
   for (const { size, serial } of edgeSpaces) {
     const result = await serialWriteLoad({
-      was,
+      pws,
       pool: serial,
       warmUpWrites,
       serialWrites
@@ -905,7 +905,7 @@ export function sizeReport({
  * `seedMatrix` wrote, printing each result as it completes and settling after
  * it.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.settings {LoadSettings}
  * @param options.encryptedIds {EncryptedReadIds}
  * @param options.publicRead {(targets: PoolTarget[], clients?: number) => Promise<Measurement | string>}
@@ -915,13 +915,13 @@ export function sizeReport({
  * @returns {Promise<MatrixRow[]>}
  */
 export async function runPayloadMatrix({
-  was,
+  pws,
   settings,
   encryptedIds,
   publicRead,
   pool
 }: {
-  was: WasClient
+  pws: PwsClient
   settings: LoadSettings
   encryptedIds: EncryptedReadIds
   publicRead: (
@@ -932,7 +932,7 @@ export async function runPayloadMatrix({
 }): Promise<MatrixRow[]> {
   console.log('\nRunning the payload matrix...')
   return runMatrix({
-    was,
+    pws,
     settings,
     encryptedIds,
     publicRead,

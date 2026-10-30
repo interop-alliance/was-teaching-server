@@ -26,7 +26,7 @@
  *
  * `--payloads` narrows the payload matrix to some of `json`, `small` (100 KiB)
  * and `large` (10 MiB). Leaving out `large` is how to run from a machine whose
- * upload is too slow to send 10 MiB within was-client's 10 s request timeout.
+ * upload is too slow to send 10 MiB within pws-client's 10 s request timeout.
  *
  * `--record <dir>` with `--runner <name>` also writes the run as a JSON run
  * record at `<dir>/<runner>/<host>/<stamp>.json` (`recordPath`), once the run
@@ -49,7 +49,7 @@ import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { parseArgs } from 'node:util'
 
-import type { WasClient } from '@interop/was-client'
+import type { PwsClient } from '@interop/pws-client'
 
 import { seedViaHttp } from './perf-http-seed.js'
 import {
@@ -134,14 +134,14 @@ const cleanupPauseMs = 2_000
  * a request that hits a network fault. An interrupted run is still seeding
  * while this runs, and a Space created after a listing would be missed, so it
  * lists and deletes again, after a pause, until a listing comes back empty.
- * @param was {WasClient}
+ * @param pws {PwsClient}
  * @returns {Promise<void>}
  * @throws {Error}   naming each Space it could not delete
  */
-async function deleteCreatedSpaces(was: WasClient): Promise<void> {
+async function deleteCreatedSpaces(pws: PwsClient): Promise<void> {
   const failed = new Map<string, string>()
   for (let pass = 0; pass < cleanupPasses; pass++) {
-    const { items } = await retryOnNetworkFault({ op: () => was.listSpaces() })
+    const { items } = await retryOnNetworkFault({ op: () => pws.listSpaces() })
     const remaining = items.filter(item => !failed.has(item.id))
     if (remaining.length === 0) {
       break
@@ -149,7 +149,7 @@ async function deleteCreatedSpaces(was: WasClient): Promise<void> {
     console.log(`Deleting ${remaining.length} Spaces this run created...`)
     for (const item of remaining) {
       try {
-        await retryOnNetworkFault({ op: () => was.space(item.id).delete() })
+        await retryOnNetworkFault({ op: () => pws.space(item.id).delete() })
       } catch (err) {
         failed.set(item.id, describeError(err))
       }
@@ -171,21 +171,21 @@ async function deleteCreatedSpaces(was: WasClient): Promise<void> {
  * anything when `split` names one the host does not have. The Space is left
  * for the run's cleanup to delete.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.split {BackendShare[]}
  * @returns {Promise<string[]>} the listed ids, in the listing's order,
  *   without the `default` alias
  * @throws {Error}   naming each backend the split needs and the host lacks
  */
 async function hostBackends({
-  was,
+  pws,
   split
 }: {
-  was: WasClient
+  pws: PwsClient
   split: BackendShare[]
 }): Promise<string[]> {
   const space = await retryOnNetworkFault({
-    op: () => was.createSpace({ name: 'perf-backends' })
+    op: () => pws.createSpace({ name: 'perf-backends' })
   })
   const listing = await retryOnNetworkFault({ op: () => space.backends() })
   // `default` aliases one of the backends listed under its own id.
@@ -207,13 +207,13 @@ async function hostBackends({
  * Makes the run's cleanup: a function that deletes the identity's Spaces the
  * first time it is called and hands every later caller that same deletion,
  * however many of the run's end, its failure, and an interrupt ask for it.
- * @param was {WasClient}
+ * @param pws {PwsClient}
  * @returns {() => Promise<void>}
  */
-function createCleanUp(was: WasClient): () => Promise<void> {
+function createCleanUp(pws: PwsClient): () => Promise<void> {
   let deleting: Promise<void> | undefined
   return () => {
-    deleting ??= deleteCreatedSpaces(was)
+    deleting ??= deleteCreatedSpaces(pws)
     return deleting
   }
 }
@@ -290,12 +290,12 @@ async function main(): Promise<void> {
   const health = healthBuild(await response.json().catch(() => undefined))
 
   const seed = Uint8Array.from(randomBytes(32))
-  const was = await connect({ serverUrl, seed })
-  const cleanUp = createCleanUp(was)
+  const pws = await connect({ serverUrl, seed })
+  const cleanUp = createCleanUp(pws)
   cleanUpOnSignal(cleanUp)
   const publicRead = unsignedReader({ serverUrl, outDir, k6Version, settings })
   try {
-    const listedIds = await hostBackends({ was, split })
+    const listedIds = await hostBackends({ pws, split })
     const shares = split
       .map(({ backend, percent }) => `${backend} ${percent}%`)
       .join(', ')
@@ -321,7 +321,7 @@ async function main(): Promise<void> {
       split
     })
     const { targets, encryptedIds } = await seedViaHttp({
-      was,
+      pws,
       serverUrl,
       seed,
       sizes,
@@ -330,14 +330,14 @@ async function main(): Promise<void> {
       pool
     })
     const rows = await runTests({
-      was,
+      pws,
       sizes,
       targets,
       settings,
       publicRead
     })
     const matrixRows = await runPayloadMatrix({
-      was,
+      pws,
       settings,
       encryptedIds,
       publicRead,

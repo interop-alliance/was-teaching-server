@@ -86,7 +86,7 @@ describe.skipIf(!connectionString)(
 
     async function freshSpace(name: string): Promise<string> {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({ id: spaceId, name, controller: alice.did })
+      await alice.pws.createSpace({ id: spaceId, name, controller: alice.did })
       return spaceId
     }
 
@@ -95,7 +95,7 @@ describe.skipIf(!connectionString)(
       collectionId: string,
       body: Record<string, unknown> = {}
     ) {
-      return alice.was.request({
+      return alice.pws.request({
         url: url(`/space/${spaceId}/${collectionId}/meta`),
         method: 'PUT',
         json: { id: collectionId, ...body }
@@ -108,7 +108,7 @@ describe.skipIf(!connectionString)(
       resourceId: string,
       json: unknown
     ) {
-      return alice.was.request({
+      return alice.pws.request({
         url: url(`/space/${spaceId}/${collectionId}/${resourceId}`),
         method: 'PUT',
         json
@@ -118,7 +118,7 @@ describe.skipIf(!connectionString)(
     // A `PublicCanRead` policy at the level `policyPath` names
     // (`/space/<s>/<c>/policy` or `/space/<s>/<c>/<r>/policy`).
     async function putPublicRead(policyPath: string) {
-      const written = await alice.was.request({
+      const written = await alice.pws.request({
         url: url(policyPath),
         method: 'PUT',
         json: { type: 'PublicCanRead' }
@@ -146,7 +146,7 @@ describe.skipIf(!connectionString)(
 
     it('lists the default alias and both server backends in every Space', async () => {
       const spaceId = await freshSpace('Listing Space')
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: url(`/space/${spaceId}/backends`),
         method: 'GET'
       })
@@ -157,7 +157,7 @@ describe.skipIf(!connectionString)(
         POSTGRES_DESCRIPTOR
       ])
       // The served Space Metadata object carries the same listing.
-      const meta = await alice.was.request({
+      const meta = await alice.pws.request({
         url: url(`/space/${spaceId}/meta`),
         method: 'GET'
       })
@@ -184,17 +184,17 @@ describe.skipIf(!connectionString)(
       assert.equal(await holds(pgBackend, spaceId, 'fs-notes', 'r2'), false)
 
       // The read, the listing and the changes feed resolve the same way.
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: url(`/space/${spaceId}/pg-notes/r1`),
         method: 'GET'
       })
       assert.deepStrictEqual(read.data, { on: 'pg' })
-      const listing = await alice.was.request({
+      const listing = await alice.pws.request({
         url: url(`/space/${spaceId}/pg-notes/`),
         method: 'GET'
       })
       assert.equal(listing.data.totalItems, 1)
-      const feed = await alice.was.request({
+      const feed = await alice.pws.request({
         url: url(`/space/${spaceId}/pg-notes/query`),
         method: 'POST',
         json: { profile: 'changes' }
@@ -207,12 +207,12 @@ describe.skipIf(!connectionString)(
 
       // `GET .../backend` resolves the selection to the Postgres descriptor,
       // and the `default` selection to the alias entry.
-      const selected = await alice.was.request({
+      const selected = await alice.pws.request({
         url: url(`/space/${spaceId}/pg-notes/backend`),
         method: 'GET'
       })
       assert.deepStrictEqual(selected.data, POSTGRES_DESCRIPTOR)
-      const defaulted = await alice.was.request({
+      const defaulted = await alice.pws.request({
         url: url(`/space/${spaceId}/fs-notes/backend`),
         method: 'GET'
       })
@@ -273,7 +273,7 @@ describe.skipIf(!connectionString)(
       })
       await putResource(spaceId, 'pg-docs', 'd1', { size: 'some bytes' })
 
-      const report = await alice.was.request({
+      const report = await alice.pws.request({
         url: url(`/space/${spaceId}/quotas`),
         method: 'GET'
       })
@@ -286,7 +286,7 @@ describe.skipIf(!connectionString)(
       assert.ok(pgUsage.usageBytes > 0, 'the Postgres entry measures the write')
       assert.equal(typeof fsUsage.usageBytes, 'number')
 
-      const collectionQuota = await alice.was.request({
+      const collectionQuota = await alice.pws.request({
         url: url(`/space/${spaceId}/pg-docs/quota`),
         method: 'GET'
       })
@@ -301,7 +301,7 @@ describe.skipIf(!connectionString)(
       await createCollection(spaceId, 'stays', { backend: { id: 'postgres' } })
       await putResource(spaceId, 'stays', 's1', { x: 2 })
 
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: url(`/space/${spaceId}/gone/`),
         method: 'DELETE'
       })
@@ -309,7 +309,7 @@ describe.skipIf(!connectionString)(
       assert.equal(await holds(pgBackend, spaceId, 'gone', 'g1'), false)
       assert.equal(await holds(pgBackend, spaceId, 'stays', 's1'), true)
 
-      const spaceDeleted = await alice.was.request({
+      const spaceDeleted = await alice.pws.request({
         url: url(`/space/${spaceId}/`),
         method: 'DELETE'
       })
@@ -327,7 +327,7 @@ describe.skipIf(!connectionString)(
       await createCollection(sourceId, 'on-fs')
       await putResource(sourceId, 'on-fs', 'f1', { from: 'fs' })
 
-      const exported = await alice.was.request({
+      const exported = await alice.pws.request({
         url: url(`/space/${sourceId}/export`),
         method: 'POST'
       })
@@ -349,7 +349,7 @@ describe.skipIf(!connectionString)(
       )
 
       const destinationId = await freshSpace('Import Destination')
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: url(`/space/${destinationId}/import`),
         method: 'POST',
         body: tarBytes,
@@ -361,7 +361,7 @@ describe.skipIf(!connectionString)(
       assert.equal(await holds(pgBackend, destinationId, 'on-pg', 'p1'), true)
       assert.equal(await holds(fsBackend, destinationId, 'on-pg', 'p1'), false)
       assert.equal(await holds(fsBackend, destinationId, 'on-fs', 'f1'), true)
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: url(`/space/${destinationId}/on-pg/p1`),
         method: 'GET'
       })
@@ -391,13 +391,13 @@ describe.skipIf(!connectionString)(
           baseServerUrl: single.baseServerUrl
         })
         const lonelyId = crypto.randomUUID()
-        await single_alice.was.createSpace({
+        await single_alice.pws.createSpace({
           id: lonelyId,
           name: 'No Postgres here',
           controller: single_alice.did
         })
         const refused = await requestError(
-          single_alice.was.request({
+          single_alice.pws.request({
             url: new URL(
               `/space/${lonelyId}/import`,
               single.baseServerUrl
@@ -460,7 +460,7 @@ describe.skipIf(!connectionString)(
         (await pgBackend.getSpaceMetadata({ spaceId }))?.name,
         'Rename Space'
       )
-      const renamed = await alice.was.request({
+      const renamed = await alice.pws.request({
         url: url(`/space/${spaceId}/meta`),
         method: 'PUT',
         json: { name: 'Renamed', controller: alice.did }
@@ -557,7 +557,7 @@ describe.skipIf(!connectionString)(
 
       const body =
         genesisLine({ ...oneEpoch, revisions: { immutable: true } }) + '\n'
-      const governed = await alice.was.request({
+      const governed = await alice.pws.request({
         url: url(`/space/${spaceId}/ledger/meta/log`),
         method: 'PUT',
         body: new TextEncoder().encode(body),
@@ -604,12 +604,12 @@ describe.skipIf(!connectionString)(
         `/space/${spaceId}/feed/policy`
       )
       await putPublicRead(`/space/${spaceId}/feed/r1/policy`)
-      const resourcePolicyGone = await alice.was.request({
+      const resourcePolicyGone = await alice.pws.request({
         url: url(`/space/${spaceId}/feed/r1/policy`),
         method: 'DELETE'
       })
       assert.equal(resourcePolicyGone.status, 204)
-      const governed = await alice.was.request({
+      const governed = await alice.pws.request({
         url: url(`/space/${spaceId}/feed/meta/log`),
         method: 'PUT',
         body: new TextEncoder().encode(genesisLine(oneEpoch) + '\n'),
@@ -634,10 +634,10 @@ describe.skipIf(!connectionString)(
       // Each document's `etag` is the one a GET of the record answers from
       // the control plane, not the copy's.
       const [meta, log] = await Promise.all([
-        alice.was.request({ url: url(`/space/${spaceId}/feed/meta`) }),
-        alice.was.request({ url: url(`/space/${spaceId}/feed/meta/log`) })
+        alice.pws.request({ url: url(`/space/${spaceId}/feed/meta`) }),
+        alice.pws.request({ url: url(`/space/${spaceId}/feed/meta/log`) })
       ])
-      const feed = await alice.was.request({
+      const feed = await alice.pws.request({
         url: url(`/space/${spaceId}/feed/query`),
         method: 'POST',
         json: { profile: 'changes' }
@@ -696,7 +696,7 @@ describe.skipIf(!connectionString)(
         .mockRejectedValue(new Error('pool gone'))
       try {
         const failed = await requestError(
-          alice.was.request({
+          alice.pws.request({
             url: url(`/space/${spaceId}/torn/`),
             method: 'DELETE'
           })
@@ -710,7 +710,7 @@ describe.skipIf(!connectionString)(
       // The control plane holds a tombstone, so the retry is the masked 404,
       // and it still sweeps the copy.
       const retried = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: url(`/space/${spaceId}/torn/`),
           method: 'DELETE'
         })
@@ -730,7 +730,7 @@ describe.skipIf(!connectionString)(
       const sourceId = await freshSpace('Live Source')
       await createCollection(sourceId, 'docs', { backend: { id: 'postgres' } })
       await putResource(sourceId, 'docs', 'd1', { from: 'archive' })
-      const exported = await alice.was.request({
+      const exported = await alice.pws.request({
         url: url(`/space/${sourceId}/export`),
         method: 'POST'
       })
@@ -739,7 +739,7 @@ describe.skipIf(!connectionString)(
       // The destination's `docs` is on the default backend already.
       const destinationId = await freshSpace('Live Destination')
       await createCollection(destinationId, 'docs')
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: url(`/space/${destinationId}/import`),
         method: 'POST',
         body: tarBytes,
@@ -750,7 +750,7 @@ describe.skipIf(!connectionString)(
       assert.equal(imported.data.resourcesCreated, 1)
       assert.equal(await holds(fsBackend, destinationId, 'docs', 'd1'), true)
       assert.equal(await holds(pgBackend, destinationId, 'docs', 'd1'), false)
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: url(`/space/${destinationId}/docs/d1`),
         method: 'GET'
       })
@@ -761,7 +761,7 @@ describe.skipIf(!connectionString)(
       const sourceId = await freshSpace('Torn Import Source')
       await createCollection(sourceId, 'on-pg', { backend: { id: 'postgres' } })
       await putResource(sourceId, 'on-pg', 'p1', { from: 'pg' })
-      const exported = await alice.was.request({
+      const exported = await alice.pws.request({
         url: url(`/space/${sourceId}/export`),
         method: 'POST'
       })
@@ -774,7 +774,7 @@ describe.skipIf(!connectionString)(
         .mockRejectedValue(new StorageError({ cause: new Error('pool gone') }))
       try {
         const failed = await requestError(
-          alice.was.request({
+          alice.pws.request({
             url: importUrl,
             method: 'POST',
             body: tarBytes,
@@ -794,7 +794,7 @@ describe.skipIf(!connectionString)(
         'no Collection is created with its Resources absent'
       )
 
-      const retried = await alice.was.request({
+      const retried = await alice.pws.request({
         url: importUrl,
         method: 'POST',
         body: tarBytes,
@@ -803,7 +803,7 @@ describe.skipIf(!connectionString)(
       assert.equal(retried.status, 200)
       assert.equal(retried.data.collectionsCreated, 1)
       assert.equal(retried.data.resourcesCreated, 1)
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: url(`/space/${destinationId}/on-pg/p1`),
         method: 'GET'
       })
@@ -814,7 +814,7 @@ describe.skipIf(!connectionString)(
       const spaceId = await freshSpace('Reserved Ids Space')
       for (const id of ['default', 'fs', 'postgres']) {
         const refused = await requestError(
-          alice.was.request({
+          alice.pws.request({
             url: url(`/space/${spaceId}/backends`),
             method: 'POST',
             json: {
@@ -859,13 +859,13 @@ describe.skipIf(!connectionString)('Postgres as the default backend', () => {
   it('aliases `default` to Postgres and keeps the control plane there', async () => {
     assert.equal(fastify.storage.describe().id, 'postgres')
     const spaceId = crypto.randomUUID()
-    const created = await alice.was.createSpace({
+    const created = await alice.pws.createSpace({
       id: spaceId,
       name: 'Postgres Default',
       controller: alice.did
     })
     assert.ok(created)
-    const listing = await alice.was.request({
+    const listing = await alice.pws.request({
       url: new URL(`/space/${spaceId}/backends`, baseServerUrl).toString(),
       method: 'GET'
     })
@@ -878,12 +878,12 @@ describe.skipIf(!connectionString)('Postgres as the default backend', () => {
     assert.equal(await fsBackend.getSpaceMetadata({ spaceId }), undefined)
 
     // A Collection selecting `fs` lands its Resources on the filesystem.
-    await alice.was.request({
+    await alice.pws.request({
       url: new URL(`/space/${spaceId}/on-fs/meta`, baseServerUrl).toString(),
       method: 'PUT',
       json: { id: 'on-fs', backend: { id: 'fs' } }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: new URL(`/space/${spaceId}/on-fs/r1`, baseServerUrl).toString(),
       method: 'PUT',
       json: { on: 'fs' }

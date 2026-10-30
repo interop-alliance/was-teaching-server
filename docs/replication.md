@@ -180,19 +180,26 @@ client-annex replica pointer the source checks.
 
 The peer controller's document is resolved one of two ways, and never fetched by
 DID. A DID hosted in the peer Space itself has its `did.jsonl` read through the
-pull capability and verified offline, as a replicated copy is, and the
-registration must pull the log's Collection, so the copy the promotion needs
-arrives with the first pull. A DID hosted in another Space of the peer host
-resolves from the local copy that exactly one other registration on this server
-maps (see [Where a replicated log lives](#where-a-replicated-log-lives)), which
-is how the client-annex auxiliary Space registers: its controller is the account
+pull capability and verified offline, as a replicated copy is, against the head
+this server last verified. The registration must pull the log's Collection, so
+the copy the promotion needs arrives with the first pull. That read decides over
+any stored copy: replacing a capability finds the registration's own mapping,
+whose copy may not exist yet, or may not list the key that signed the new
+capability. A DID hosted in another Space of the peer host resolves from the
+local copy that exactly one other registration on this server maps (see
+[Where a replicated log lives](#where-a-replicated-log-lives)), which is how the
+client-annex auxiliary Space registers: its controller is the account
 `did:webvh`, whose log lives in the account Space and reaches this server
 through the account replica's registration. Only the bootstrap branch reads a
-mapped copy; the listed-key branch takes the hosted DID alone. Once the first
-pull lands, Update Space moves the local Space to the DID, resolved through the
-same mapping, and the controllers are equal from then on. Without the controller
-check, a holder of any readable pull capability could register another user's
-Space as a source and read the copy through root invocations.
+mapped copy; the listed-key branch takes the hosted DID alone. A mapped copy can
+lag the source. A key the source retired is still caught, since the source
+verifies the capability at the read of the peer Space. A key the source added is
+refused until the next pull of the registration that keeps the copy, and the
+refusal says the copy may be behind. Once the first pull lands, Update Space
+moves the local Space to the DID, resolved through the same mapping, and the
+controllers are equal from then on. Without the controller check, a holder of
+any readable pull capability could register another user's Space as a source and
+read the copy through root invocations.
 
 One check reads no peer. A registration is refused when another local Space
 already replicates the same peer Space with a Collection in common, since a
@@ -213,9 +220,15 @@ authorized by the controller. The handler scans every stored Space for such a
 controller. The caller changes that Space's controller first. To pause the loop
 or replace the pull capability, the caller `PUT`s the registration instead of
 removing it. A removal that ends a two-Space mapping is allowed. A keystore
-controller is not checked. Delete Space and Delete Collection are not guarded
-either: a replicated copy of a log goes away with its Collection or Space, as a
-self-hosted log does.
+controller is not checked.
+
+Delete Space and Delete Collection are refused the same way when they would take
+the only copy a local Space's controller resolves from. Delete Space is not
+refused for the Space's own controller, which goes with it, so a Space that
+keeps the copy of its own controller's log can always be deleted. Delete
+Collection is refused for it, since that Space stays and would have no
+controller. A Space with no registrations is not checked, so a self-hosted log
+goes away with its Collection or Space as before.
 
 Update Space is refused with the same `replica-refused` (409, pointer
 `#/controller`) when the controller change would break a mapping. A registration
@@ -236,10 +249,11 @@ controller's log, which it may remove.
 The caller changes that Space's controller first, or registers the log's
 Collection on this Space by name, which holds it whatever the controller.
 `controllerChangeConflict` in `lib/webvhLogLocation.ts` decides both cases, and
-shares the second with Delete Replica. The three checks read the stored
-registrations and the other Spaces' controllers afresh, past the caches, so a
-controller another process wrote a moment ago counts. A Space with no
-registrations is not checked. None of the checks is atomic with its write.
+shares the second with Delete Replica, Delete Space and Delete Collection. These
+checks read the stored registrations and the other Spaces' controllers afresh,
+past the caches, so a controller another process wrote a moment ago counts. A
+Space with no registrations is not checked. None of the checks is atomic with
+its write.
 
 ## Where a replicated log lives
 

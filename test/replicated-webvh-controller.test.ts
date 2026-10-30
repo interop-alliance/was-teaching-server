@@ -29,8 +29,10 @@ import type { DIDLog, Signer } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { ProblemTypes } from '@interop/storage-core'
 
+import { resolveWebvhController } from '../src/lib/webvhController.js'
 import { invalidateReplicaIndex } from '../src/lib/webvhLogLocation.js'
 import { createApp } from '../src/server.js'
+import type { PeerFetch } from '../src/sync/peerFetch.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
 import {
@@ -72,9 +74,31 @@ const serverLogs = new Map<string, string>()
 const networkResolutions: string[] = []
 
 /**
+ * What a source answers in place of the log it stores, by URL, for a case
+ * where a source serves an older log than the one it holds.
+ */
+const substitutedLogs = new Map<string, string>()
+
+/**
+ * The transport to the apps, through which every pull reaches its source.
+ */
+const injectedFetch = injectPeerFetch(servers)
+
+/**
+ * The type of a client-annex auxiliary Space.
+ */
+const auxiliaryType = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
+
+/**
  * The pull loops' transport: the request goes to the app the URL names.
  */
-const peerFetch = injectPeerFetch(servers)
+const peerFetch: PeerFetch = async options => {
+  const response = await injectedFetch(options)
+  const substituted = substitutedLogs.get(options.url)
+  return substituted === undefined
+    ? response
+    : { ...response, body: new Blob([substituted]).stream() }
+}
 
 /**
  * Boots one server with an identity that may invoke, so it can pull.
@@ -698,7 +722,6 @@ describe('A did:webvh controller resolved from a replicated log', () => {
      * is controlled by the account DID, whose log lives in the account Space.
      */
     let acct2: Awaited<ReturnType<typeof mintOnOrigin>>
-    const auxiliaryType = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
     /**
      * The bootstrap `did:key` of each replica Space: derived for the
      * purpose, listed in no document.
@@ -844,6 +867,263 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       assert.equal(read.statusCode, 200, read.payload)
       // Every document came through the pull capability or a stored copy.
       assert.equal(networkResolutions.length, before)
+    })
+  })
+
+  describe('a capability replaced past a local copy of the log', () => {
+    /**
+     * A third account, promoted on the origin, with its auxiliary Space. Its
+     * replica Spaces sit under bootstrap `did:key`s until their promotion.
+     */
+    let acct3: Awaited<ReturnType<typeof mintOnOrigin>>
+    let retiredKey: Ed25519VerificationKey
+    let accountBootstrap: { did: string; signer: any }
+    let annexBootstrap: { did: string; signer: any }
+
+    /**
+     * A one-link pull capability of the origin's Space `fromSpaceId`.
+     */
+    async function pullCapability(fromSpaceId: string, key: any) {
+      const { capability } = await registration({
+        toSpaceId: 'acct3-copy',
+        fromSpaceId,
+        delegator: key.signer()
+      })
+      return capability
+    }
+
+    /**
+     * Update Replica on the account replica, with a new pull capability.
+     */
+    async function replaceCapability(capability: any) {
+      const path = '/space/acct3-copy/replicas/origin'
+      const stored = await call({
+        server: mirror,
+        path,
+        signer: accountBootstrap.signer
+      })
+      assert.equal(stored.statusCode, 200, stored.payload)
+      return call({
+        server: mirror,
+        path,
+        method: 'PUT',
+        json: { ...stored.json(), capability },
+        signer: accountBootstrap.signer
+      })
+    }
+
+    /**
+     * Sends Register Replica for the auxiliary Space, under `capability`.
+     */
+    async function postAnnex(capability: any) {
+      return postRegistration({
+        toSpaceId: 'acct3-annex-copy',
+        fromSpaceId: 'acct3-annex',
+        capability,
+        signer: annexBootstrap.signer
+      })
+    }
+
+    beforeAll(async () => {
+      await createSpace(origin, 'acct3')
+      await createCollection(origin, 'acct3', 'id')
+      acct3 = await mintOnOrigin('acct3')
+      const onOrigin = await promote('acct3', acct3.did, { server: origin })
+      assert.equal(onOrigin.statusCode, 204, onOrigin.payload)
+      await createSpace(origin, 'acct3-annex', acct3.did, auxiliaryType)
+
+      accountBootstrap = bareDidKeyOf(await Ed25519VerificationKey.generate())
+      annexBootstrap = bareDidKeyOf(await Ed25519VerificationKey.generate())
+      await createSpace(mirror, 'acct3-copy', accountBootstrap.did)
+      await createSpace(
+        mirror,
+        'acct3-annex-copy',
+        annexBootstrap.did,
+        auxiliaryType
+      )
+      await register({
+        toSpaceId: 'acct3-copy',
+        fromSpaceId: 'acct3',
+        delegator: acct3.key.signer(),
+        signer: accountBootstrap.signer
+      })
+    })
+
+    afterAll(() => {
+      substitutedLogs.clear()
+    })
+
+    it('replaces the capability of a bootstrap registration before its first pull', async () => {
+      const replaced = await replaceCapability(
+        await pullCapability('acct3', acct3.key)
+      )
+      assert.equal(replaced.statusCode, 204, replaced.payload)
+    })
+
+    it('replaces the capability under a key the local copy does not list yet', async () => {
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'acct3-copy',
+        replicaId: 'origin'
+      })
+      retiredKey = acct3.key
+      const replacement = await Ed25519VerificationKey.generate()
+      const updated = await updateDID({
+        log: acct3.log,
+        signer: acct3.logSigner,
+        vmIdFragment: 'multibase',
+        verificationMethods: [clientMethod(replacement)] as any
+      })
+      const appended = await putLog({
+        server: origin,
+        spaceId: 'acct3',
+        log: updated.log,
+        signer: retiredKey.signer()
+      })
+      assert.equal(appended.statusCode, 200, appended.payload)
+      acct3.log = updated.log
+      acct3.key = bindKey(replacement, acct3.did)
+
+      const replaced = await replaceCapability(
+        await pullCapability('acct3', acct3.key)
+      )
+      assert.equal(replaced.statusCode, 204, replaced.payload)
+    })
+
+    it('leaves a capability a retired key signed to the source to refuse', async () => {
+      const refused = await postAnnex(
+        await pullCapability('acct3-annex', retiredKey)
+      )
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /could not be read/)
+    })
+
+    it('says a mapped copy may be behind when it does not list the signing key', async () => {
+      const capability = await pullCapability('acct3-annex', acct3.key)
+      const refused = await postAnnex(capability)
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /may be behind/)
+
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'acct3-copy',
+        replicaId: 'origin'
+      })
+      const created = await postAnnex(capability)
+      assert.equal(created.statusCode, 201, created.payload)
+    })
+
+    it('refuses a log the source rolled back past the head this server verified', async () => {
+      await resolveWebvhController({
+        storage: mirror.fastify.storage,
+        serverBackends: mirror.fastify.serverBackends,
+        serverUrl: mirror.serverUrl,
+        did: acct3.did
+      })
+      const [genesis] = acct3.log
+      substitutedLogs.set(
+        `${origin.serverUrl}/space/acct3/id/did.jsonl`,
+        logToJsonlString([genesis!])
+      )
+      const refused = await replaceCapability(
+        await pullCapability('acct3', acct3.key)
+      )
+      substitutedLogs.clear()
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /does not extend/)
+    })
+
+    describe('a delete that would take the only copy of the log', () => {
+      beforeAll(async () => {
+        const promoted = await promote('acct3-annex-copy', acct3.did, {
+          signer: annexBootstrap.signer
+        })
+        assert.equal(promoted.statusCode, 204, promoted.payload)
+        const notes = await call({
+          server: mirror,
+          path: '/space/acct3-copy/',
+          method: 'POST',
+          json: { id: 'notes', name: 'notes' },
+          signer: accountBootstrap.signer
+        })
+        assert.equal(notes.statusCode, 201, notes.payload)
+      })
+
+      it('refuses Delete Space on the Space keeping the copy', async () => {
+        const refused = await call({
+          server: mirror,
+          path: '/space/acct3-copy/',
+          method: 'DELETE',
+          signer: accountBootstrap.signer
+        })
+        assert.equal(refused.statusCode, 409, refused.payload)
+        assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+        assert.match(
+          refused.json().errors[0].detail,
+          /Space "acct3-annex-copy"/
+        )
+        assert.equal(
+          (await readAs('acct3-annex-copy', acct3.key)).statusCode,
+          200
+        )
+      })
+
+      it('refuses Delete Collection on the Collection holding the copy', async () => {
+        const refused = await call({
+          server: mirror,
+          path: '/space/acct3-copy/id/',
+          method: 'DELETE',
+          signer: accountBootstrap.signer
+        })
+        assert.equal(refused.statusCode, 409, refused.payload)
+        assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+        assert.match(
+          refused.json().errors[0].detail,
+          /Space "acct3-annex-copy"/
+        )
+      })
+
+      it('deletes any other Collection of the Space', async () => {
+        const deleted = await call({
+          server: mirror,
+          path: '/space/acct3-copy/notes/',
+          method: 'DELETE',
+          signer: accountBootstrap.signer
+        })
+        assert.equal(deleted.statusCode, 204, deleted.payload)
+      })
+
+      it('deletes the Space once no other Space depends on the copy', async () => {
+        const dependent = await call({
+          server: mirror,
+          path: '/space/acct3-annex-copy/',
+          method: 'DELETE',
+          signer: acct3.key.signer()
+        })
+        assert.equal(dependent.statusCode, 204, dependent.payload)
+        const promoted = await promote('acct3-copy', acct3.did, {
+          signer: accountBootstrap.signer
+        })
+        assert.equal(promoted.statusCode, 204, promoted.payload)
+
+        // The Space's own controller resolves from its Collection, so that
+        // Collection stays, while the Space may go with its copy.
+        const refused = await call({
+          server: mirror,
+          path: '/space/acct3-copy/id/',
+          method: 'DELETE',
+          signer: acct3.key.signer()
+        })
+        assert.equal(refused.statusCode, 409, refused.payload)
+        const deleted = await call({
+          server: mirror,
+          path: '/space/acct3-copy/',
+          method: 'DELETE',
+          signer: acct3.key.signer()
+        })
+        assert.equal(deleted.statusCode, 204, deleted.payload)
+      })
     })
   })
 

@@ -12,7 +12,7 @@
   append; `src/lib/spaceProjection.ts`, which derives `replicas` beside
   `backends`; `parseWritePreconditions` on the two container Metadata routes;
   ARCHITECTURE.md's `etag.ts` entry and the Glossary's Space entry).
-  was-client's Space Metadata type gains the member. The conformance suite's
+  pws-client's Space Metadata type gains the member. The conformance suite's
   exact-shape asserts on the Space Metadata object and the validator regex.
 
 ## Context

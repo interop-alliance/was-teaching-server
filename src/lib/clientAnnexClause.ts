@@ -487,7 +487,7 @@ function localSpaceTargetId({
  * target a delegated chain attenuates under, the target a generation
  * delegation already carries, and the target of the Space's synthesized root.
  * The no-slash form is not a canonical target under v0.5 (the route only
- * redirects), so it matches nothing here. A `@interop/was-client` caller
+ * redirects), so it matches nothing here. A `@interop/pws-client` caller
  * passes the canonical form via the grant's `target` option.
  * @param options {object}
  * @param options.target {string}   the delegation's `invocationTarget`

@@ -87,13 +87,13 @@ describe('Export/Import Space API (wire level)', () => {
     // Provision a source Space with one Collection and one Resource, so the
     // export has real content to stream back and the round-trip has something
     // to reconstruct.
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: sourceSpaceId,
       name: 'Export Source',
       controller: alice.did
     })
     await space.createCollection({ id: collectionId, name: 'Notes' })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${sourceSpaceId}/${collectionId}/${resourceId}`,
       method: 'PUT',
       json: { id: resourceId, hello: 'world' }
@@ -105,7 +105,7 @@ describe('Export/Import Space API (wire level)', () => {
 
   describe('Export (POST /space/:spaceId/export)', () => {
     it('returns 200 with an application/x-tar body for the controller', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/export`,
         method: 'POST'
       })
@@ -116,7 +116,7 @@ describe('Export/Import Space API (wire level)', () => {
     })
 
     it("carries the served Service Description as the archive's service.json", async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/export`,
         method: 'POST'
       })
@@ -140,7 +140,7 @@ describe('Export/Import Space API (wire level)', () => {
       // answers with `not-found` rather than leaking the Space's existence.
       let expectedError: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: `${baseServerUrl}space/${sourceSpaceId}/export`,
           method: 'POST'
         })
@@ -158,7 +158,7 @@ describe('Export/Import Space API (wire level)', () => {
     it('masks an export of a non-existent Space as 404', async () => {
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${crypto.randomUUID()}/export`,
           method: 'POST'
         })
@@ -175,20 +175,20 @@ describe('Export/Import Space API (wire level)', () => {
     it('round-trips: an exported tar imports into a fresh Space (200 + ImportStats)', async () => {
       // Export the source Space, then import that same tar into a distinct,
       // pre-provisioned destination Space and confirm the Resource is restored.
-      const exportResponse = await alice.was.request({
+      const exportResponse = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/export`,
         method: 'POST'
       })
       const tarBytes = new Uint8Array(await exportResponse.arrayBuffer())
 
       const destSpaceId = `export-dest-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: destSpaceId,
         name: 'Import Destination',
         controller: alice.did
       })
 
-      const importResponse = await alice.was.request({
+      const importResponse = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -230,7 +230,7 @@ describe('Export/Import Space API (wire level)', () => {
       })
 
       // The imported Resource is readable in the destination Space.
-      const readBack = await alice.was.request({
+      const readBack = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/${collectionId}/${resourceId}`,
         method: 'GET'
       })
@@ -241,20 +241,20 @@ describe('Export/Import Space API (wire level)', () => {
     it('is idempotent on re-import: a second import skips the existing items', async () => {
       // A re-import over the same destination counts the pre-existing Collection
       // and Resource as skipped rather than created.
-      const exportResponse = await alice.was.request({
+      const exportResponse = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/export`,
         method: 'POST'
       })
       const tarBytes = new Uint8Array(await exportResponse.arrayBuffer())
 
       const destSpaceId = `export-dest-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: destSpaceId,
         name: 'Re-import Destination',
         controller: alice.did
       })
 
-      const first = await alice.was.request({
+      const first = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -263,7 +263,7 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(first.status, 200)
       assert.ok(first.data.collectionsCreated >= 1)
 
-      const second = await alice.was.request({
+      const second = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -289,7 +289,7 @@ describe('Export/Import Space API (wire level)', () => {
       ])
       let expectedError: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: `${baseServerUrl}space/${sourceSpaceId}/import`,
           method: 'POST',
           body: tarBytes,
@@ -315,7 +315,7 @@ describe('Export/Import Space API (wire level)', () => {
       )
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${sourceSpaceId}/import`,
           method: 'POST',
           body: garbage,
@@ -336,7 +336,7 @@ describe('Export/Import Space API (wire level)', () => {
       const tarBytes = await packTar([['space/', null]])
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${sourceSpaceId}/import`,
           method: 'POST',
           body: tarBytes,
@@ -356,7 +356,7 @@ describe('Export/Import Space API (wire level)', () => {
       ])
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${sourceSpaceId}/import`,
           method: 'POST',
           body: tarBytes,
@@ -376,7 +376,7 @@ describe('Export/Import Space API (wire level)', () => {
       const tarBytes = await packTar([['manifest.yml', validManifestYaml()]])
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${sourceSpaceId}/import`,
           method: 'POST',
           body: tarBytes,
@@ -394,7 +394,7 @@ describe('Export/Import Space API (wire level)', () => {
       const tarBytes = await packTar([['manifest.yml', validManifestYaml()]])
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${crypto.randomUUID()}/import`,
           method: 'POST',
           body: tarBytes,
@@ -411,7 +411,7 @@ describe('Export/Import Space API (wire level)', () => {
 
   describe("the Space Metadata object's server-derived backends", () => {
     it('is served on Read Space, naming the server default backend', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/meta`,
         method: 'GET'
       })
@@ -423,7 +423,7 @@ describe('Export/Import Space API (wire level)', () => {
         "expected the server's default backend in the listing"
       )
       // The same listing `GET /space/{id}/backends` serves.
-      const served = await alice.was.request({
+      const served = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/backends`,
         method: 'GET'
       })
@@ -431,7 +431,7 @@ describe('Export/Import Space API (wire level)', () => {
     })
 
     it("rides along in the archive's Space Metadata entry", async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${sourceSpaceId}/export`,
         method: 'POST'
       })
@@ -455,7 +455,7 @@ describe('Export/Import Space API (wire level)', () => {
 
     it('is ignored when a write body supplies one', async () => {
       const spaceId = `backends-write-${crypto.randomUUID()}`
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: {
@@ -471,7 +471,7 @@ describe('Export/Import Space API (wire level)', () => {
         'expected the supplied backends to be dropped from the create echo'
       )
 
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: {
@@ -483,7 +483,7 @@ describe('Export/Import Space API (wire level)', () => {
       })
       assert.equal(updated.status, 204)
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'GET'
       })
@@ -514,13 +514,13 @@ describe('Export/Import Space API (wire level)', () => {
     }> {
       const spaceId = `meta-src-${crypto.randomUUID()}`
       const name = 'Archived Name'
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, type, name, controller: alice.did }
       })
       assert.equal(created.status, 201)
-      const exported = await alice.was.request({
+      const exported = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/export`,
         method: 'POST'
       })
@@ -538,7 +538,7 @@ describe('Export/Import Space API (wire level)', () => {
      */
     async function destination(): Promise<string> {
       const spaceId = `meta-dest-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Destination Name',
         controller: alice.did
@@ -550,7 +550,7 @@ describe('Export/Import Space API (wire level)', () => {
       const { tarBytes, type, name } = await archivedSource()
       const destSpaceId = await destination()
 
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -559,7 +559,7 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(imported.status, 200)
       assert.equal(imported.data.spaceMetadata, 'restored')
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/meta`,
         method: 'GET'
       })
@@ -583,7 +583,7 @@ describe('Export/Import Space API (wire level)', () => {
 
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${destSpaceId}/import`,
           method: 'POST',
           body: tarBytes,
@@ -597,7 +597,7 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(expectedError.data.type, INVALID_IMPORT_TYPE)
       assert.match(expectedError.data.errors[0].detail, /"type" does not match/)
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/meta`,
         method: 'GET'
       })
@@ -616,7 +616,7 @@ describe('Export/Import Space API (wire level)', () => {
         [`space/${destSpaceId}/.space.meta.${destSpaceId}.json`, '{not json'],
         [`space/${destSpaceId}/notes/`, null]
       ])
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -626,7 +626,7 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(imported.data.spaceMetadata, 'absent')
       assert.equal(imported.data.collectionsCreated, 1)
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/meta`,
         method: 'GET'
       })
@@ -662,7 +662,7 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(imported.status, 200)
       assert.equal((imported.data as any).spaceMetadata, 'skipped')
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/meta`,
         method: 'GET'
       })
@@ -680,7 +680,7 @@ describe('Export/Import Space API (wire level)', () => {
         [`space/${destSpaceId}/`, null],
         [`space/${destSpaceId}/notes/`, null]
       ])
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -689,7 +689,7 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(imported.status, 200)
       assert.equal(imported.data.spaceMetadata, 'absent')
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: `${baseServerUrl}space/${destSpaceId}/meta`,
         method: 'GET'
       })
@@ -708,13 +708,13 @@ describe('Export/Import Space API (wire level)', () => {
     const policyEntry = `space/${spaceId}/.space.policy.json`
 
     async function provision(): Promise<void> {
-      const space = await alice.was.createSpace({
+      const space = await alice.pws.createSpace({
         id: spaceId,
         name: 'Policy Space',
         controller: alice.did
       })
       await space.createCollection({ id: collectionId, name: 'Notes' })
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`,
         method: 'PUT',
         json: { id: resourceId, hello: 'policy' }
@@ -723,14 +723,14 @@ describe('Export/Import Space API (wire level)', () => {
 
     it('exports its Metadata and policy files apart and imports both', async () => {
       await provision()
-      const policyWrite = await alice.was.request({
+      const policyWrite = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/policy`,
         method: 'PUT',
         json: { type: 'PublicCanRead' }
       })
       assert.equal(policyWrite.status, 201)
 
-      const exported = await alice.was.request({
+      const exported = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/export`,
         method: 'POST'
       })
@@ -751,17 +751,17 @@ describe('Export/Import Space API (wire level)', () => {
 
       // The Space is lost and restored from the archive. The Metadata object,
       // the policy and the Resource all come back.
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Fresh Policy Space',
         controller: alice.did
       })
-      const imported = await alice.was.request({
+      const imported = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -770,18 +770,18 @@ describe('Export/Import Space API (wire level)', () => {
       assert.equal(imported.status, 200)
       assert.equal(imported.data.spaceMetadata, 'restored')
 
-      const readMetadata = await alice.was.request({
+      const readMetadata = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'GET'
       })
       assert.equal(readMetadata.data.name, 'Policy Space')
-      const readPolicy = await alice.was.request({
+      const readPolicy = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/policy`,
         method: 'GET'
       })
       assert.equal(readPolicy.status, 200)
       assert.equal(readPolicy.data.type, 'PublicCanRead')
-      const readResource = await alice.was.request({
+      const readResource = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/${resourceId}`,
         method: 'GET'
       })
@@ -801,7 +801,7 @@ describe('Export/Import Space API (wire level)', () => {
      * Exports a Space and returns its archive entries.
      */
     async function exportEntries(spaceId: string) {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/export`,
         method: 'POST'
       })
@@ -828,7 +828,7 @@ describe('Export/Import Space API (wire level)', () => {
      * Imports archive bytes into a Space under Alice's root invocation.
      */
     async function importInto(spaceId: string, tarBytes: Uint8Array) {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/import`,
         method: 'POST',
         body: tarBytes,
@@ -841,7 +841,7 @@ describe('Export/Import Space API (wire level)', () => {
       // A Space holding one real revocation: a grant Alice delegated from
       // the Space's root capability, revoked through the revocation route.
       const spaceId = `revoked-src-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Revocation Source',
         controller: alice.did
@@ -890,7 +890,7 @@ describe('Export/Import Space API (wire level)', () => {
       // A fresh Space has another root, so the chain does not verify there
       // and the import installs nothing.
       const freshSpaceId = `revoked-dest-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: freshSpaceId,
         name: 'Revocation Destination',
         controller: alice.did
@@ -901,12 +901,12 @@ describe('Export/Import Space API (wire level)', () => {
       // The same Space id, deleted and created again, has the chain's root:
       // the genuine record is installed with server-built `meta`, and the
       // forged one is skipped.
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Revocation Source',
         controller: alice.did
@@ -983,7 +983,7 @@ describe('Export/Import Space API (wire level)', () => {
 
     it("installs a revocation only when the import's own grant could submit it on the revocation route", async () => {
       const spaceId = `revoked-grant-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Revocation Grant',
         controller: alice.did
@@ -1046,7 +1046,7 @@ describe('Export/Import Space API (wire level)', () => {
 
     it('installs a revocation of a grant the importing invoker holds', async () => {
       const spaceId = `revoked-own-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Revocation Own',
         controller: alice.did
@@ -1084,12 +1084,12 @@ describe('Export/Import Space API (wire level)', () => {
       // A `did:webvh` hosted in the Space's `id` Collection, holding one key
       // under every relationship a delegation needs.
       const spaceId = `revoked-webvh-${crypto.randomUUID()}`
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Revocation Webvh',
         controller: alice.did
       })
-      await alice.was.space(spaceId).collection('id').configure({ force: true })
+      await alice.pws.space(spaceId).collection('id').configure({ force: true })
       const updateKeyPair = await Ed25519VerificationKey.generate()
       const clientKeyPair = await Ed25519VerificationKey.generate()
       const created = await createDID({
@@ -1112,7 +1112,7 @@ describe('Export/Import Space API (wire level)', () => {
       })
       clientKeyPair.id = `${created.did}#${clientKeyPair.publicKeyMultibase}`
       clientKeyPair.controller = created.did
-      const published = await alice.was.request({
+      const published = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/id/did.jsonl`,
         method: 'PUT',
         headers: { 'content-type': 'text/jsonl' },
@@ -1154,17 +1154,17 @@ describe('Export/Import Space API (wire level)', () => {
       // The Space is lost and restored from its archive. The log comes back
       // with the archive, so the record's chain verifies again and Bob stays
       // revoked. Verified before the log landed, the record would be skipped.
-      const exportResponse = await alice.was.request({
+      const exportResponse = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/export`,
         method: 'POST'
       })
       const tarBytes = new Uint8Array(await exportResponse.arrayBuffer())
-      const deleted = await alice.was.request({
+      const deleted = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Revocation Webvh',
         controller: alice.did

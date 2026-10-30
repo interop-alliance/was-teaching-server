@@ -10,7 +10,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
@@ -29,7 +29,7 @@ describe('Access-control policy cache', () => {
 
   it('a policy PUT is visible on the next anonymous read (no TTL wait)', async () => {
     const spaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Cache Test Space',
       controller: alice.did
@@ -55,7 +55,7 @@ describe('Access-control policy cache', () => {
 
   it('a policy DELETE stops granting on the next anonymous read (no TTL wait)', async () => {
     const spaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Cache Test Space 2',
       controller: alice.did
@@ -81,7 +81,7 @@ describe('Access-control policy cache', () => {
 
   it('Delete Collection drops its cached policy, so a re-created Collection of the same id starts private', async () => {
     const spaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Cache Test Space 3',
       controller: alice.did
@@ -111,7 +111,7 @@ describe('Access-control policy cache', () => {
 
   it("a Resource named like its Collection has its own policy, separate from the Collection's", async () => {
     const spaceId = crypto.randomUUID()
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Cache Test Space 5',
       controller: alice.did
@@ -144,7 +144,7 @@ describe('Access-control policy cache', () => {
 
   it('a Space-level policy write and delete are each visible immediately', async () => {
     const spaceId = crypto.randomUUID()
-    const space: Space = await alice.was.createSpace({
+    const space: Space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Cache Test Space 4',
       controller: alice.did

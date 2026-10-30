@@ -27,7 +27,7 @@ describe('Count quota (Spaces per controller)', () => {
 
   it('accepts the first Space then rejects a second by the same controller with 507', async () => {
     // First create for Alice succeeds.
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: alice.space1.id,
       name: 'Alice Space 1',
       controller: alice.did
@@ -38,7 +38,7 @@ describe('Count quota (Spaces per controller)', () => {
     // 507 to a thrown error carrying the quota-exceeded problem type.
     let error: any
     try {
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: alice.space2.id,
         name: 'Alice Space 2',
         controller: alice.did

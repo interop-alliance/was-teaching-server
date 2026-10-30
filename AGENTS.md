@@ -11,8 +11,8 @@ rendered: <https://w3c-ccg.github.io/portable-web-spaces-spec/>).
 
 Spec-vs-implementation gap analyses: [server roadmap](./ROADMAP.md) (features
 the spec defines that this server doesn't implement yet) and the
-[client roadmap](https://github.com/interop-alliance/was-client/blob/main/ROADMAP.md)
-(the same analysis for the companion `was-client` library, in its repo).
+[client roadmap](https://github.com/interop-alliance/pws-client/blob/main/ROADMAP.md)
+(the same analysis for the companion `pws-client` library, in its repo).
 
 ## Tech Stack
 
@@ -120,7 +120,7 @@ under "Testing against the server". Rules a suite in `test/` follows:
   server's `port` back in, so ids minted by the first server still resolve.
 - Use `faults` (`refuse`, `dropResponse`, `hold`) for a torn or interleaved
   request instead of mocking `node:fs/promises`, unless the fault under test is
-  the syscall itself. was-client retries a 5xx and a dropped connection, so pass
+  the syscall itself. pws-client retries a 5xx and a dropped connection, so pass
   `times` or refuse with a 4xx.
 
 ## Logging

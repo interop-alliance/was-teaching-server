@@ -1,8 +1,8 @@
 /**
  * Wire-contract smoke test (Vitest): a thin in-process check that the key
  * operations return the right HTTP status codes and headers. The high-level
- * `WasClient` handles hide status/headers by design, so this uses the
- * `was.request()` escape hatch (raw `HttpResponse`, raw errors) to keep a
+ * `PwsClient` handles hide status/headers by design, so this uses the
+ * `pws.request()` escape hatch (raw `HttpResponse`, raw errors) to keep a
  * minimal status-code check in the `pnpm test` gate. Exhaustive wire-contract
  * coverage lives in the `*-api` suites of `@interop/pws-conformance-suite`.
  */
@@ -25,12 +25,12 @@ describe('Wire-contract smoke (status codes)', () => {
 
     // Provision the Space + Collection the read/write smoke checks operate on,
     // over the wire (the high-level handles still speak the pre-v0.5 table).
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Smoke Space', controller: alice.did }
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Verifiable Credentials' }
@@ -42,7 +42,7 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('POST /spaces/ returns 201 with a Location and JSON content-type', async () => {
     const freshSpaceId = `smoke-space-${crypto.randomUUID()}`
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: {
@@ -62,7 +62,7 @@ describe('Wire-contract smoke (status codes)', () => {
   })
 
   it('GET /space/:spaceId/meta returns the Space Metadata object with an ETag', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/meta`,
       method: 'GET'
     })
@@ -76,7 +76,7 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('PUT /space/:spaceId/meta creates a Space by id (201) then updates it (204)', async () => {
     const freshSpaceId = `smoke-space-${crypto.randomUUID()}`
-    const created = await alice.was.request({
+    const created = await alice.pws.request({
       url: `${baseServerUrl}space/${freshSpaceId}/meta`,
       method: 'PUT',
       json: { id: freshSpaceId, name: 'By Id', controller: alice.did }
@@ -87,7 +87,7 @@ describe('Wire-contract smoke (status codes)', () => {
       `${baseServerUrl}space/${freshSpaceId}/`
     )
     assert.ok(created.headers.get('etag'))
-    const updated = await alice.was.request({
+    const updated = await alice.pws.request({
       url: `${baseServerUrl}space/${freshSpaceId}/meta`,
       method: 'PUT',
       json: { id: freshSpaceId, name: 'Renamed', controller: alice.did }
@@ -97,7 +97,7 @@ describe('Wire-contract smoke (status codes)', () => {
   })
 
   it('GET /space/:spaceId/ lists Collections with container urls', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'GET'
     })
@@ -111,7 +111,7 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('POST /space/:spaceId/ creates a collection (201 with Location)', async () => {
     const freshCollectionId = `smoke-collection-${crypto.randomUUID()}`
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: freshCollectionId, name: 'Smoke Collection' }
@@ -126,7 +126,7 @@ describe('Wire-contract smoke (status codes)', () => {
   })
 
   it('GET /space/:spaceId/:collectionId/meta returns the merged Collection Metadata object', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
@@ -149,7 +149,7 @@ describe('Wire-contract smoke (status codes)', () => {
   it('PUT /space/:spaceId/:collectionId/meta creates by id (201), then is a full replacement (204)', async () => {
     const freshCollectionId = `smoke-collection-${crypto.randomUUID()}`
     const metaUrl = `${baseServerUrl}space/${spaceId}/${freshCollectionId}/meta`
-    const created = await alice.was.request({
+    const created = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: {
@@ -173,11 +173,11 @@ describe('Wire-contract smoke (status codes)', () => {
     // Full replacement: omitting `custom` clears it, while an omitted
     // `generator` keeps the stored one; the read-only members sent back from a
     // GET are ignored, not rejected.
-    const read = await alice.was.request({
+    const read = await alice.pws.request({
       url: metaUrl,
       method: 'GET'
     })
-    const updated = await alice.was.request({
+    const updated = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { ...read.data, name: 'Renamed', generator: undefined, custom: {} },
@@ -185,7 +185,7 @@ describe('Wire-contract smoke (status codes)', () => {
     })
     assert.equal(updated.status, 204)
     assert.notEqual(updated.headers.get('etag'), firstEtag)
-    const after = await alice.was.request({
+    const after = await alice.pws.request({
       url: metaUrl,
       method: 'GET'
     })
@@ -199,7 +199,7 @@ describe('Wire-contract smoke (status codes)', () => {
     // A stale `If-Match` is a 412.
     let expectedError: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { id: freshCollectionId, name: 'Stale' },
@@ -213,12 +213,12 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('DELETE /space/:spaceId/:collectionId/ deletes the Collection (204)', async () => {
     const freshCollectionId = `smoke-collection-${crypto.randomUUID()}`
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/`,
       method: 'POST',
       json: { id: freshCollectionId }
     })
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${freshCollectionId}/`,
       method: 'DELETE'
     })
@@ -226,7 +226,7 @@ describe('Wire-contract smoke (status codes)', () => {
   })
 
   it('POST a resource returns 201 with a Location', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/`,
       method: 'POST',
       json: { name: 'Smoke Resource' }
@@ -241,14 +241,14 @@ describe('Wire-contract smoke (status codes)', () => {
 
   it('PUT a resource by id returns 201, then DELETE returns 204', async () => {
     const resourceUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/smoke-put`
-    const putResponse = await alice.was.request({
+    const putResponse = await alice.pws.request({
       url: resourceUrl,
       method: 'PUT',
       json: { id: 'smoke-put', name: 'PUT Smoke' }
     })
     assert.equal(putResponse.status, 201)
 
-    const deleteResponse = await alice.was.request({
+    const deleteResponse = await alice.pws.request({
       url: resourceUrl,
       method: 'DELETE'
     })
@@ -258,7 +258,7 @@ describe('Wire-contract smoke (status codes)', () => {
   it('GET a missing resource throws a 404 with problem+json', async () => {
     let expectedError: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/does-not-exist`,
         method: 'GET'
       })
@@ -295,14 +295,14 @@ describe('Wire-contract smoke (status codes)', () => {
   for (const [label, raw, expected] of primitives) {
     it(`round-trips a top-level JSON ${label} in a plaintext Collection`, async () => {
       const resourceUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/primitive-${label.replace(/\s+/g, '-')}`
-      const putResponse = await alice.was.request({
+      const putResponse = await alice.pws.request({
         url: resourceUrl,
         method: 'PUT',
         body: new TextEncoder().encode(raw),
         headers: { 'content-type': 'application/json' }
       })
       assert.equal(putResponse.status, 201)
-      const getResponse = await alice.was.request({
+      const getResponse = await alice.pws.request({
         url: resourceUrl,
         method: 'GET'
       })
@@ -316,7 +316,7 @@ describe('Wire-contract smoke (status codes)', () => {
   // never a Resource named `policy`. Confirm the reserved route wins end to end.
   it('reserved `policy` segment routes to the collection Policy endpoint', async () => {
     const policyUrl = `${baseServerUrl}space/${spaceId}/${collectionId}/policy`
-    const put = await alice.was.request({
+    const put = await alice.pws.request({
       url: policyUrl,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
@@ -324,13 +324,13 @@ describe('Wire-contract smoke (status codes)', () => {
     assert.equal([200, 201, 204].includes(put.status), true)
     // Read it back: proves the PUT hit the Policy handler (a Resource write would
     // not be retrievable at this path as a policy document).
-    const get = await alice.was.request({
+    const get = await alice.pws.request({
       url: policyUrl,
       method: 'GET'
     })
     assert.equal(get.status, 200)
     assert.equal(get.data.type, 'PublicCanRead')
-    const del = await alice.was.request({
+    const del = await alice.pws.request({
       url: policyUrl,
       method: 'DELETE'
     })

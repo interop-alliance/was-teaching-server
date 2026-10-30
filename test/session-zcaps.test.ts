@@ -14,7 +14,7 @@ import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 
-import { Collection, Space } from '@interop/was-client'
+import { Collection, Space } from '@interop/pws-client'
 
 import {
   delegate,
@@ -53,7 +53,7 @@ describe('Space-rooted session capabilities', () => {
     ).toString()
 
     // Alice provisions a Space and a Collection...
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Session Space', controller: alice.did })
     await space
       .collection(collectionId)
@@ -86,7 +86,7 @@ describe('Space-rooted session capabilities', () => {
 
   describe('space-scoped read capability', () => {
     it('reads the Space Metadata object underneath the capability target', async () => {
-      const handle = aliceDelegatedApp.was.fromCapability(spaceReadCap)
+      const handle = aliceDelegatedApp.pws.fromCapability(spaceReadCap)
       assert.ok(handle instanceof Space)
       const description = await handle.describe()
       assert.equal(description?.id, spaceId)
@@ -94,12 +94,12 @@ describe('Space-rooted session capabilities', () => {
     })
 
     it('reads a resource underneath the Space (target attenuation)', async () => {
-      await alice.was
+      await alice.pws
         .space(spaceId)
         .collection(collectionId)
         .put('doc-1', { hello: 'world' })
 
-      const doc = await aliceDelegatedApp.was
+      const doc = await aliceDelegatedApp.pws
         .space(spaceId, { capability: spaceReadCap })
         .collection(collectionId)
         .get('doc-1')
@@ -107,7 +107,7 @@ describe('Space-rooted session capabilities', () => {
     })
 
     it('lists a Collection underneath the Space', async () => {
-      const listing = await aliceDelegatedApp.was
+      const listing = await aliceDelegatedApp.pws
         .space(spaceId, { capability: spaceReadCap })
         .collection(collectionId)
         .list()
@@ -117,7 +117,7 @@ describe('Space-rooted session capabilities', () => {
 
     it('cannot write with a GET/HEAD-only capability', async () => {
       await assert.rejects(
-        aliceDelegatedApp.was
+        aliceDelegatedApp.pws
           .space(spaceId, { capability: spaceReadCap })
           .collection(collectionId)
           .put('doc-intruder', { nope: true }),
@@ -128,7 +128,7 @@ describe('Space-rooted session capabilities', () => {
         }
       )
       // ...and the write did not land.
-      const doc = await alice.was
+      const doc = await alice.pws
         .space(spaceId)
         .collection(collectionId)
         .get('doc-intruder')
@@ -138,7 +138,7 @@ describe('Space-rooted session capabilities', () => {
 
   describe('collection-scoped write capability (rooted at the Space)', () => {
     it('writes and reads back a resource in the Collection', async () => {
-      const handle = aliceDelegatedApp.was.fromCapability(collectionWriteCap)
+      const handle = aliceDelegatedApp.pws.fromCapability(collectionWriteCap)
       assert.ok(handle instanceof Collection)
       const { etag } = await handle.put('doc-2', { from: 'session' })
       assert.ok(etag)
@@ -146,7 +146,7 @@ describe('Space-rooted session capabilities', () => {
     })
 
     it('writes resource metadata (/meta)', async () => {
-      const handle = aliceDelegatedApp.was.fromCapability(collectionWriteCap)
+      const handle = aliceDelegatedApp.pws.fromCapability(collectionWriteCap)
       const { etag } = await handle
         .resource('doc-2')
         .setMeta({ custom: { synced: true } })
@@ -154,7 +154,7 @@ describe('Space-rooted session capabilities', () => {
     })
 
     it('queries the changes feed (POST .../query)', async () => {
-      const response = await aliceDelegatedApp.was.request({
+      const response = await aliceDelegatedApp.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes', limit: 10 },
@@ -167,13 +167,13 @@ describe('Space-rooted session capabilities', () => {
     })
 
     it('deletes a resource in the Collection', async () => {
-      const handle = aliceDelegatedApp.was.fromCapability(collectionWriteCap)
+      const handle = aliceDelegatedApp.pws.fromCapability(collectionWriteCap)
       await handle.resource('doc-2').delete()
       assert.equal(await handle.get('doc-2'), null)
     })
 
     it('cannot write outside its Collection', async () => {
-      await alice.was
+      await alice.pws
         .space(spaceId)
         .collection('wallet-activity')
         .configure({ name: 'Activity', force: true })
@@ -181,14 +181,14 @@ describe('Space-rooted session capabilities', () => {
       // Rejected either client-side (the invocation URL is not under the
       // capability's target) or server-side; the write must not land.
       await assert.rejects(
-        aliceDelegatedApp.was.request({
+        aliceDelegatedApp.pws.request({
           url: `${baseServerUrl}space/${spaceId}/wallet-activity/doc-3`,
           method: 'PUT',
           json: { escape: true },
           capability: collectionWriteCap
         })
       )
-      const doc = await alice.was
+      const doc = await alice.pws
         .space(spaceId)
         .collection('wallet-activity')
         .get('doc-3')
@@ -197,7 +197,7 @@ describe('Space-rooted session capabilities', () => {
 
     it('cannot PUT the Space Metadata object (no Space takeover)', async () => {
       await assert.rejects(
-        aliceDelegatedApp.was.request({
+        aliceDelegatedApp.pws.request({
           url: `${baseServerUrl}space/${spaceId}/meta`,
           method: 'PUT',
           json: { id: spaceId, controller: aliceDelegatedApp.did },
@@ -205,7 +205,7 @@ describe('Space-rooted session capabilities', () => {
         })
       )
       // The controller is untouched.
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.controller, alice.did)
     })
   })
@@ -224,7 +224,7 @@ describe('Space-rooted session capabilities', () => {
         allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
       })
       await assert.rejects(
-        aliceDelegatedApp.was.request({
+        aliceDelegatedApp.pws.request({
           url: `${baseServerUrl}space/${spaceId}/${collectionId}/doc-4`,
           method: 'PUT',
           json: { rooted: 'wrong' },
@@ -235,7 +235,7 @@ describe('Space-rooted session capabilities', () => {
           return true
         }
       )
-      const doc = await alice.was
+      const doc = await alice.pws
         .space(spaceId)
         .collection(collectionId)
         .get('doc-4')
@@ -246,7 +246,7 @@ describe('Space-rooted session capabilities', () => {
       // Bob provisions his own Space and delegates a full session capability
       // for it to Alice's app -- which must still buy nothing in Alice's Space.
       const bobSpaceId = randomUUID()
-      await bob.was
+      await bob.pws
         .space(bobSpaceId)
         .configure({ name: "Bob's Space", controller: bob.did })
       const bobSpaceUrl = new URL(
@@ -263,14 +263,14 @@ describe('Space-rooted session capabilities', () => {
       // Rejected either client-side (the invocation URL is not under the
       // capability's target) or server-side; the write must not land.
       await assert.rejects(
-        aliceDelegatedApp.was.request({
+        aliceDelegatedApp.pws.request({
           url: `${baseServerUrl}space/${spaceId}/${collectionId}/doc-5`,
           method: 'PUT',
           json: { crossSpace: true },
           capability: bobSessionCap
         })
       )
-      const doc = await alice.was
+      const doc = await alice.pws
         .space(spaceId)
         .collection(collectionId)
         .get('doc-5')

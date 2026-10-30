@@ -16,6 +16,7 @@ import {
 } from './spaceContext.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import {
+  assertDeleteKeepsControllers,
   controllerChangeConflict,
   invalidateReplicaIndex
 } from '../lib/webvhLogLocation.js'
@@ -475,7 +476,9 @@ export class SpaceRequest {
   /**
    * DELETE /space/:spaceId/
    * Request handler for "Delete Space" request (the Space container URL, in
-   * its canonical trailing-slash form)
+   * its canonical trailing-slash form). Refused with `replica-refused` (409)
+   * while it keeps the only copy of a log another Space's `did:webvh`
+   * controller resolves from.
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
@@ -492,7 +495,7 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    const { storage } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Delete Space'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -512,6 +515,8 @@ export class SpaceRequest {
       requestName,
       containerRule: 'exact-delete'
     })
+
+    await assertDeleteKeepsControllers({ storage, serverUrl, spaceId })
 
     // zCap checks out, continue.
     try {

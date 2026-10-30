@@ -65,7 +65,7 @@ export type { PeerFetch }
  *
  * Callers must build their ZCap clients from the returned `baseServerUrl`, not
  * from a precomputed URL. It is the spec's base server URL, with its trailing
- * slash, the form `new WasClient({ baseServerUrl })` takes. The no-slash form
+ * slash, the form `new PwsClient({ baseServerUrl })` takes. The no-slash form
  * `createApp({ serverUrl })` takes is the returned instance's `serverUrl`.
  *
  * The returned `faults` records every request and can refuse, drop the
@@ -252,9 +252,9 @@ export function webvhLogSigner({
  * is deleted before the error is rethrown.
  *
  * @param options {object}
- * @param options.owner {object}   `{ did, was }`: a `did:key` and a
- *   `@interop/was-client` `WasClient` signed by it, which creates the Space.
- *   This package does not depend on was-client, so the caller brings its own
+ * @param options.owner {object}   `{ did, pws }`: a `did:key` and a
+ *   `@interop/pws-client` `PwsClient` signed by it, which creates the Space.
+ *   This package does not depend on pws-client, so the caller brings its own
  *   and the parameter is typed by the members this function calls
  * @param options.baseServerUrl {string}   the base server URL of the server
  *   the log is anchored on
@@ -284,7 +284,7 @@ export async function provisionWebvhIdentity<
 }: {
   owner: {
     did: string
-    was: {
+    pws: {
       space(spaceId: string): {
         configure(options: {
           name: string
@@ -319,7 +319,7 @@ export async function provisionWebvhIdentity<
     >
 > {
   const spaceId = randomUUID()
-  const space = owner.was.space(spaceId)
+  const space = owner.pws.space(spaceId)
   await space.configure({ name: 'Identity Space', controller: owner.did })
   try {
     await space.collection(collectionId).configure({ force: true })
@@ -386,7 +386,7 @@ export async function provisionWebvhIdentity<
       }),
       serverUrl: baseServerUrl
     })
-    const published = await owner.was.request({
+    const published = await owner.pws.request({
       url: logUrl,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },

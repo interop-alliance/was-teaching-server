@@ -20,7 +20,7 @@
  *
  * It then seeds the payload matrix (`scripts/performance/perf-matrix-seed.ts`)
  * over signed HTTP, through an in-process server on the same backend, since an
- * encrypted Collection's key epoch and EDV envelopes are made by was-client:
+ * encrypted Collection's key epoch and EDV envelopes are made by pws-client:
  * the `perf-matrix-read` and `perf-matrix-write` Spaces, and
  * `--binary-total-mib` MiB of extra binary data in the `perf-ballast` Space. The encrypted read
  * targets' EDV ids go into `seed-meta.json` too.

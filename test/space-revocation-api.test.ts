@@ -8,7 +8,7 @@
  * (`authorize`).
  *
  * Invocations are raw `@interop/ezcap` requests: the wire contract for
- * revocation is not (yet) part of the high-level `@interop/was-client`
+ * revocation is not (yet) part of the high-level `@interop/pws-client`
  * surface, and the negative cases need to shape the invocation by hand --
  * the same house pattern as the `/kms` revocation suite.
  */
@@ -60,7 +60,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     ).toString()
 
     for (const id of [spaceId, otherSpaceId]) {
-      const space = alice.was.space(id)
+      const space = alice.pws.space(id)
       await space.configure({ name: 'Revocation Space', controller: alice.did })
       await space
         .collection(collectionId)
@@ -177,7 +177,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   }
 
   beforeAll(async () => {
-    await alice.was.space(spaceId).collection(collectionId).put('doc-1', {
+    await alice.pws.space(spaceId).collection(collectionId).put('doc-1', {
       hello: 'world'
     })
   })
@@ -205,7 +205,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
       // The controller's own (root) access is untouched: root zcaps cannot be
       // revoked, and no revocation applies to a chain of just the root.
-      const doc = await alice.was
+      const doc = await alice.pws
         .space(spaceId)
         .collection(collectionId)
         .get('doc-1')
@@ -232,7 +232,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       assert.equal(err.status, 404)
       assert.equal(err.data.type, ProblemTypes.CAPABILITY_REVOKED)
       // ...and the write did not land.
-      const doc = await alice.was
+      const doc = await alice.pws
         .space(spaceId)
         .collection(collectionId)
         .get('doc-2')
@@ -264,7 +264,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       // policy already grants everyone therefore survives the revocation --
       // what is withdrawn is the capability, not the policy's grant.
       const publicCollectionId = 'public-notices'
-      const publicCollection = alice.was
+      const publicCollection = alice.pws
         .space(spaceId)
         .collection(publicCollectionId)
       await publicCollection.configure({ name: 'Notices', force: true })

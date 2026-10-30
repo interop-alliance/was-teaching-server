@@ -1,6 +1,6 @@
 # Web Spaces Server Roadmap
 
-nextAvailableId: 244
+nextAvailableId: 245
 
 <!-- roadmap-order:index:start -->
 
@@ -126,6 +126,11 @@ Ready:
 - WSS-210 [L] (*) One function decides where a `did:webvh` resolves from
 - WSS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
   with `LruCache`
+
+Waiting on another repo:
+
+- WSS-244 [L] (*) Rename the epoch-configuration state type in test fixtures
+  (after WASS-84)
 
 **Someday / Maybe**
 
@@ -598,7 +603,7 @@ implement once decided, and research that may end in either.
     archive entry names), `src/lib/validateDid.ts` (`parseSelfHostedWebvh`
     round-trip), `src/lib/importTar.ts`, ARCHITECTURE.md Glossary (the
     self-hosted `did:webvh` entry leans on the identity shortcut)
-  - was-client: stop pre-rejecting (or mirroring) the unreserved-only rule;
+  - pws-client: stop pre-rejecting (or mirroring) the unreserved-only rule;
     confirm every path builder `encodeURIComponent`s segments consistently
   - was-conformance-suite: create/read/list/delete cases for ids containing
     reserved and non-ASCII characters, plus export/import round-trip
@@ -626,7 +631,7 @@ implement once decided, and research that may end in either.
         non-ASCII) on both accept and storage paths, plus the conformance cases
         above
 
-Raised 2026-08-21 by a was-client integration failure: the client
+Raised 2026-08-21 by a pws-client integration failure: the client
 `encodeURIComponent`s each path segment, but this server validates the decoded
 id against the unreserved-only pattern and 400s anything else. The spec puts no
 syntax requirement on ids beyond "no `/`", so the restriction is this server's
@@ -719,7 +724,7 @@ keeps the member layout open for account DIDs, pending this item.
 - touches:
   - portable-web-spaces-spec: WASS-49 (the sentence permitting a declaration on
     a Collection that lacks one is withdrawn)
-  - was-client: the `edv` branch of `sync/provisioning.ts`, which declares
+  - pws-client: the `edv` branch of `sync/provisioning.ts`, which declares
     `encryption` on an existing Collection, is removed
   - was-react: `markCollectionEncrypted` is removed (shipped in 0.28.0,
     2026-10-11)
@@ -742,7 +747,7 @@ creation-only. Under replication, a late first set of `encryption` on one server
 and a concurrent full replacement without it on another both pass their own
 transition check, and last-writer-wins converges on an object with `encryption`
 gone. WSS-173 shipped the `revisions` half of the rule. This item is the
-`encryption` half. It removes a path was-client and was-react still use as
+`encryption` half. It removes a path pws-client and was-react still use as
 fallbacks, so it lands with their removal. The App Connect flow already creates
 its Collections encrypted from birth.
 
@@ -1109,7 +1114,7 @@ doc; the other items are its sub-items in dependency order.
     WSS-177, WSS-182, WSS-183 archived by 2026-10-04, and ARCHITECTURE.md
     records the stamp and validator rules, Collection tombstones, the resolver
     clause and the `src/sync/` facet
-  - was-client: `Collection.changes()` document type; the `replicas` member on
+  - pws-client: `Collection.changes()` document type; the `replicas` member on
     the Space Metadata object. Filed: WCL-122 (change document, 0.89.0 pending
     publish), WCL-123 (stamped policies), WCL-127 (`replicas` member)
   - was-sync: the apply comparison (stamp order replaces the `writerId` echo
@@ -1331,7 +1336,7 @@ log, once per replica server.
     delegated path and the `POST` bound; WASS-1 / WSS-59's Authorization column
     for `replicas` still open
   - app-connect-spec: decision 0003 (the replica-server-side predicate)
-  - was-client: the replica methods' "Controller-only" JSDoc
+  - pws-client: the replica methods' "Controller-only" JSDoc
     (`Space.ts:791-875`); `/paths` exports `spaceReplicas` and
     `replicaRegistration`
   - was-conformance-suite: PWSCS-23 ("registration endpoints are
@@ -1585,7 +1590,7 @@ and is the part to design first.
     `src/lib/exportProvenance.ts`, `src/lib/importProvenance.ts`, both backends'
     sidecar and row layouts, the change document or `/meta` projection that
     carries a stored statement to a puller
-  - was-client: types only
+  - pws-client: types only
 - acceptance:
   - [ ] The single export statement splits in two: a creation statement
         (`createdBy`, `createdAt`, generation) signed once by the creating
@@ -2281,6 +2286,29 @@ Steps:
    `ttl` of its own), not spy on `Date.now`.
 6. `reportUsage` always re-measures and does not read the cache; leave it.
 
+### WSS-244: [L] (*) [after WASS-84] Rename the epoch-configuration state type in test fixtures
+
+- status: todo
+- priority: low
+- backend: *
+- labels: tests, rename
+- discovered-from: pws-client WCL-151 (2026-10-30)
+- blocked-by: WASS-84
+- touches:
+  - pws-client (WCL-151 changes `EPOCH_CONFIGURATION_STATE_TYPE` from
+    `WasEpochConfiguration` to `PwsEpochConfiguration`)
+  - portable-web-spaces-spec (WASS-84 renames the value in spec text)
+- acceptance:
+  - [ ] The fixtures in `test/helpers.ts`, `test/importTar.test.ts`,
+        `test/container-rule-api.test.ts`, `test/plugin-options.test.ts`,
+        `test/space-archive-fixture.test.ts`, and `test/etag-layout.test.ts`
+        use `PwsEpochConfiguration`
+  - [ ] `pnpm test-node` passes
+  - [ ] Nothing under `src/` names the value (true today; keep it so)
+
+The value is a `state.type` that the server stores and serves without
+interpreting it. Only test fixtures carry it.
+
 ---
 
 ## Someday / Maybe
@@ -2495,7 +2523,7 @@ priority. The path _builders_ in `src/lib/paths.ts` are correct (they return
 relative paths); the fix belongs at the join sites -- a `serverUrl`-rooted join
 helper that preserves the base path -- plus a sub-path `SERVER_URL` test
 fixture. Because it touches the ZCap match path, treat it as its own change.
-This is the server side of the same defect `was-client` fixed in its 2026-07
+This is the server side of the same defect `pws-client` fixed in its 2026-07
 refactor (its finding #12).
 
 ### WSS-24: [L] (*) Server-enforced JSON Schema per Collection
@@ -2599,7 +2627,7 @@ parked and gains acceptance criteria when promoted to `todo`.
 - priority: low
 - backend: *
 - labels: history-log, performance, spec-blocked
-- discovered-from: was-client WCL-119 (2026-10-29)
+- discovered-from: pws-client WCL-119 (2026-10-29)
 - blocked-by: WASS-63
 - acceptance: none yet -- the request form (a `Range`, or a query parameter
   naming the `versionId` after which to serve) is the spec's to decide
@@ -2668,7 +2696,7 @@ Dropbox / OneDrive / S3-compatible; Google Drive is the first concrete
 Draft rather than todo: the done-state is a condition on the deployed world, not
 on this repo, so there is nothing to accept yet. Two things must both hold
 before this becomes actionable. No client still signs delegation proofs with
-`Ed25519Signature2020` -- which covers wallet-core, was-client and the apps on
+`Ed25519Signature2020` -- which covers wallet-core, pws-client and the apps on
 them, dcw, and did-cli-typescript's `di was request-grant` agent path. And no
 stored grant signed under the old suite is still submitted for re-verification:
 a wallet records the full capability, proof included, on each login activity,

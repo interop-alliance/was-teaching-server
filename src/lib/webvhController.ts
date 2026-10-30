@@ -114,16 +114,18 @@ export interface WebvhResolverContext {
   serverUrl: string
   /**
    * A foreign `did:webvh` this one verification may resolve without a
-   * stored log, and the resolver that serves it. The capability verifier
-   * sets the network resolver, after it verified the delegation chain that
-   * names `did` as its invoker; the replica registration check sets one over
-   * the document it verified from a log read through the pull capability.
-   * Absent, every foreign `did:webvh` with no stored log is refused.
+   * stored log. The capability verifier sets the network `resolver`, after
+   * it verified the delegation chain that names `did` as its invoker, and it
+   * serves only when this server stores no log for the DID. The replica
+   * registration check sets the `document` it verified from a log read
+   * through the pull capability. That one comes ahead of any stored log,
+   * since the log is the source's own and a stored copy may be absent or
+   * behind it. Absent, every foreign `did:webvh` with no stored log is
+   * refused.
    */
-  peer?: {
-    did: string
-    resolver: Pick<PeerWebvhResolver, 'resolve' | 'resolveKey'>
-  }
+  peer?: { did: string } & (
+    { resolver: PeerWebvhResolver } | { document: DIDDoc }
+  )
 }
 
 /**
@@ -337,7 +339,18 @@ function headKey({
   did: string
   selfHosted: boolean
 }): string {
-  return selfHosted ? cacheKey({ spaceId, collectionId, did }) : `|${did}`
+  return selfHosted
+    ? cacheKey({ spaceId, collectionId, did })
+    : replicatedHeadKey(did)
+}
+
+/**
+ * The head-record key of a replicated DID's log (see {@link headKey}).
+ * @param did {string}
+ * @returns {string}
+ */
+function replicatedHeadKey(did: string): string {
+  return `|${did}`
 }
 
 /**
@@ -508,8 +521,9 @@ async function readLog({
  * @param [options.keyId] {string}   the verification method a signature
  *   names. A peer DID's resolver may fetch its log once more for it; a local
  *   resolution ignores it
- * @param [options.peer] {object}   a peer grant: `did` alone resolves through
- *   its `resolver` when this server stores no log for it
+ * @param [options.peer] {object}   a peer grant for `did` alone: its
+ *   `document` serves ahead of any stored log, its `resolver` when this
+ *   server stores no log for the DID
  * @returns {Promise<DIDDoc>}   the verified controller document
  */
 export async function resolveWebvhController({
@@ -520,16 +534,20 @@ export async function resolveWebvhController({
   keyId,
   peer
 }: WebvhResolverContext & { did: string; keyId?: string }): Promise<DIDDoc> {
+  const grant = peer?.did === did ? peer : undefined
+  if (grant !== undefined && 'document' in grant) {
+    return grant.document
+  }
   // A self-hosted DID is located without an await, so its cache fetch starts
   // in this tick (see `documentCaches` on an invalidation racing a fetch).
   const location =
     selfHostedLogLocation({ serverUrl, did }) ??
     (await locateWebvhLog({ storage, serverUrl, did }))
   if (location === undefined) {
-    if (peer !== undefined && peer.did === did) {
+    if (grant !== undefined) {
       return keyId === undefined
-        ? await peer.resolver.resolve({ did, serverUrl })
-        : await peer.resolver.resolveKey({ did, keyId, serverUrl })
+        ? await grant.resolver.resolve({ did, serverUrl })
+        : await grant.resolver.resolveKey({ did, keyId, serverUrl })
     }
     throw new Error(
       `"${did}" is not a did:webvh DID whose history log this server ` +
@@ -656,28 +674,13 @@ async function resolveVerifiedDocument({
     )
   }
   const { text: logText, etag } = stored
-
-  let log: DIDLog
-  try {
-    log = readLogFromString(logText)
-  } catch (err) {
-    throw new Error(`The history log for "${did}" is not valid JSON Lines.`, {
-      cause: err
-    })
-  }
   const { heads } = record
   const key = headKey({ spaceId, collectionId, did, selfHosted })
-  if (!extendsHead({ log, head: heads.get(key) })) {
-    throw new Error(
-      `The history log for "${did}" does not extend the last version ` +
-        'this server verified.'
-    )
-  }
-
-  const { doc, deactivated } = await verifyWebvhLog({ did, log })
-  if (deactivated) {
-    throw new Error(`The DID "${did}" has been deactivated.`)
-  }
+  const { log, doc } = await verifyCurrentLog({
+    did,
+    logText,
+    head: heads.get(key)
+  })
   // A concurrent resolve may have recorded a longer head meanwhile; only move
   // the record forward.
   if (
@@ -687,6 +690,74 @@ async function resolveVerifiedDocument({
     heads.set(key, headOf(log))
   }
   return { doc, etag }
+}
+
+/**
+ * Verifies the text of a history log as the current log of `did`: it parses,
+ * extends `head`, verifies ({@link verifyWebvhLog}), and the DID it resolves
+ * is not deactivated. Rejects with a plain `Error` otherwise.
+ *
+ * @param options {object}
+ * @param options.did {string}   the DID the log must resolve to
+ * @param options.logText {string}   the log, as JSON Lines
+ * @param [options.head] {LogHead}   the head this server last verified
+ * @returns {Promise<{ log: DIDLog, doc: DIDDoc }>}
+ */
+async function verifyCurrentLog({
+  did,
+  logText,
+  head
+}: {
+  did: string
+  logText: string
+  head?: LogHead
+}): Promise<{ log: DIDLog; doc: DIDDoc }> {
+  let log: DIDLog
+  try {
+    log = readLogFromString(logText)
+  } catch (err) {
+    throw new Error(`The history log for "${did}" is not valid JSON Lines.`, {
+      cause: err
+    })
+  }
+  if (!extendsHead({ log, head })) {
+    throw new Error(
+      `The history log for "${did}" does not extend the last version ` +
+        'this server verified.'
+    )
+  }
+  const { doc, deactivated } = await verifyWebvhLog({ did, log })
+  if (deactivated) {
+    throw new Error(`The DID "${did}" has been deactivated.`)
+  }
+  return { log, doc }
+}
+
+/**
+ * The current document of a peer-hosted `did:webvh`, from the text of its log
+ * as a source server served it. The rules are those a stored copy resolves
+ * under, the recorded head included, so a source cannot serve a prefix of a
+ * log this server has verified further. Nothing is recorded: this log is not
+ * the one stored here.
+ *
+ * @param options {object}
+ * @param options.storage {StorageBackend}   the control plane
+ * @param options.did {string}   the DID the log must resolve to
+ * @param options.logText {string}   the log, as JSON Lines
+ * @returns {Promise<DIDDoc>}   the verified document
+ */
+export async function verifyPeerServedLog({
+  storage,
+  did,
+  logText
+}: {
+  storage: StorageBackend
+  did: string
+  logText: string
+}): Promise<DIDDoc> {
+  const head = logHeads.for(storage).heads.get(replicatedHeadKey(did))
+  const { doc } = await verifyCurrentLog({ did, logText, head })
+  return doc
 }
 
 /**

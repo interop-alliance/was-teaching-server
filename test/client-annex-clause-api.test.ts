@@ -31,7 +31,7 @@
  * ladder authority, so the clause skips the link it signed.
  *
  * Invocations are raw `@interop/ezcap` requests: these are wire-level
- * authorization shapes, not the high-level `@interop/was-client` surface.
+ * authorization shapes, not the high-level `@interop/pws-client` surface.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -116,7 +116,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     credentialsUrl = `${accountSpaceUrl}credentials`
     openCollectionUrl = `${accountSpaceUrl}open`
 
-    const accountSpace = alice.was.space(account.spaceId)
+    const accountSpace = alice.pws.space(account.spaceId)
     await accountSpace.collection('credentials').configure({ force: true })
     await accountSpace
       .collection('credentials')
@@ -131,7 +131,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     // Promotion by ordering: the Space is created under Alice's `did:key`,
     // populated, and only then handed to the account DID.
-    const promoted = await alice.was.request({
+    const promoted = await alice.pws.request({
       url: `${baseServerUrl}space/${account.spaceId}/meta`,
       method: 'PUT',
       json: {
@@ -383,7 +383,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
           }
         ]
       })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${other.spaceId}/meta`,
         method: 'PUT',
         json: {
@@ -449,7 +449,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
           }
         ]
       })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${other.spaceId}/meta`,
         method: 'PUT',
         json: {
@@ -511,11 +511,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // passes and the refusal is the clause's: the Space is not the one
       // carrying the account DID's log.
       const otherSpaceId = randomUUID()
-      const otherSpace = alice.was.space(otherSpaceId)
+      const otherSpace = alice.pws.space(otherSpaceId)
       await otherSpace.configure({ name: 'Other', controller: alice.did })
       await otherSpace.collection('notes').configure({ force: true })
       await otherSpace.collection('notes').put('note-1', { other: true })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${otherSpaceId}/meta`,
         method: 'PUT',
         json: { id: otherSpaceId, name: 'Other', controller: account.did }
@@ -790,10 +790,10 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // named `id`: the exact shape a hardcoded `<S>/id/did.jsonl` match
       // would admit, but not the log the account DID itself is anchored in.
       const decoySpaceId = randomUUID()
-      const decoySpace = alice.was.space(decoySpaceId)
+      const decoySpace = alice.pws.space(decoySpaceId)
       await decoySpace.configure({ name: 'Decoy', controller: alice.did })
       await decoySpace.collection('id').configure({ force: true })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${decoySpaceId}/meta`,
         method: 'PUT',
         json: { id: decoySpaceId, name: 'Decoy', controller: account.did }
@@ -827,7 +827,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         withLadderKey: true,
         collectionId: 'keys'
       })
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${keysAccount.spaceId}/meta`,
         method: 'PUT',
         json: {
@@ -872,7 +872,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       auxSpaceUrl = new URL(`/space/${auxSpaceId}/`, baseServerUrl).toString()
       auxSpaceRoot = `urn:zcap:root:${encodeURIComponent(auxSpaceUrl)}`
 
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: new URL('/spaces/', baseServerUrl).toString(),
         method: 'POST',
         json: {
@@ -883,12 +883,12 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         }
       })
       assert.equal(created.status, 201)
-      await alice.was
+      await alice.pws
         .space(auxSpaceId)
         .collection('clients')
         .configure({ force: true })
 
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${auxSpaceId}/meta`,
         method: 'PUT',
         json: {
@@ -931,7 +931,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     it('refuses the no-slash form of the same Space URL (404)', async () => {
       // Under v0.5 the no-slash form is not a canonical target (the route only
       // redirects), so it matches nothing here. Annex-profile grants pass the
-      // canonical trailing-slash target explicitly (was-client
+      // canonical trailing-slash target explicitly (pws-client
       // `GrantOptions.target`).
       const delegated = await delegate({
         signer: account.ladderKeyPair.signer(),
@@ -1079,14 +1079,14 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     root: string
   }> {
     const spaceId = randomUUID()
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Unlock Space', controller: alice.did })
     if (withResource) {
       await space.collection('keyring').configure({ force: true })
       await space.collection('keyring').put('record-1', { keyring: true })
     }
     if (controller !== undefined) {
-      const promoted = await alice.was.request({
+      const promoted = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, name: 'Unlock Space', controller }
@@ -1404,7 +1404,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
           }
         ] as any
       })
-      const published = await alice.was.request({
+      const published = await alice.pws.request({
         url: `${baseServerUrl}space/${retiring.spaceId}/id/did.jsonl`,
         method: 'PUT',
         headers: { 'content-type': 'text/jsonl' },

@@ -9,7 +9,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space, Collection } from '@interop/was-client'
+import type { Space, Collection } from '@interop/pws-client'
 
 import { HOSTED_PAGE_SANDBOX_CSP } from '../src/lib/hostedPageSandbox.js'
 import {
@@ -50,21 +50,21 @@ describe('Hosted-page sandbox', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: spaceId,
       name: "Alice's Pages",
       controller: alice.did
     })
     pages = await aliceSpace.createCollection({ id: 'pages', name: 'Pages' })
 
-    await alice.was.request({
+    await alice.pws.request({
       url: resourceUrl('index.html'),
       method: 'PUT',
       body: new Blob(['<!doctype html><script>1</script>'], {
         type: 'text/html'
       })
     })
-    await alice.was.request({
+    await alice.pws.request({
       url: chunkUrl(),
       method: 'PUT',
       body: new Blob(['<p>chunk</p>'], { type: 'text/html' })
@@ -75,7 +75,7 @@ describe('Hosted-page sandbox', () => {
       name: 'Public Pages'
     })
     await publicPages.setPublic()
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/public-pages/index.html`,
       method: 'PUT',
       body: new Blob(['<!doctype html><script>1</script>'], {
@@ -107,7 +107,7 @@ describe('Hosted-page sandbox', () => {
   })
 
   it('[signed] GET of a text/html Resource is sandboxed', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: resourceUrl('index.html'),
       method: 'GET'
     })
@@ -117,7 +117,7 @@ describe('Hosted-page sandbox', () => {
   })
 
   it('[signed] HEAD of a Resource is sandboxed', async () => {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: resourceUrl('index.html'),
       method: 'HEAD'
     })
@@ -126,12 +126,12 @@ describe('Hosted-page sandbox', () => {
   })
 
   it('[signed] a 304 conditional GET of a Resource is sandboxed', async () => {
-    const first = await alice.was.request({
+    const first = await alice.pws.request({
       url: resourceUrl('index.html'),
       method: 'GET'
     })
     const response = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: resourceUrl('index.html'),
         method: 'GET',
         headers: { 'if-none-match': first.headers.get('etag')! }
@@ -143,7 +143,7 @@ describe('Hosted-page sandbox', () => {
 
   it('[signed] GET of a JSON Resource is sandboxed too', async () => {
     await pages.put('data', { id: 'data', name: 'Some data' })
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: resourceUrl('data'),
       method: 'GET'
     })
@@ -152,7 +152,7 @@ describe('Hosted-page sandbox', () => {
   })
 
   it('[signed] GET and HEAD of an application/pdf Resource are not sandboxed', async () => {
-    await alice.was.request({
+    await alice.pws.request({
       url: resourceUrl('report.pdf'),
       method: 'PUT',
       body: new Blob(['%PDF-1.4\n%%EOF\n'], {
@@ -160,7 +160,7 @@ describe('Hosted-page sandbox', () => {
       })
     })
     for (const method of ['GET', 'HEAD']) {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: resourceUrl('report.pdf'),
         method
       })
@@ -172,16 +172,16 @@ describe('Hosted-page sandbox', () => {
 
   it('[signed] GET and HEAD of a chunk are sandboxed', async () => {
     for (const method of ['GET', 'HEAD']) {
-      const response = await alice.was.request({ url: chunkUrl(), method })
+      const response = await alice.pws.request({ url: chunkUrl(), method })
       assert.equal(response.status, 200, method)
       assertSandboxed(response)
     }
   })
 
   it('[signed] a 304 conditional GET of a chunk is sandboxed', async () => {
-    const first = await alice.was.request({ url: chunkUrl(), method: 'GET' })
+    const first = await alice.pws.request({ url: chunkUrl(), method: 'GET' })
     const response = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: chunkUrl(),
         method: 'GET',
         headers: { 'if-none-match': first.headers.get('etag')! }
@@ -212,7 +212,7 @@ describe('Hosted-page sandbox', () => {
       `${resourceUrl('index.html')}/chunks/` // chunk listing
     ]
     for (const url of urls) {
-      const response = await alice.was.request({ url, method: 'GET' })
+      const response = await alice.pws.request({ url, method: 'GET' })
       assert.equal(response.status, 200, url)
       assertSandboxed(response)
     }
@@ -226,7 +226,7 @@ describe('Hosted-page sandbox', () => {
     assertSandboxed(redirect)
 
     const refusal = await responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'DELETE'
       })

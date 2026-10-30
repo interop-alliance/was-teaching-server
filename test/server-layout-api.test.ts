@@ -45,7 +45,7 @@ describe('Server layout under the base server URL', () => {
 
   it('names a created Space at {base}space/{id}/', async () => {
     const spaceId = randomUUID()
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, controller: alice.did }
@@ -56,9 +56,9 @@ describe('Server layout under the base server URL', () => {
     )
 
     // The client built from the base opens the same Space by id.
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     expect(space.url).toBe(`${baseServerUrl}space/${spaceId}/`)
-    expect(alice.was.spaceAt(response.headers.get('location')).url).toBe(
+    expect(alice.pws.spaceAt(response.headers.get('location')).url).toBe(
       space.url
     )
   })

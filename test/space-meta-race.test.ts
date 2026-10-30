@@ -112,7 +112,7 @@ describe('Update Space against a concurrently changing Space', () => {
     headers?: Record<string, string>
   }): Promise<Response> {
     return responseOf(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, controller: alice.did, ...body },
@@ -254,7 +254,7 @@ describe('Update Space against a concurrently changing Space', () => {
       backend.writeDirectly({ spaceId, controller: alice.did, name: 'Churn' })
 
     const err = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, controller: alice.did, name: 'Lost' }

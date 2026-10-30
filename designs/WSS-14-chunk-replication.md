@@ -149,7 +149,7 @@ Changed:
 
 Unchanged, now resting on a new assumption:
 
-- `was-client` `EdvCodec` reading a stream on a replica server assumes the set
+- `pws-client` `EdvCodec` reading a stream on a replica server assumes the set
   is complete once the envelope carries `stream.chunks`. It is, from the moment
   the envelope is visible.
 - `src/lib/exportProvenance.ts` `chunkedDigest`: now digests replicated chunks;

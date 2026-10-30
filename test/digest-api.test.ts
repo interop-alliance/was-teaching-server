@@ -34,7 +34,7 @@ describe('Request Body Integrity (Digest header)', () => {
     }))
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: 'Digest Space',
       controller: alice.did
@@ -50,7 +50,7 @@ describe('Request Body Integrity (Digest header)', () => {
 
   it('a correctly signed write (valid Digest) succeeds', async () => {
     // The real client always covers and sends a matching Digest header.
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/happy`,
       method: 'PUT',
       json: { id: 'happy', name: 'Happy Path' }

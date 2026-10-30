@@ -55,7 +55,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
   async function freshSpace(name: string): Promise<string> {
     const spaceId = crypto.randomUUID()
-    await alice.was.createSpace({ id: spaceId, name, controller: alice.did })
+    await alice.pws.createSpace({ id: spaceId, name, controller: alice.did })
     return spaceId
   }
 
@@ -64,7 +64,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     id: string,
     provider = 'test-provider'
   ) {
-    return alice.was.request({
+    return alice.pws.request({
       url: url(`/space/${spaceId}/backends`),
       method: 'POST',
       json: {
@@ -82,7 +82,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
     // Create a Collection that selects the registered backend.
     const collectionId = 'photos'
-    const createCol = await alice.was.request({
+    const createCol = await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/meta`),
       method: 'PUT',
       json: { id: collectionId, backend: { id: 'mem-1' } }
@@ -99,7 +99,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
     // PUT a Resource into it.
     const resourceId = 'r1'
-    const putRes = await alice.was.request({
+    const putRes = await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/${resourceId}`),
       method: 'PUT',
       json: { hello: 'world' }
@@ -122,7 +122,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.ok(defaultThrew, 'resource must NOT exist in the default backend')
 
     // GET reads it back through the API (proving the read also resolves).
-    const getRes = await alice.was.request({
+    const getRes = await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/${resourceId}`),
       method: 'GET'
     })
@@ -130,7 +130,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.deepStrictEqual(getRes.data, { hello: 'world' })
 
     // GET .../backend echoes the external descriptor (resolved from the record).
-    const backendRes = await alice.was.request({
+    const backendRes = await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/backend`),
       method: 'GET'
     })
@@ -143,13 +143,13 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     const spaceId = await freshSpace('Default Path Space')
     const collectionId = 'notes'
     // No `backend` selection -> defaults to the server `default`.
-    await alice.was.request({
+    await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/meta`),
       method: 'PUT',
       json: { id: collectionId }
     })
     const resourceId = 'd1'
-    await alice.was.request({
+    await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/${resourceId}`),
       method: 'PUT',
       json: { kind: 'default' }
@@ -177,7 +177,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     // fine; it is only the *data plane* that fails closed (no adapter factory).
     await registerBackend(spaceId, 'orphan-1', 'no-such-provider')
     const collectionId = 'docs'
-    const createCol = await alice.was.request({
+    const createCol = await alice.pws.request({
       url: url(`/space/${spaceId}/${collectionId}/meta`),
       method: 'PUT',
       json: { id: collectionId, backend: { id: 'orphan-1' } }
@@ -187,7 +187,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: url(`/space/${spaceId}/${collectionId}/r1`),
         method: 'PUT',
         json: { x: 1 }
@@ -203,7 +203,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     const spaceId = await freshSpace('Unknown Id Space')
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: url(`/space/${spaceId}/docs/meta`),
         method: 'PUT',
         json: { id: 'docs', backend: { id: 'does-not-exist' } }
@@ -220,7 +220,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     const spaceId = await freshSpace('Immutable Selection Space')
     await registerBackend(spaceId, 'mem-fixed')
     const metaUrl = url(`/space/${spaceId}/docs/meta`)
-    const created = await alice.was.request({
+    const created = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { id: 'docs' }
@@ -229,7 +229,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
     // Onto a registered external backend: refused, nothing stored.
     const moved = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { id: 'docs', backend: { id: 'mem-fixed' } }
@@ -238,20 +238,20 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.equal(moved.response.status, 409)
     assert.match(moved.data.type, /#backend-immutable/)
     assert.equal(moved.data.errors[0].pointer, '#/backend')
-    const unchanged = await alice.was.request({ url: metaUrl, method: 'GET' })
+    const unchanged = await alice.pws.request({ url: metaUrl, method: 'GET' })
     assert.equal(unchanged.data.backend.id, 'default')
 
     // The same backend under another of its ids is a restatement, stored as
     // sent; an omitted `backend` keeps the stored one.
-    const restated = await alice.was.request({
+    const restated = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { id: 'docs', backend: { id: 'fs' }, name: 'Docs' }
     })
     assert.equal(restated.status, 204)
-    const described = await alice.was.request({ url: metaUrl, method: 'GET' })
+    const described = await alice.pws.request({ url: metaUrl, method: 'GET' })
     assert.equal(described.data.backend.id, 'fs')
-    const kept = await alice.was.request({
+    const kept = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: { id: 'docs', name: 'Docs again' }
@@ -259,14 +259,14 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.equal(kept.status, 204)
 
     // And off a registered external backend: refused as well.
-    const external = await alice.was.request({
+    const external = await alice.pws.request({
       url: url(`/space/${spaceId}/notes/meta`),
       method: 'PUT',
       json: { id: 'notes', backend: { id: 'mem-fixed' } }
     })
     assert.equal(external.status, 201)
     const back = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: url(`/space/${spaceId}/notes/meta`),
         method: 'PUT',
         json: { id: 'notes', backend: { id: 'default' } }
@@ -284,7 +284,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     // The adapter never receives the declaration, so it cannot enforce the
     // claim; a create declaring one is refused and stores nothing.
     const refused = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: {
@@ -298,12 +298,12 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     assert.match(refused.data.type, /#unsupported-backend/)
     assert.equal(refused.data.errors[0].pointer, '#/plaintext/indexes')
     const missing = await requestError(
-      alice.was.request({ url: metaUrl, method: 'GET' })
+      alice.pws.request({ url: metaUrl, method: 'GET' })
     )
     assert.equal(missing.response.status, 404)
 
     // A non-unique index is fine there.
-    const created = await alice.was.request({
+    const created = await alice.pws.request({
       url: metaUrl,
       method: 'PUT',
       json: {
@@ -316,7 +316,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
     // Adding the claim to the stored Collection is refused the same way.
     const added = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: {
@@ -330,7 +330,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
     // Moving a declaring Collection onto the registered backend is refused
     // too, by the selection's immutability, which is decided first.
-    const declaring = await alice.was.request({
+    const declaring = await alice.pws.request({
       url: url(`/space/${spaceId}/notes/meta`),
       method: 'PUT',
       json: {
@@ -340,7 +340,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     })
     assert.equal(declaring.status, 201)
     const moved = await requestError(
-      alice.was.request({
+      alice.pws.request({
         url: url(`/space/${spaceId}/notes/meta`),
         method: 'PUT',
         json: { id: 'notes', backend: { id: 'mem-unique' } }
@@ -376,13 +376,13 @@ describe('Backend registration allowlist (WAS_ENABLED_BACKENDS)', () => {
 
   async function freshSpace(name: string): Promise<string> {
     const spaceId = crypto.randomUUID()
-    await alice.was.createSpace({ id: spaceId, name, controller: alice.did })
+    await alice.pws.createSpace({ id: spaceId, name, controller: alice.did })
     return spaceId
   }
 
   it('accepts a provider on the allowlist (201)', async () => {
     const spaceId = await freshSpace('Allowed Provider Space')
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: backendsUrl(spaceId),
       method: 'POST',
       json: {
@@ -400,7 +400,7 @@ describe('Backend registration allowlist (WAS_ENABLED_BACKENDS)', () => {
     const spaceId = await freshSpace('Disallowed Provider Space')
     let thrown: any
     try {
-      await alice.was.request({
+      await alice.pws.request({
         url: backendsUrl(spaceId),
         method: 'POST',
         json: {

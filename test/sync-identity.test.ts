@@ -43,7 +43,7 @@ import {
   openTempBackend,
   requestError,
   startTestServer,
-  wasClient,
+  pwsClient,
   webvhLogSigner,
   zcapClients
 } from './helpers.js'
@@ -315,16 +315,16 @@ describe('Sync signer', () => {
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`
     }))
-    admin = wasClient({ signer: adminKeyPair.didKeySigner(), baseServerUrl })
+    admin = pwsClient({ signer: adminKeyPair.didKeySigner(), baseServerUrl })
     ;({ alice } = await zcapClients({ baseServerUrl }))
     signingKey = await createServerSigningKey({ seed })
 
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       controller: alice.did
     })
     await space.createCollection({ id: 'notes' })
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/notes/one`,
       method: 'PUT',
       json: { hello: 'peer' }

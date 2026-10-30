@@ -24,7 +24,7 @@ describe('Request validation API', () => {
     ;({ alice } = await zcapClients({ baseServerUrl }))
 
     // Provision a Space for the body/traversal tests to operate against.
-    await alice.was.createSpace({
+    await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -43,7 +43,7 @@ describe('Request validation API', () => {
       const traversalUrl = `${baseServerUrl}space/%2e%2e%2f%2e%2e%2fpwned/meta`
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: traversalUrl,
           method: 'PUT',
           json: { name: 'pwned', controller: alice.did }
@@ -75,7 +75,7 @@ describe('Request validation API', () => {
       const url = `${baseServerUrl}space/${alice.space1.id}/%2e%2e%2fevil/meta`
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url,
           method: 'PUT',
           json: { name: 'evil' }
@@ -96,7 +96,7 @@ describe('Request validation API', () => {
       // Collection Metadata route with `export` as a Collection id.
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${alice.space1.id}/export/meta`,
           method: 'PUT',
           json: { name: 'export' }
@@ -121,7 +121,7 @@ describe('Request validation API', () => {
       // either way no Resource named `quota` can be written.
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: `${baseServerUrl}space/${alice.space1.id}/stuff/quota`,
           method: 'PUT',
           json: { hello: 'world' }
@@ -139,7 +139,7 @@ describe('Request validation API', () => {
     it('POST /spaces/ without a name succeeds (name is optional)', async () => {
       // The Space Description `name` property is optional per the spec, so a
       // create request that omits it must succeed.
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL('/spaces/', baseServerUrl).toString(),
         method: 'POST',
         json: { controller: alice.did }
@@ -152,7 +152,7 @@ describe('Request validation API', () => {
     it('POST /spaces/ without a controller yields 400 with a title', async () => {
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { name: 'No controller' }
@@ -173,7 +173,7 @@ describe('Request validation API', () => {
         `/space/${alice.space1.id}/meta`,
         baseServerUrl
       ).toString()
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: spaceMetaUrl,
         method: 'PUT',
         json: { controller: alice.did }

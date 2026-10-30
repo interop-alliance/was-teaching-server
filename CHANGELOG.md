@@ -18,7 +18,17 @@
   another registration on this server maps, so an auxiliary Space controlled by
   the account DID registers through the account replica's mapping, is promoted
   to that DID through it, and the account registration cannot be removed while
-  it is.
+  it is. A log read through the capability is checked against the head this
+  server last verified, and decides the check over any stored copy, so a
+  replaced capability is admitted when the copy is absent or behind. A refusal
+  from a mapped copy says the copy may be behind.
+- Delete Space and Delete Collection answer `replica-refused` (409) when they
+  would take the only copy of a log another Space's `did:webvh` controller
+  resolves from. Delete Collection also refuses for the Space's own controller.
+- Move the client devDependency from `@interop/was-client` to
+  `@interop/pws-client` 0.104.0. Breaking for `/testing` consumers:
+  `provisionWebvhIdentity` takes `owner` as `{ did, pws }`, a `PwsClient`, where
+  it took `{ did, was }`.
 
 ## 0.45.0 - 2026-10-30
 

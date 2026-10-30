@@ -871,7 +871,7 @@ export function isEncryptedIds(
 }
 
 /**
- * The small binary payload: under was-client's 512 KiB threshold, so in an
+ * The small binary payload: under pws-client's 512 KiB threshold, so in an
  * encrypted Collection it is one EDV document.
  */
 export const smallFileBytes = 100 * 1024
@@ -986,8 +986,8 @@ export async function fillConcurrently({
 
 /**
  * `err` and each error along its `cause` chain, outermost first, up to 10:
- * was-client rethrows the transport's error as the `cause` of its own
- * `WasError`.
+ * pws-client rethrows the transport's error as the `cause` of its own
+ * `PwsError`.
  * @param err {unknown}
  * @returns {{ name?: unknown, message?: unknown, code?: unknown, requestUrl?: unknown }[]}
  */
@@ -1061,9 +1061,9 @@ function networkFault(err: unknown): NetworkFault | undefined {
  * Runs an untimed, idempotent setup request (a seed write, a create, a
  * refill, a warm-up), running it again on a network fault, up to `attempts`
  * times in all. Over a long network path, a response now and then never
- * arrives although the server answered it, and was-client gives a request
+ * arrives although the server answered it, and pws-client gives a request
  * 10 s (ky's `TimeoutError`). Over some paths a third of new connections never
- * open either (undici's `UND_ERR_CONNECT_TIMEOUT`), and was-client's timeout
+ * open either (undici's `UND_ERR_CONNECT_TIMEOUT`), and pws-client's timeout
  * often fires first, so the two cannot be told apart, and now and then a
  * connection closes partway through a response (`UND_ERR_SOCKET`,
  * `ECONNRESET`). All of them share the attempts; a run opens many
@@ -1131,7 +1131,7 @@ export function formatRetries(
 /**
  * `err`'s message, followed by what its `cause` chain adds (each cause's
  * message and code) and the URL it was requesting, so a transport failure
- * that was-client reports as a bare `terminated` or `fetch failed` says what
+ * that pws-client reports as a bare `terminated` or `fetch failed` says what
  * happened, e.g.
  * `terminated (other side closed, UND_ERR_SOCKET) requesting "https://..."`.
  * @param err {unknown}
@@ -1305,7 +1305,7 @@ export async function load<Target extends { backend?: ServerBackendId }>({
 }
 
 /**
- * A minimal `WasClient`-shaped dependency: the base server URL the client is
+ * A minimal `PwsClient`-shaped dependency: the base server URL the client is
  * built from, and the signed-request escape hatch `deleteLoad` and
  * `serialWriteLoad` need.
  */
@@ -1319,26 +1319,26 @@ export interface RequestingClient {
 }
 
 /**
- * The absolute URL of a server path (`/space/...`) on the server `was` is
+ * The absolute URL of a server path (`/space/...`) on the server `pws` is
  * built from.
  * @param options {object}
- * @param options.was {RequestingClient}
+ * @param options.pws {RequestingClient}
  * @param options.path {string}
  * @returns {string}
  */
 export function serverPathUrl({
-  was,
+  pws,
   path
 }: {
-  was: RequestingClient
+  pws: RequestingClient
   path: string
 }): string {
-  if (was.baseServerUrl === undefined) {
+  if (pws.baseServerUrl === undefined) {
     throw new Error(
       `Cannot resolve ${path}: the client was built with no base server URL.`
     )
   }
-  return absoluteUrl({ path, serverUrl: was.baseServerUrl })
+  return absoluteUrl({ path, serverUrl: pws.baseServerUrl })
 }
 
 /**
@@ -1378,7 +1378,7 @@ async function timedRounds({
  * @param options.clients {number}
  * @param options.durationSeconds {number}
  * @param options.deleteRoundSize {number}
- * @param options.was {RequestingClient}
+ * @param options.pws {RequestingClient}
  * @param options.pool {object[]}   each Collection's path and backend, and a
  *   minimal `Collection`-shaped dependency: just the write this needs to
  *   refill the Resources it is about to delete
@@ -1388,13 +1388,13 @@ export async function deleteLoad({
   clients,
   durationSeconds,
   deleteRoundSize,
-  was,
+  pws,
   pool
 }: {
   clients: number
   durationSeconds: number
   deleteRoundSize: number
-  was: RequestingClient
+  pws: RequestingClient
   pool: ReadonlyArray<
     PoolTarget & {
       collection: { put(resourceId: string, data: unknown): Promise<unknown> }
@@ -1429,9 +1429,9 @@ export async function deleteLoad({
         workers.map(async worker => {
           for (const id of idsOf(worker)) {
             const { path, backend } = targetOf.get(id)!
-            const url = serverPathUrl({ was, path: `${path}/${id}` })
+            const url = serverPathUrl({ pws, path: `${path}/${id}` })
             await tally.time(
-              () => was.request({ url, method: 'DELETE' }),
+              () => pws.request({ url, method: 'DELETE' }),
               backend
             )
           }
@@ -1515,19 +1515,19 @@ export async function createDeleteLoad<
  * `warmUpWrites` untimed warm-up writes. Successive writes, the warm-up ones
  * too, go to successive members of `pool` round-robin.
  * @param options {object}
- * @param options.was {RequestingClient}
+ * @param options.pws {RequestingClient}
  * @param options.pool {PoolTarget[]}
  * @param options.warmUpWrites {number}
  * @param options.serialWrites {number}
  * @returns {Promise<Measurement>}
  */
 export async function serialWriteLoad({
-  was,
+  pws,
   pool,
   warmUpWrites,
   serialWrites
 }: {
-  was: RequestingClient
+  pws: RequestingClient
   pool: readonly PoolTarget[]
   warmUpWrites: number
   serialWrites: number
@@ -1536,8 +1536,8 @@ export async function serialWriteLoad({
     const { path } = roundRobin({ pool, index })
     await retryOnNetworkFault({
       op: () =>
-        was.request({
-          url: serverPathUrl({ was, path: `${path}/warm-${index}` }),
+        pws.request({
+          url: serverPathUrl({ pws, path: `${path}/warm-${index}` }),
           method: 'PUT',
           json: { index }
         })
@@ -1547,9 +1547,9 @@ export async function serialWriteLoad({
   const started = performance.now()
   for (let index = 0; index < serialWrites; index++) {
     const { path, backend } = roundRobin({ pool, index })
-    const url = serverPathUrl({ was, path: `${path}/s-${index}` })
+    const url = serverPathUrl({ pws, path: `${path}/s-${index}` })
     await tally.time(
-      () => was.request({ url, method: 'PUT', json: { index } }),
+      () => pws.request({ url, method: 'PUT', json: { index } }),
       backend
     )
   }

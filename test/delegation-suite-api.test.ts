@@ -12,7 +12,7 @@
  * also be mixed across the links of one chain, in either order.
  *
  * Invocations are raw `@interop/ezcap` requests: each test picks the suite its
- * delegations are signed with, which the high-level `@interop/was-client`
+ * delegations are signed with, which the high-level `@interop/pws-client`
  * surface does not expose.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
@@ -111,7 +111,7 @@ describe('Delegation-proof cryptosuites', () => {
       baseServerUrl
     ).toString()
 
-    const space = alice.was.space(spaceId)
+    const space = alice.pws.space(spaceId)
     await space.configure({ name: 'Suite Space', controller: alice.did })
     await space
       .collection(collectionId)

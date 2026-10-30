@@ -4,7 +4,7 @@
  * CLI argument parsing, the backend split and its Collection pool, the
  * run-length estimate, the Markdown table formatting, the load-aggregation
  * harnesses, the network-fault retry and error description, and the parts of
- * a run record. The subprocess/k6/WasClient wiring itself is
+ * a run record. The subprocess/k6/PwsClient wiring itself is
  * verified by running `pnpm perf:fs` once end to end, not by unit tests.
  */
 import { describe, it } from 'vitest'
@@ -310,7 +310,7 @@ describe('deleteLoad', () => {
           }
         }
       ],
-      was: perfClient(async () => {
+      pws: perfClient(async () => {
         calls.push('request')
       })
     })
@@ -334,7 +334,7 @@ describe('deleteLoad', () => {
       durationSeconds: 0.02,
       deleteRoundSize: 1,
       pool: [{ path: '/space/s/c', collection: { put: async () => {} } }],
-      was: perfClient(async () => {
+      pws: perfClient(async () => {
         throw new Error('simulated failure')
       })
     })
@@ -363,7 +363,7 @@ describe('deleteLoad', () => {
       durationSeconds: 0.02,
       deleteRoundSize: 4,
       pool: [member('/a', 'postgres'), member('/b', 'fs')],
-      was: perfClient(async ({ url }) => {
+      pws: perfClient(async ({ url }) => {
         deletes.push(new URL(url).pathname)
       })
     })
@@ -381,7 +381,7 @@ describe('serialWriteLoad', () => {
       pool: [{ path: '/space/s/c' }],
       warmUpWrites: 2,
       serialWrites: 3,
-      was: perfClient(async ({ url }) => {
+      pws: perfClient(async ({ url }) => {
         paths.push(new URL(url).pathname)
       })
     })
@@ -402,7 +402,7 @@ describe('serialWriteLoad', () => {
       pool: [{ path: '/space/s/c' }],
       warmUpWrites: 0,
       serialWrites: 3,
-      was: perfClient(async () => {
+      pws: perfClient(async () => {
         timedCalls++
         if (timedCalls === 2) {
           throw new Error('simulated failure')
@@ -422,7 +422,7 @@ describe('serialWriteLoad', () => {
       ],
       warmUpWrites: 2,
       serialWrites: 3,
-      was: perfClient(async ({ url }) => {
+      pws: perfClient(async ({ url }) => {
         paths.push(new URL(url).pathname)
       })
     })
@@ -689,8 +689,8 @@ describe('retryOnNetworkFault', () => {
     assert.equal(calls, 1)
   })
   /**
-   * The error was-client throws for a connection that never opened: its own
-   * `WasError`, wrapping undici's `fetch failed`, wrapping the connect timeout.
+   * The error pws-client throws for a connection that never opened: its own
+   * `PwsError`, wrapping undici's `fetch failed`, wrapping the connect timeout.
    * @returns {Error}
    */
   function unopenedError(): Error {
@@ -700,11 +700,11 @@ describe('retryOnNetworkFault', () => {
     })
     const fetchFailed = new TypeError('fetch failed', { cause: connectTimeout })
     return Object.assign(new Error('fetch failed', { cause: fetchFailed }), {
-      name: 'WasError'
+      name: 'PwsError'
     })
   }
 
-  it("finds a timeout along the cause chain of was-client's WasError", async () => {
+  it("finds a timeout along the cause chain of pws-client's PwsError", async () => {
     let calls = 0
     const result = await retryOnNetworkFault({
       op: async () => {
@@ -712,7 +712,7 @@ describe('retryOnNetworkFault', () => {
         if (calls === 1) {
           throw Object.assign(
             new Error('Request timed out.', { cause: timeoutError() }),
-            { name: 'WasError' }
+            { name: 'PwsError' }
           )
         }
         return 'stored'
@@ -746,7 +746,7 @@ describe('retryOnNetworkFault', () => {
           throw unopenedError()
         }
       }),
-      { name: 'WasError' }
+      { name: 'PwsError' }
     )
     assert.equal(calls, 8)
   })
@@ -817,8 +817,8 @@ describe('formatRetries', () => {
 })
 
 /**
- * The error was-client throws for a connection the other side closed after
- * the response headers arrived: its own `WasError`, wrapping undici's
+ * The error pws-client throws for a connection the other side closed after
+ * the response headers arrived: its own `PwsError`, wrapping undici's
  * `terminated`, wrapping the socket error, with the URL http-client records.
  * @returns {Error}
  */
@@ -829,7 +829,7 @@ function terminatedError(): Error {
   })
   const terminated = new TypeError('terminated', { cause: socketError })
   return Object.assign(new Error('terminated', { cause: terminated }), {
-    name: 'WasError',
+    name: 'PwsError',
     requestUrl: 'https://host.example/space/s1/items/vc-4'
   })
 }

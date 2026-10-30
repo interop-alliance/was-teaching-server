@@ -4,7 +4,7 @@
  * `EncryptionImmutableError` (409), `InvalidCollectionError` (400) and
  * `MethodNotAllowedError` (405). These assert the server's wire contract
  * directly (status codes, problem `type`s, headers) via the signed
- * `was.request()` escape hatch (raw `HttpResponse` / raw errors), mirroring
+ * `pws.request()` escape hatch (raw `HttpResponse` / raw errors), mirroring
  * `wire-contract-api.test.ts`.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
@@ -25,7 +25,7 @@ describe('Error registry wire coverage', () => {
 
     // Provisioned over the wire: the high-level handles still speak the
     // pre-v0.5 table.
-    await alice.was.request({
+    await alice.pws.request({
       url: `${baseServerUrl}spaces/`,
       method: 'POST',
       json: { id: spaceId, name: 'Error Registry Space', controller: alice.did }
@@ -35,7 +35,7 @@ describe('Error registry wire coverage', () => {
     await fastify.close()
   })
 
-  /** Captures the raw error from a `was.request()` rejection. */
+  /** Captures the raw error from a `pws.request()` rejection. */
   async function rejection(promise: Promise<unknown>): Promise<any> {
     try {
       await promise
@@ -47,7 +47,7 @@ describe('Error registry wire coverage', () => {
 
   /** Reads a Collection Metadata object over the wire (raw JSON). */
   async function readMeta(collectionId: string): Promise<any> {
-    const response = await alice.was.request({
+    const response = await alice.pws.request({
       url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
@@ -63,13 +63,13 @@ describe('Error registry wire coverage', () => {
     // shape, plus proof the stored descriptor is not corrupted.
     it('scheme change masked by unsupported-encryption-scheme (400), descriptor intact', async () => {
       const collectionId = 'immutable-wire'
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: { scheme: 'edv' } }
       })
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'aes-gcm-siv' } }
@@ -94,13 +94,13 @@ describe('Error registry wire coverage', () => {
     // descriptor (spec "Update Collection": `encryption-immutable`).
     it('omitting `encryption` on an encrypted Collection is encryption-immutable (409)', async () => {
       const collectionId = 'immutable-clear-wire'
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: { scheme: 'edv' } }
       })
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, name: 'Now plaintext?' }
@@ -121,7 +121,7 @@ describe('Error registry wire coverage', () => {
     for (const path of [`/space/${spaceId}/`, `/space/${spaceId}/some-id/`]) {
       it(`PUT ${path.replace(spaceId, ':spaceId')} is 405 with an Allow header`, async () => {
         const err = await rejection(
-          alice.was.request({
+          alice.pws.request({
             url: new URL(path, baseServerUrl).href,
             method: 'PUT',
             json: { name: 'x' }
@@ -158,7 +158,7 @@ describe('Error registry wire coverage', () => {
     ]) {
       it(`DELETE ${path.replace(spaceId, ':spaceId')} is 405 with an Allow header`, async () => {
         const err = await rejection(
-          alice.was.request({
+          alice.pws.request({
             url: new URL(path, baseServerUrl).href,
             method: 'DELETE'
           })
@@ -224,7 +224,7 @@ describe('Error registry wire coverage', () => {
     for (const { method, path, allow } of refusals) {
       it(`${method} ${path} is 405 with Allow: ${allow}`, async () => {
         const err = await rejection(
-          alice.was.request({
+          alice.pws.request({
             url: new URL(path.replace(':s', spaceId), baseServerUrl).href,
             method,
             ...(['PUT', 'POST', 'PATCH'].includes(method) && { json: {} })
@@ -243,7 +243,7 @@ describe('Error registry wire coverage', () => {
       const answers = []
       for (const id of [spaceId, `absent-${crypto.randomUUID()}`]) {
         const err = await rejection(
-          alice.was.request({
+          alice.pws.request({
             url: `${baseServerUrl}space/${id}/linkset`,
             method: 'DELETE'
           })
@@ -262,7 +262,7 @@ describe('Error registry wire coverage', () => {
       // `/space/:s/query` is anchored for cross-collection queries, which this
       // server does not serve. RFC 9110 allows an empty `Allow`.
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/query`,
           method: 'POST',
           json: {}
@@ -306,7 +306,7 @@ describe('Error registry wire coverage', () => {
     // `invalid-request-body` (400).
     it('a bodyless PUT to a Collection Metadata object yields invalid-request-body (400)', async () => {
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/no-body-collection/meta`,
           method: 'PUT'
         })
@@ -321,7 +321,7 @@ describe('Error registry wire coverage', () => {
       // covers the bodied (signed `Digest`) path to the error in addition to
       // the bodyless one above.
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/null-body-collection/meta`,
           method: 'PUT',
           json: null
@@ -336,7 +336,7 @@ describe('Error registry wire coverage', () => {
     // the Space is refused the same way. The smallest valid body is `{}`.
     it('a bodyless POST to a Space yields invalid-request-body (400)', async () => {
       const err = await rejection(
-        alice.was.request({
+        alice.pws.request({
           url: `${baseServerUrl}space/${spaceId}/`,
           method: 'POST'
         })

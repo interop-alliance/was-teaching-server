@@ -158,7 +158,7 @@ function describeWriteResponses({
     }
 
     function put(resourceId: string, json: unknown, headers = {}) {
-      return alice.was.request({
+      return alice.pws.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json,
@@ -167,7 +167,7 @@ function describeWriteResponses({
     }
 
     function putMeta(resourceId: string, json: unknown) {
-      return alice.was.request({
+      return alice.pws.request({
         url: `${resourceUrl(resourceId)}/meta`,
         method: 'PUT',
         json
@@ -175,7 +175,7 @@ function describeWriteResponses({
     }
 
     async function readMeta(resourceId: string): Promise<any> {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${resourceUrl(resourceId)}/meta`,
         method: 'GET'
       })
@@ -186,7 +186,7 @@ function describeWriteResponses({
      * The `resource` document the changes feed carries for an id.
      */
     async function feedDocument(resourceId: string): Promise<any> {
-      const { data } = await alice.was.request({
+      const { data } = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes', limit: 1000 }
@@ -200,12 +200,12 @@ function describeWriteResponses({
       ;({ backend, cleanup } = await openBackend())
       ;({ fastify, baseServerUrl } = await startTestServer({ backend }))
       ;({ alice, bob } = await zcapClients({ baseServerUrl }))
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}spaces/`,
         method: 'POST',
         json: { id: spaceId, controller: alice.did }
       })
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Notes' }
@@ -259,7 +259,7 @@ function describeWriteResponses({
     })
 
     it('a binary write reports the stored media type and size', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: resourceUrl('blob'),
         method: 'PUT',
         body: new Uint8Array([1, 2, 3, 4, 5]),
@@ -303,7 +303,7 @@ function describeWriteResponses({
 
     it('a re-create over a tombstone answers 201 with fresh provenance', async () => {
       await put('revived', { n: 1 })
-      await alice.was.request({ url: resourceUrl('revived'), method: 'DELETE' })
+      await alice.pws.request({ url: resourceUrl('revived'), method: 'DELETE' })
 
       // Bob re-creates the id under a grant on the Collection.
       const spaceUrl = `${baseServerUrl}space/${spaceId}/`
@@ -335,19 +335,19 @@ function describeWriteResponses({
 
     it('a write-once repeat answers 200 with the stored members', async () => {
       const onceId = `once-${crypto.randomUUID()}`
-      await alice.was.request({
+      await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: onceId, revisions: { immutable: true } }
       })
       const url = `${baseServerUrl}space/${spaceId}/${onceId}/doc`
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url,
         method: 'PUT',
         json: { n: 1 }
       })
       assert.equal(created.status, 201)
-      const repeated = await alice.was.request({
+      const repeated = await alice.pws.request({
         url,
         method: 'PUT',
         json: { n: 1 }
@@ -375,7 +375,7 @@ function describeWriteResponses({
       let responses: any[]
       try {
         responses = await Promise.all([
-          alice.was.request({
+          alice.pws.request({
             url: metaUrl,
             method: 'PUT',
             json: { name: 'Alice' }
@@ -397,7 +397,7 @@ function describeWriteResponses({
       )
       const createResponse = responses.find(response => response.status === 201)
       const updateResponse = responses.find(response => response.status === 204)
-      const storedResponse = await alice.was.request({
+      const storedResponse = await alice.pws.request({
         url: metaUrl,
         method: 'GET'
       })
@@ -416,13 +416,13 @@ function describeWriteResponses({
 
     it('Create Collection answers with the stored object', async () => {
       const newId = `created-${crypto.randomUUID()}`
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/`,
         method: 'POST',
         json: { id: newId, name: 'Fresh', createdBy: 'did:key:zIgnored' }
       })
       assert.equal(response.status, 201)
-      const { data: stored } = await alice.was.request({
+      const { data: stored } = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/${newId}/meta`,
         method: 'GET'
       })
@@ -432,13 +432,13 @@ function describeWriteResponses({
 
     it('Create Space answers with the stored object', async () => {
       const newSpaceId = `space-${crypto.randomUUID()}`
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}spaces/`,
         method: 'POST',
         json: { id: newSpaceId, controller: alice.did, name: 'Fresh' }
       })
       assert.equal(response.status, 201)
-      const { data: stored } = await alice.was.request({
+      const { data: stored } = await alice.pws.request({
         url: `${baseServerUrl}space/${newSpaceId}/meta`,
         method: 'GET'
       })

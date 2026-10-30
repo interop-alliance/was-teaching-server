@@ -5,7 +5,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import { Space } from '@interop/was-client'
+import { Space } from '@interop/pws-client'
 
 import {
   assertEtagAdvanced,
@@ -98,7 +98,7 @@ describe('Spaces', () => {
 
   describe('Space API', () => {
     it('[root] create space via POST', async () => {
-      const space = await alice.was.createSpace({
+      const space = await alice.pws.createSpace({
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         controller: alice.did
@@ -118,7 +118,7 @@ describe('Spaces', () => {
     })
 
     it('[root] Space linkset advertises the backends-available and quotas relations', async () => {
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${alice.space1.id}/linkset`,
         method: 'GET'
       })
@@ -142,7 +142,7 @@ describe('Spaces', () => {
     it('two concurrent POST /spaces/ with the same id yield one 201 and one 409, the winner untouched', async () => {
       const spaceId = crypto.randomUUID()
       const post = (name: string) =>
-        alice.was
+        alice.pws
           .request({
             url: new URL('/spaces/', baseServerUrl).toString(),
             method: 'POST',
@@ -156,13 +156,13 @@ describe('Spaces', () => {
       assert.deepEqual(statuses.slice().sort(), [201, 409])
       // The guarded write inside the backend refused the loser, so the
       // winner's Space Metadata is what is stored (its name was not replaced).
-      const stored = await alice.was.space(spaceId).describe()
+      const stored = await alice.pws.space(spaceId).describe()
       assert.equal(stored!.name, statuses[0] === 201 ? 'First' : 'Second')
     })
 
     it('POST /spaces/ with an existing id yields id-conflict (409)', async () => {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Conflict Test Space',
         controller: alice.did
@@ -170,7 +170,7 @@ describe('Spaces', () => {
 
       let expectedError: any
       try {
-        await alice.was.request({
+        await alice.pws.request({
           url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { id: spaceId, name: 'Replacement', controller: alice.did }
@@ -186,7 +186,7 @@ describe('Spaces', () => {
 
     it("POST /spaces/ cannot overwrite another controller's Space", async () => {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: "Alice's Space",
         controller: alice.did
@@ -198,7 +198,7 @@ describe('Spaces', () => {
       // (controller included).
       let expectedError: any
       try {
-        await bob.was.request({
+        await bob.pws.request({
           url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
           json: { id: spaceId, name: 'Hijacked', controller: bob.did }
@@ -210,13 +210,13 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 409)
 
       // Alice's Space Metadata (controller included) is untouched.
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description.controller, alice.did)
       assert.equal(description.name, "Alice's Space")
     })
 
     it('[root] create space by id via PUT', async () => {
-      const space = alice.was.space(alice.space2.id)
+      const space = alice.pws.space(alice.space2.id)
       // configure() upserts the space by id (PUT).
       await space.configure({
         name: "Alice's Space #2 (School)",
@@ -227,7 +227,7 @@ describe('Spaces', () => {
 
     it('[root] the Create Space 201 body carries the same createdBy a later GET returns', async () => {
       const spaceId = crypto.randomUUID()
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: new URL('/spaces/', baseServerUrl).toString(),
         method: 'POST',
         json: { id: spaceId, name: 'Created Space', controller: alice.did }
@@ -238,19 +238,19 @@ describe('Spaces', () => {
         alice.did
       )
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.createdBy, alice.did)
     })
 
     it('[root] a PUT whose body carries a forged createdBy does not change the stored value', async () => {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Forged createdBy Space',
         controller: alice.did
       })
 
-      await alice.was.request({
+      await alice.pws.request({
         url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
         method: 'PUT',
         json: {
@@ -260,14 +260,14 @@ describe('Spaces', () => {
         }
       })
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.createdBy, alice.did)
       assert.equal(description?.name, 'Renamed')
     })
 
     it('[root] a PUT /meta that omits name removes the stored name (full replacement)', async () => {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Named Space',
         controller: alice.did
@@ -277,21 +277,21 @@ describe('Spaces', () => {
         baseServerUrl
       ).toString()
 
-      const named = await alice.was.request({
+      const named = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { name: 'Renamed', controller: alice.did }
       })
       assert.equal(named.status, 204)
-      assert.equal((await alice.was.space(spaceId).describe())?.name, 'Renamed')
+      assert.equal((await alice.pws.space(spaceId).describe())?.name, 'Renamed')
 
-      const unnamed = await alice.was.request({
+      const unnamed = await alice.pws.request({
         url: metaUrl,
         method: 'PUT',
         json: { controller: alice.did }
       })
       assert.equal(unnamed.status, 204)
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal('name' in description!, false)
       // The immutable and server-managed members survive the replacement.
       assert.deepEqual(description?.type, ['Space'])
@@ -314,14 +314,14 @@ describe('Spaces', () => {
     })
 
     it('describing a not-found space returns null (404 conflation)', async () => {
-      const missing = await alice.was
+      const missing = await alice.pws
         .space('space-id-that-does-not-exist')
         .describe()
       assert.equal(missing, null)
     })
 
     it('[root] read space via GET with proper authorization', async () => {
-      const spaceDescription = await alice.was.space(alice.space1.id).describe()
+      const spaceDescription = await alice.pws.space(alice.space1.id).describe()
       assert.deepStrictEqual(withoutStamp(spaceDescription), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
@@ -338,7 +338,7 @@ describe('Spaces', () => {
     it('[delegated] authorized app should GET /space/:spaceId/meta', async () => {
       // First, Alice (re-)provisions the Space -- via the idempotent PUT path,
       // since POSTing an existing id now yields `id-conflict` (409).
-      const space = alice.was.space(alice.space1.id)
+      const space = alice.pws.space(alice.space1.id)
       await space.configure({
         name: "Alice's Space #1 (Home)",
         controller: alice.did
@@ -351,7 +351,7 @@ describe('Spaces', () => {
       })
 
       // Alice's app rebuilds a handle from the capability and reads the space.
-      const handle = aliceDelegatedApp.was.fromCapability(zcap)
+      const handle = aliceDelegatedApp.pws.fromCapability(zcap)
       assert.ok(handle instanceof Space)
       assert.deepStrictEqual(withoutStamp(await handle.describe()), {
         id: alice.space1.id,
@@ -369,20 +369,20 @@ describe('Spaces', () => {
     it('[root] Bob should not be able to GET Alice space', async () => {
       // First, Alice (re-)provisions the Space -- via the idempotent PUT path,
       // since POSTing an existing id now yields `id-conflict` (409).
-      await alice.was.space(alice.space1.id).configure({
+      await alice.pws.space(alice.space1.id).configure({
         name: "Alice's Space #1 (Home)",
         controller: alice.did
       })
 
       // Bob reads with his own client and gets null (404 conflated: not-found
       // vs unauthorized), so the space's existence is not revealed.
-      const seenByBob = await bob.was.space(alice.space1.id).describe()
+      const seenByBob = await bob.pws.space(alice.space1.id).describe()
       assert.equal(seenByBob, null)
     })
 
     it('[root] Alice should be able to DELETE her provisioned space', async () => {
       // First, create the space
-      const space = await alice.was.createSpace({
+      const space = await alice.pws.createSpace({
         id: 'a-space-to-delete',
         name: "Alice's Test Space to be deleted",
         controller: alice.did
@@ -405,14 +405,14 @@ describe('Spaces', () => {
     })
 
     it('[root] Create Space (POST and PUT) and Get Space emit the Space Metadata ETag', async () => {
-      const posted = await alice.was.request({
+      const posted = await alice.pws.request({
         url: `${baseServerUrl}spaces/`,
         method: 'POST',
         json: spaceMetadata('etag-post', 'Posted')
       })
       parseEtagSegments(posted.headers.get('etag'), { container: true })
 
-      const put = await alice.was.request({
+      const put = await alice.pws.request({
         url: metaUrl('etag-put'),
         method: 'PUT',
         json: spaceMetadata('etag-put', 'Put')
@@ -421,7 +421,7 @@ describe('Spaces', () => {
       const createdEtag = put.headers.get('etag')
       parseEtagSegments(createdEtag, { container: true })
 
-      const read = await alice.was.request({
+      const read = await alice.pws.request({
         url: metaUrl('etag-put'),
         method: 'GET'
       })
@@ -433,7 +433,7 @@ describe('Spaces', () => {
       assert.equal(read.data.generation, undefined)
 
       // An update is a later stamped write under the same generation.
-      const updated = await alice.was.request({
+      const updated = await alice.pws.request({
         url: metaUrl('etag-put'),
         method: 'PUT',
         json: spaceMetadata('etag-put', 'Put Again')
@@ -449,14 +449,14 @@ describe('Spaces', () => {
     })
 
     it('[root] Get Space with a matching If-None-Match is 304', async () => {
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: metaUrl('etag-304'),
         method: 'PUT',
         json: spaceMetadata('etag-304', 'Cached')
       })
       const etag = created.headers.get('etag')!
       const unchanged = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl('etag-304'),
           method: 'GET',
           headers: { 'if-none-match': etag }
@@ -467,7 +467,7 @@ describe('Spaces', () => {
       assert.equal(await unchanged.text(), '')
 
       // A stale validator gets the full Space Metadata object.
-      const stale = await alice.was.request({
+      const stale = await alice.pws.request({
         url: metaUrl('etag-304'),
         method: 'GET',
         headers: { 'if-none-match': '"99"' }
@@ -477,14 +477,14 @@ describe('Spaces', () => {
     })
 
     it('[root] an under-authorized conditional GET still gets the 404 mask', async () => {
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: metaUrl('etag-masked'),
         method: 'PUT',
         json: spaceMetadata('etag-masked', 'Masked')
       })
       const etag = created.headers.get('etag')!
       const masked = await responseOf(
-        bob.was.request({
+        bob.pws.request({
           url: metaUrl('etag-masked'),
           method: 'GET',
           headers: { 'if-none-match': etag }
@@ -494,7 +494,7 @@ describe('Spaces', () => {
     })
 
     it('[root] PUT with If-None-Match: * creates an absent Space and 412s on a present one', async () => {
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: metaUrl('guarded-create'),
         method: 'PUT',
         json: { ...spaceMetadata('guarded-create', 'Winner'), type: ['Space'] },
@@ -506,7 +506,7 @@ describe('Spaces', () => {
       // The loser of a create race: same guarded PUT against the now-present
       // Space, refused without touching the stored Space Metadata object.
       const thrown = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl('guarded-create'),
           method: 'PUT',
           json: spaceMetadata('guarded-create', 'Loser'),
@@ -515,12 +515,12 @@ describe('Spaces', () => {
       )
       assert.equal(thrown.response.status, 412)
       assert.equal(thrown.data.type, 'https://w3id.org/pws#precondition-failed')
-      const stored = await alice.was.space('guarded-create').describe()
+      const stored = await alice.pws.space('guarded-create').describe()
       assert.equal(stored.name, 'Winner')
     })
 
     it('[root] PUT with If-Match is a compare-and-swap on the Space Metadata ETag', async () => {
-      const created = await alice.was.request({
+      const created = await alice.pws.request({
         url: metaUrl('cas'),
         method: 'PUT',
         json: spaceMetadata('cas', 'One')
@@ -528,7 +528,7 @@ describe('Spaces', () => {
       const current = created.headers.get('etag')!
 
       const stale = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl('cas'),
           method: 'PUT',
           json: spaceMetadata('cas', 'Stale'),
@@ -536,9 +536,9 @@ describe('Spaces', () => {
         })
       )
       assert.equal(stale.response.status, 412)
-      assert.equal((await alice.was.space('cas').describe()).name, 'One')
+      assert.equal((await alice.pws.space('cas').describe()).name, 'One')
 
-      const swapped = await alice.was.request({
+      const swapped = await alice.pws.request({
         url: metaUrl('cas'),
         method: 'PUT',
         json: spaceMetadata('cas', 'Two'),
@@ -550,11 +550,11 @@ describe('Spaces', () => {
         after: swapped.headers.get('etag'),
         container: true
       })
-      assert.equal((await alice.was.space('cas').describe()).name, 'Two')
+      assert.equal((await alice.pws.space('cas').describe()).name, 'Two')
 
       // The consumed validator no longer matches.
       const replay = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl('cas'),
           method: 'PUT',
           json: spaceMetadata('cas', 'Three'),
@@ -566,7 +566,7 @@ describe('Spaces', () => {
 
     it('[root] If-Match on an absent Space is 412, not a create', async () => {
       const thrown = await requestError(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl('cas-absent'),
           method: 'PUT',
           json: spaceMetadata('cas-absent', 'Never'),
@@ -574,36 +574,36 @@ describe('Spaces', () => {
         })
       )
       assert.equal(thrown.response.status, 412)
-      assert.equal(await alice.was.space('cas-absent').describe(), null)
+      assert.equal(await alice.pws.space('cas-absent').describe(), null)
     })
 
     it('[root] an unconditional PUT still upserts (last writer wins)', async () => {
-      await alice.was.request({
+      await alice.pws.request({
         url: metaUrl('unconditional'),
         method: 'PUT',
         json: spaceMetadata('unconditional', 'First')
       })
-      const second = await alice.was.request({
+      const second = await alice.pws.request({
         url: metaUrl('unconditional'),
         method: 'PUT',
         json: spaceMetadata('unconditional', 'Second')
       })
       assert.equal(second.status, 204)
       assert.equal(
-        (await alice.was.space('unconditional').describe()).name,
+        (await alice.pws.space('unconditional').describe()).name,
         'Second'
       )
     })
 
     it('[root] a Space deleted and re-created under the same id gets a fresh generation', async () => {
-      const first = await alice.was.request({
+      const first = await alice.pws.request({
         url: metaUrl('regen'),
         method: 'PUT',
         json: spaceMetadata('regen', 'First life')
       })
       const oldEtag = first.headers.get('etag')!
-      await alice.was.space('regen').delete()
-      const second = await alice.was.request({
+      await alice.pws.space('regen').delete()
+      const second = await alice.pws.request({
         url: metaUrl('regen'),
         method: 'PUT',
         json: spaceMetadata('regen', 'Second life')
@@ -613,7 +613,7 @@ describe('Spaces', () => {
       assert.notEqual(etagGeneration(newEtag), etagGeneration(oldEtag))
       // The old validator matches nothing on the new record.
       const conditional = await responseOf(
-        alice.was.request({
+        alice.pws.request({
           url: metaUrl('regen'),
           method: 'GET',
           headers: { 'if-none-match': oldEtag }
@@ -634,14 +634,14 @@ describe('Spaces', () => {
           const spaceId = crypto.randomUUID()
           const [posted, put] = await Promise.all([
             statusOf(
-              alice.was.request({
+              alice.pws.request({
                 url: new URL('/spaces/', baseServerUrl).toString(),
                 method: 'POST',
                 json: { id: spaceId, controller: alice.did }
               })
             ),
             statusOf(
-              bob.was.request({
+              bob.pws.request({
                 url: metaUrl(spaceId),
                 method: 'PUT',
                 json: { id: spaceId, controller: bob.did }
@@ -654,12 +654,12 @@ describe('Spaces', () => {
       for (const { spaceId, posted, put } of rounds) {
         if (posted === 201) {
           assert.equal(put, 404, `${spaceId}: Bob's PUT should be refused`)
-          const stored = await alice.was.space(spaceId).describe()
+          const stored = await alice.pws.space(spaceId).describe()
           assert.equal(stored!.controller, alice.did)
         } else {
           assert.equal(posted, 409, `${spaceId}: Alice's POST should conflict`)
           assert.equal(put, 201)
-          const stored = await bob.was.space(spaceId).describe()
+          const stored = await bob.pws.space(spaceId).describe()
           assert.equal(stored!.controller, bob.did)
         }
       }
@@ -670,7 +670,7 @@ describe('Spaces', () => {
       const statuses = await Promise.all(
         ['First', 'Second'].map(name =>
           statusOf(
-            alice.was.request({
+            alice.pws.request({
               url: metaUrl(spaceId),
               method: 'PUT',
               json: spaceMetadata(spaceId, name)
@@ -689,7 +689,7 @@ describe('Spaces', () => {
       const statuses = await Promise.all(
         types.map(type =>
           statusOf(
-            alice.was.request({
+            alice.pws.request({
               url: metaUrl(spaceId),
               method: 'PUT',
               json: { ...spaceMetadata(spaceId, 'Typed'), type }
@@ -701,7 +701,7 @@ describe('Spaces', () => {
       // an update and refused by the immutability check.
       assert.deepEqual(statuses.slice().sort(), [201, 400])
       const winner = types[statuses.indexOf(201)]
-      const stored = await alice.was.space(spaceId).describe()
+      const stored = await alice.pws.space(spaceId).describe()
       assert.deepEqual(stored!.type, winner)
     })
   })
@@ -716,8 +716,8 @@ describe('Spaces', () => {
      * Performs a signed request expected to fail, returning the thrown error.
      *
      * @param options {object}
-     * @param options.client {WasClient}
-     * @param options.request {object}   `was.request()` input
+     * @param options.client {PwsClient}
+     * @param options.request {object}   `pws.request()` input
      * @returns {Promise<any>}
      */
     async function requestError({
@@ -740,7 +740,7 @@ describe('Spaces', () => {
       // Alice has authorized nothing, so this must be rejected.
       const spaceId = crypto.randomUUID()
       const expectedError = await requestError({
-        client: bob.was,
+        client: bob.pws,
         request: {
           url: new URL('/spaces/', baseServerUrl).toString(),
           method: 'POST',
@@ -755,13 +755,13 @@ describe('Spaces', () => {
       assert.equal(expectedError.data.errors[0].pointer, '#/controller')
 
       // The Space was not created: its named controller cannot read it.
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
 
     it("[delegated] a provisioning service creates a Space on Alice's behalf via POST", async () => {
       // Alice delegates a POST /spaces/ capability to her provisioning app...
       const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['POST'],
         target: spacesUrl
@@ -769,7 +769,7 @@ describe('Spaces', () => {
 
       // ...and the app creates a Space that Alice controls from the start.
       const spaceId = crypto.randomUUID()
-      const response = await aliceDelegatedApp.was.request({
+      const response = await aliceDelegatedApp.pws.request({
         url: spacesUrl,
         method: 'POST',
         capability: zcap,
@@ -783,7 +783,7 @@ describe('Spaces', () => {
       assert.equal(response.data.controller, alice.did)
 
       // The stored controller is Alice's DID: her root key reads the Space.
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.controller, alice.did)
       assert.equal(description?.name, 'Provisioned for Alice')
     })
@@ -793,7 +793,7 @@ describe('Spaces', () => {
       // controller: the chain is not rooted in Bob, so Bob has consented to
       // nothing.
       const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['POST'],
         target: spacesUrl
@@ -801,7 +801,7 @@ describe('Spaces', () => {
 
       const spaceId = crypto.randomUUID()
       const expectedError = await requestError({
-        client: aliceDelegatedApp.was,
+        client: aliceDelegatedApp.pws,
         request: {
           url: spacesUrl,
           method: 'POST',
@@ -820,7 +820,7 @@ describe('Spaces', () => {
         expectedError.data.errors[0].detail,
         new RegExp(`rooted in "${alice.did}", not the body's controller`)
       )
-      assert.equal(await bob.was.space(spaceId).describe(), null)
+      assert.equal(await bob.pws.space(spaceId).describe(), null)
     })
 
     it('[delegated] an expired delegation names the expiry in the controller-mismatch detail', async () => {
@@ -841,7 +841,7 @@ describe('Spaces', () => {
 
       const spaceId = crypto.randomUUID()
       const expectedError = await requestError({
-        client: aliceDelegatedApp.was,
+        client: aliceDelegatedApp.pws,
         request: {
           url: spacesUrl,
           method: 'POST',
@@ -858,7 +858,7 @@ describe('Spaces', () => {
         expectedError.data.errors[0].detail,
         /a delegation in the chain expired at/
       )
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
 
     it('[delegated] a tampered delegation proof names the failed proof in the controller-mismatch detail', async () => {
@@ -866,7 +866,7 @@ describe('Spaces', () => {
       // delegation proof does not verify: the differentiated cause (spec
       // SHOULD) falls through to the failed-proof clause.
       const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['POST'],
         target: spacesUrl
@@ -883,7 +883,7 @@ describe('Spaces', () => {
 
       const spaceId = crypto.randomUUID()
       const expectedError = await requestError({
-        client: aliceDelegatedApp.was,
+        client: aliceDelegatedApp.pws,
         request: {
           url: spacesUrl,
           method: 'POST',
@@ -900,7 +900,7 @@ describe('Spaces', () => {
         expectedError.data.errors[0].detail,
         /the delegation chain proof failed verification/
       )
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
 
     it('[root] create-via-PUT signed by a different DID than the body controller yields controller-mismatch (400)', async () => {
@@ -908,7 +908,7 @@ describe('Spaces', () => {
       // signer, never tying the invocation to the body's controller.
       const spaceId = crypto.randomUUID()
       const expectedError = await requestError({
-        client: bob.was,
+        client: bob.pws,
         request: {
           url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
           method: 'PUT',
@@ -920,7 +920,7 @@ describe('Spaces', () => {
         expectedError.data.type,
         'https://w3id.org/pws#controller-mismatch'
       )
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
 
     it('[root] PUT whose body id does not match the URL space id yields invalid-request-body (400)', async () => {
@@ -928,7 +928,7 @@ describe('Spaces', () => {
       // `id` is rejected before any controller/capability check.
       const spaceId = crypto.randomUUID()
       const expectedError = await requestError({
-        client: alice.was,
+        client: alice.pws,
         request: {
           url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
           method: 'PUT',
@@ -943,7 +943,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.data.errors[0].pointer, '#/id')
 
       // The Space was not created.
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
 
     it("[delegated] a provisioning service creates a Space on Alice's behalf via PUT", async () => {
@@ -954,13 +954,13 @@ describe('Spaces', () => {
         `/space/${spaceId}/meta`,
         baseServerUrl
       ).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
         target: metaUrl
       })
 
-      const response = await aliceDelegatedApp.was.request({
+      const response = await aliceDelegatedApp.pws.request({
         url: metaUrl,
         method: 'PUT',
         capability: zcap,
@@ -968,7 +968,7 @@ describe('Spaces', () => {
       })
       assert.equal(response.status, 201)
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.controller, alice.did)
       assert.equal(description?.name, 'Provisioned by PUT')
     })
@@ -979,14 +979,14 @@ describe('Spaces', () => {
         `/space/${spaceId}/meta`,
         baseServerUrl
       ).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
         target: metaUrl
       })
 
       const expectedError = await requestError({
-        client: aliceDelegatedApp.was,
+        client: aliceDelegatedApp.pws,
         request: {
           url: metaUrl,
           method: 'PUT',
@@ -1003,7 +1003,7 @@ describe('Spaces', () => {
         expectedError.data.errors[0].detail,
         new RegExp(`rooted in "${alice.did}", not the body's controller`)
       )
-      assert.equal(await bob.was.space(spaceId).describe(), null)
+      assert.equal(await bob.pws.space(spaceId).describe(), null)
     })
 
     it('[delegated] a PUT-create chain rooted at a different target names the root target in the detail', async () => {
@@ -1023,14 +1023,14 @@ describe('Spaces', () => {
         `/space/${spaceId}/meta`,
         baseServerUrl
       ).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
         target: metaUrl,
         capability: `urn:zcap:root:${encodeURIComponent(grantedSpaceUrl)}`
       })
       const expectedError = await requestError({
-        client: aliceDelegatedApp.was,
+        client: aliceDelegatedApp.pws,
         request: {
           url: metaUrl,
           method: 'PUT',
@@ -1047,7 +1047,7 @@ describe('Spaces', () => {
         expectedError.data.errors[0].detail,
         new RegExp(`rooted at "${grantedSpaceUrl}", not at "${spaceUrl}"`)
       )
-      assert.equal(await alice.was.space(spaceId).describe(), null)
+      assert.equal(await alice.pws.space(spaceId).describe(), null)
     })
 
     it('[root] an update still verifies against the stored controller, not the body', async () => {
@@ -1056,14 +1056,14 @@ describe('Spaces', () => {
       // Bob cannot seize Alice's Space by PUTting it with himself as the
       // controller (masked as 404, per the error-handling privacy invariant).
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: "Alice's Space",
         controller: alice.did
       })
 
       const expectedError = await requestError({
-        client: bob.was,
+        client: bob.pws,
         request: {
           url: new URL(`/space/${spaceId}/meta`, baseServerUrl).toString(),
           method: 'PUT',
@@ -1072,7 +1072,7 @@ describe('Spaces', () => {
       })
       assert.equal(expectedError.response.status, 404)
 
-      const description = await alice.was.space(spaceId).describe()
+      const description = await alice.pws.space(spaceId).describe()
       assert.equal(description?.controller, alice.did)
       assert.equal(description?.name, "Alice's Space")
     })
@@ -1085,18 +1085,18 @@ describe('Spaces', () => {
     it('[root] a controller lists only their own spaces', async () => {
       const aliceSpaceId = crypto.randomUUID()
       const bobSpaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: aliceSpaceId,
         name: 'Alice Listing Test',
         controller: alice.did
       })
-      await bob.was.createSpace({
+      await bob.pws.createSpace({
         id: bobSpaceId,
         name: 'Bob Listing Test',
         controller: bob.did
       })
 
-      const listing = await alice.was.listSpaces()
+      const listing = await alice.pws.listSpaces()
       assert.equal(listing.url, '/spaces/')
       assert.equal(listing.totalItems, listing.items.length)
       assert.deepStrictEqual(
@@ -1112,7 +1112,7 @@ describe('Spaces', () => {
       assert.ok(!listing.items.some((item: any) => item.id === bobSpaceId))
 
       // ...and vice versa.
-      const bobListing = await bob.was.listSpaces()
+      const bobListing = await bob.pws.listSpaces()
       assert.ok(bobListing.items.some((item: any) => item.id === bobSpaceId))
       assert.ok(!bobListing.items.some((item: any) => item.id === aliceSpaceId))
     })
@@ -1120,7 +1120,7 @@ describe('Spaces', () => {
     it('[root] a signer controlling no spaces gets the empty listing', async () => {
       // The delegated app's own DID controls no Space (it only ever acts via
       // delegation), so its bare-root listing is empty -- not an error.
-      const listing = await aliceDelegatedApp.was.listSpaces()
+      const listing = await aliceDelegatedApp.pws.listSpaces()
       assert.deepStrictEqual(listing, {
         url: '/spaces/',
         totalItems: 0,
@@ -1131,12 +1131,12 @@ describe('Spaces', () => {
     it("[delegated] an app with a GET /spaces/ capability lists the delegator's spaces", async () => {
       const aliceSpaceId = crypto.randomUUID()
       const bobSpaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: aliceSpaceId,
         name: 'Delegated Listing Test',
         controller: alice.did
       })
-      await bob.was.createSpace({
+      await bob.pws.createSpace({
         id: bobSpaceId,
         name: 'Bob Bystander Space',
         controller: bob.did
@@ -1144,14 +1144,14 @@ describe('Spaces', () => {
 
       // Alice delegates List Spaces to her app...
       const spacesUrl = new URL('/spaces/', baseServerUrl).toString()
-      const zcap = await alice.was.grant({
+      const zcap = await alice.pws.grant({
         to: aliceDelegatedApp.did,
         actions: ['GET'],
         target: spacesUrl
       })
 
       // ...and the app sees the spaces of the chain's root (Alice), no others.
-      const response = await aliceDelegatedApp.was.request({
+      const response = await aliceDelegatedApp.pws.request({
         url: spacesUrl,
         method: 'GET',
         capability: zcap
@@ -1184,13 +1184,13 @@ describe('Spaces', () => {
 
     it('[signed] GET /backends lists the default backend descriptor', async () => {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Backends Test Space',
         controller: alice.did
       })
 
-      const response = await alice.was.request({
+      const response = await alice.pws.request({
         url: `${baseServerUrl}space/${spaceId}/backends`,
         method: 'GET'
       })
@@ -1201,7 +1201,7 @@ describe('Spaces', () => {
 
     it('anonymous GET /backends of a private space 404s (no leak)', async () => {
       const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
+      await alice.pws.createSpace({
         id: spaceId,
         name: 'Private Backends Space',
         controller: alice.did
@@ -1215,7 +1215,7 @@ describe('Spaces', () => {
 
     it('anonymous GET /backends of a PublicCanRead space succeeds', async () => {
       const spaceId = crypto.randomUUID()
-      const space = await alice.was.createSpace({
+      const space = await alice.pws.createSpace({
         id: spaceId,
         name: 'Public Backends Space',
         controller: alice.did

@@ -27,7 +27,7 @@
  *   install it.
  * - signed read of one Resource of each size, and signed write (a new
  *   Resource) and signed delete in the smallest and the largest size, through
- *   `@interop/was-client`. A delete test runs in rounds: each client
+ *   `@interop/pws-client`. A delete test runs in rounds: each client
  *   re-creates the same few Resources, untimed, then deletes them, timed, so
  *   the Collection stays near its size.
  *
@@ -42,7 +42,7 @@
  * The seeded schema is left in place after the run, so it can be inspected or
  * reused for another run without reseeding; `pnpm perf:pg:seed` is what resets
  * it. The server's other settings come from the environment as usual, e.g.
- * `STORAGE_LIMIT_PER_SPACE=1000000000`. was-client retries a 5xx, so a failing
+ * `STORAGE_LIMIT_PER_SPACE=1000000000`. pws-client retries a 5xx, so a failing
  * request can show as a slow one rather than a failure. The table and the
  * server log are kept in a temp dir, printed at the end.
  *
@@ -165,17 +165,17 @@ async function main(): Promise<void> {
     outDir,
     env: { DATABASE_URL: databaseUrl },
     run: async () => {
-      const was = await connect({ serverUrl: localServerUrl, seed })
-      const targets = seededTargets({ was, edgeSizes })
+      const pws = await connect({ serverUrl: localServerUrl, seed })
+      const targets = seededTargets({ pws, edgeSizes })
       const rows = await runTests({
-        was,
+        pws,
         sizes,
         targets,
         settings,
         publicRead
       })
       const matrixRows = await runPayloadMatrix({
-        was,
+        pws,
         settings,
         encryptedIds: meta.encryptedIds,
         publicRead

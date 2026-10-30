@@ -1,7 +1,7 @@
 /**
  * Seeds the payload matrix a perf run measures: a JSON credential, a 100 KiB
  * file and a 10 MiB file, in a public, a private plaintext and a private
- * encrypted Collection. Writes over signed HTTP through `@interop/was-client`
+ * encrypted Collection. Writes over signed HTTP through `@interop/pws-client`
  * the way freewallet does, so the encrypted Collection carries a real key
  * epoch (with a blinded-index key) and its Resources are real EDV envelopes
  * and chunks. Needs only a running server, so it works over any backend.
@@ -13,13 +13,13 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { WasClient } from '@interop/was-client'
-import type { Collection, JsonObject } from '@interop/was-client'
+import { PwsClient } from '@interop/pws-client'
+import type { Collection, JsonObject } from '@interop/pws-client'
 import {
   createEdvEncryption,
   ensureFirstEpoch,
   type RecipientPublicKey
-} from '@interop/was-client/edv'
+} from '@interop/pws-client/edv'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 
 import { startTestServer } from '../../src/testing.js'
@@ -55,7 +55,7 @@ function randomFile(bytes: number): Blob {
  * `PublicCanRead` policy, `plaintext`, and `encrypted` with an `edv`
  * descriptor and its key epoch[0], wrapped to `recipient`.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.spaceId {string}
  * @param options.recipient {RecipientPublicKey}
  * @param options.pool {PoolMember[]}
@@ -63,18 +63,18 @@ function randomFile(bytes: number): Blob {
  *   member's Collections, in pool order
  */
 async function createCategoryCollections({
-  was,
+  pws,
   spaceId,
   recipient,
   pool
 }: {
-  was: WasClient
+  pws: PwsClient
   spaceId: string
   recipient: RecipientPublicKey
   pool: PoolMember[]
 }): Promise<Array<Record<MatrixCategory, Collection>>> {
   const space = await retryOnNetworkFault({
-    op: () => was.createSpace({ id: spaceId, name: spaceId })
+    op: () => pws.createSpace({ id: spaceId, name: spaceId })
   })
   const members: Array<Record<MatrixCategory, Collection>> = []
   for (const member of pool) {
@@ -112,18 +112,18 @@ async function createCategoryCollections({
  * Fills the ballast Space with `binaryTotalMib` MiB of random binary data, as
  * plaintext files of at most 10 MiB each.
  * @param options {object}
- * @param options.was {WasClient}
+ * @param options.pws {PwsClient}
  * @param options.binaryTotalMib {number}
  * @returns {Promise<void>}
  */
 async function seedBallast({
-  was,
+  pws,
   binaryTotalMib
 }: {
-  was: WasClient
+  pws: PwsClient
   binaryTotalMib: number
 }): Promise<void> {
-  const space = await was.createSpace({
+  const space = await pws.createSpace({
     id: matrixSpaceIds.ballast,
     name: matrixSpaceIds.ballast
   })
@@ -176,7 +176,7 @@ export async function seedMatrix({
   }
   const keyAgreementKey = generated as IKeyAgreementKey
   const keyResolver: IKeyResolver = async () => recipient
-  const was = WasClient.fromSigner({
+  const pws = PwsClient.fromSigner({
     baseServerUrl: serverUrl,
     signer: signerKey.didKeySigner(),
     encryption: createEdvEncryption({
@@ -185,13 +185,13 @@ export async function seedMatrix({
   })
 
   const [first, ...rest] = await createCategoryCollections({
-    was,
+    pws,
     spaceId: matrixSpaceIds.read,
     recipient,
     pool
   })
   await createCategoryCollections({
-    was,
+    pws,
     spaceId: matrixSpaceIds.write,
     recipient,
     pool
@@ -227,7 +227,7 @@ export async function seedMatrix({
   }
 
   if (binaryTotalMib > 0) {
-    await seedBallast({ was, binaryTotalMib })
+    await seedBallast({ pws, binaryTotalMib })
   }
   return encryptedIds
 }

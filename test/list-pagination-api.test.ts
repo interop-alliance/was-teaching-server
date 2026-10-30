@@ -3,7 +3,7 @@
  * /space/:spaceId/`) and List Spaces (`GET /spaces/`) operations
  * (Vitest, spec "Pagination").
  *
- * Signed paginated reads use the raw `was.request` escape hatch with a full URL
+ * Signed paginated reads use the raw `pws.request` escape hatch with a full URL
  * carrying `?limit`/`cursor`. Authorization tolerance for the query string is
  * exercised too: a `next` link is followed with the same root capability, so it
  * must verify against the bare list target (`allowTargetQuery`).
@@ -12,7 +12,7 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { Space } from '@interop/pws-client'
 
 import {
   openTempBackend,
@@ -38,7 +38,7 @@ describe('List Collections pagination', () => {
     }))
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
-    aliceSpace = await alice.was.createSpace({
+    aliceSpace = await alice.pws.createSpace({
       id: alice.space1.id,
       name: "Alice's Space #1 (Home)",
       controller: alice.did
@@ -56,7 +56,7 @@ describe('List Collections pagination', () => {
     spaceId: string,
     collectionIds: string[]
   ): Promise<string> {
-    const space = await alice.was.createSpace({
+    const space = await alice.pws.createSpace({
       id: spaceId,
       name: spaceId,
       controller: alice.did
@@ -177,7 +177,7 @@ describe('List Collections pagination', () => {
     // authorization fails (merged 404) BEFORE any cursor validation.
     let expectedError: any
     try {
-      await bob.was.request({
+      await bob.pws.request({
         url: new URL(
           `/space/${spaceId}/?cursor=garbage%%%`,
           baseServerUrl
@@ -224,10 +224,10 @@ describe('List Spaces pagination', () => {
     ;({ alice, bob } = await zcapClients({ baseServerUrl }))
 
     for (const id of aliceIds) {
-      await alice.was.createSpace({ id, name: id, controller: alice.did })
+      await alice.pws.createSpace({ id, name: id, controller: alice.did })
     }
     for (const id of bobIds) {
-      await bob.was.createSpace({ id, name: id, controller: bob.did })
+      await bob.pws.createSpace({ id, name: id, controller: bob.did })
     }
   })
   afterAll(async () => {
