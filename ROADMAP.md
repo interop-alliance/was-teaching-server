@@ -1,4 +1,4 @@
-# WAS Teaching Server Roadmap
+# Web Spaces Server Roadmap
 
 nextAvailableId: 244
 
@@ -14,166 +14,166 @@ item others wait on with its dependents beneath it.
 
 Ready:
 
-- WAS-92 [M] (fs) Filesystem GET can observe a Resource with no validator
+- WSS-92 [M] (fs) Filesystem GET can observe a Resource with no validator
   mid-write
-- WAS-132 [M] (*) A present but unparseable `If-None-Match` on a write is a 400
-- WAS-135 [M] (fs) Torn-run ordering in the filesystem backend's delete and
+- WSS-132 [M] (*) A present but unparseable `If-None-Match` on a write is a 400
+- WSS-135 [M] (fs) Torn-run ordering in the filesystem backend's delete and
   update paths
-- WAS-136 [M] (*) Backend registry lifecycle: cache, immutability, in-use
+- WSS-136 [M] (*) Backend registry lifecycle: cache, immutability, in-use
   checks, data-plane delete
-- WAS-144 [M] (*) Ignore a non-`Signature` `Authorization` header on an
+- WSS-144 [M] (*) Ignore a non-`Signature` `Authorization` header on an
   anonymous read
-- WAS-191 [M] (fs) The sidecar is the commit point of a filesystem Resource
+- WSS-191 [M] (fs) The sidecar is the commit point of a filesystem Resource
   write
-- WAS-220 [M] (*) A Resource write repairs a Collection copy the data backend
+- WSS-220 [M] (*) A Resource write repairs a Collection copy the data backend
   lost
-- WAS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
+- WSS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
   both on each backend
-- WAS-83 [L] (*) Anonymous Get Policy with a malformed id now returns 401
-- WAS-193 [L] (*) `epoch` moves on a `/meta` write without a content stamp
+- WSS-83 [L] (*) Anonymous Get Policy with a malformed id now returns 401
+- WSS-193 [L] (*) `epoch` moves on a `/meta` write without a content stamp
 
 **Spec and protocol**
 
 Ready:
 
-- WAS-243 [M] (*) List the Portable Wallet Profile entry in the service
+- WSS-243 [M] (*) List the Portable Wallet Profile entry in the service
   description
-- WAS-142 [M] (*) Problem documents on every route, and Fastify's own errors
+- WSS-142 [M] (*) Problem documents on every route, and Fastify's own errors
   typed
-- WAS-66 [M] (*) Accept ids beyond the unreserved charset (percent-encoding on
+- WSS-66 [M] (*) Accept ids beyond the unreserved charset (percent-encoding on
   disk, real webvh round-trip)
-- WAS-64 [M] (*) Default document for public collections (`index.html`)
-- WAS-162 [M] (*) Research verifying zcap invocations signed by a did:webvh
+- WSS-64 [M] (*) Default document for public collections (`index.html`)
+- WSS-162 [M] (*) Research verifying zcap invocations signed by a did:webvh
   hosted elsewhere
-- WAS-194 [M] (*) `encryption` is declared only when the Collection is created
-- WAS-219 [L] (*) Changing a Collection's `backend.id` once it holds Resources
+- WSS-194 [M] (*) `encryption` is declared only when the Collection is created
+- WSS-219 [L] (*) Changing a Collection's `backend.id` once it holds Resources
 
 **Features**
 
 Ready:
 
-- WAS-1 [H] (*) Google Cloud console identity verification for
+- WSS-1 [H] (*) Google Cloud console identity verification for
   interopalliance.org (blocks 4)
-- WAS-58 [M] (*) Aggregate quota reporting across an account's auxiliary Spaces
-- WAS-70 [M] (*) Keystore deletion (route, backend method, orphan GC)
-- WAS-73 [M] (*) Periodic sweep of Spaces and keystores whose did:webvh
+- WSS-58 [M] (*) Aggregate quota reporting across an account's auxiliary Spaces
+- WSS-70 [M] (*) Keystore deletion (route, backend method, orphan GC)
+- WSS-73 [M] (*) Periodic sweep of Spaces and keystores whose did:webvh
   controller no longer resolves
-- WAS-195 [M] (*) Store the content digest of each Resource and chunk
+- WSS-195 [M] (*) Store the content digest of each Resource and chunk
 
 Chains:
 
-- WAS-1 [H] (*) Google Cloud console identity verification for
+- WSS-1 [H] (*) Google Cloud console identity verification for
   interopalliance.org
-  - WAS-2 [H] (*) Google OAuth confidential client + consent setup (plan
+  - WSS-2 [H] (*) Google OAuth confidential client + consent setup (plan
     stage 4)
-  - WAS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
-  - WAS-4 [M] (*) Google Drive EDV flavor (plan stage 6)
-  - WAS-5 [L] (*) Drive API ToS use-case clearance
-- WAS-2 [H] (*) Google OAuth confidential client + consent setup (plan stage 4)
-  - WAS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
-- WAS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
-  - WAS-4 [M] (*) Google Drive EDV flavor (plan stage 6)
+  - WSS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
+  - WSS-4 [M] (*) Google Drive EDV flavor (plan stage 6)
+  - WSS-5 [L] (*) Drive API ToS use-case clearance
+- WSS-2 [H] (*) Google OAuth confidential client + consent setup (plan stage 4)
+  - WSS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
+- WSS-3 [H] (*) Google Drive plaintext adapter (plan stage 5)
+  - WSS-4 [M] (*) Google Drive EDV flavor (plan stage 6)
 
 **Multi-primary Spaces**
 
 Ready:
 
-- WAS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
+- WSS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
-- WAS-224 [M] (*) Admit a replica Space under a bootstrap did:key, and resolve
+- WSS-224 [M] (*) Admit a replica Space under a bootstrap did:key, and resolve
   the auxiliary Space's controller across Spaces
-- WAS-225 [M] (*) Client-annex clause: a ladder-signed replica pull gated on the
+- WSS-225 [M] (*) Client-annex clause: a ladder-signed replica pull gated on the
   annex document's replica pointer
-- WAS-226 [M] (*) Open the replicas route to a root-chained delegated invocation
-- WAS-238 [M] (*) `serverDid` moves to the core `specs` entry, and the
+- WSS-226 [M] (*) Open the replicas route to a root-chained delegated invocation
+- WSS-238 [M] (*) `serverDid` moves to the core `specs` entry, and the
   replication entry carries `url`
-- WAS-239 [M] (*) Refuse a second registration of one source Space sharing a
+- WSS-239 [M] (*) Refuse a second registration of one source Space sharing a
   Collection on the same local Space
-- WAS-240 [M] (*) The foreign `did:webvh` fetch and the companion's
+- WSS-240 [M] (*) The foreign `did:webvh` fetch and the companion's
   `space:server:id` bound
-- WAS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
-- WAS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
+- WSS-207 [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
+- WSS-209 [L] (pg) Cover the replicated-controller path on Postgres and under
   the client-annex clause
-- WAS-201 [L] (*) Replicate a Collection stored on a registered external backend
-- WAS-198 [L] (*) Keep peer did:webvh head records and fetch bounds across
+- WSS-201 [L] (*) Replicate a Collection stored on a registered external backend
+- WSS-198 [L] (*) Keep peer did:webvh head records and fetch bounds across
   eviction and restart
-- WAS-184 [L] (*) Write-time creation and revision statements
-- WAS-221 [L] (*) Registration check under the data backend's lock for a
+- WSS-184 [L] (*) Write-time creation and revision statements
+- WSS-221 [L] (*) Registration check under the data backend's lock for a
   Resource apply
-- WAS-229 [L] (*) A pause stops an in-flight pull cycle at its next apply
+- WSS-229 [L] (*) A pause stops an in-flight pull cycle at its next apply
 
 **Performance**
 
 Ready:
 
-- WAS-196 [M] (*) Bound the cost of accumulated Collection tombstones
-- WAS-203 [M] (*) Skip a feed document the puller already holds before reading
+- WSS-196 [M] (*) Bound the cost of accumulated Collection tombstones
+- WSS-203 [M] (*) Skip a feed document the puller already holds before reading
   its body
-- WAS-212 [M] (*) Open a Resource's byte stream lazily so a conditional read
+- WSS-212 [M] (*) Open a Resource's byte stream lazily so a conditional read
   costs one metadata read
-- WAS-204 [L] (*) Stop re-applying a peer's Collection tombstones on every pull
+- WSS-204 [L] (*) Stop re-applying a peer's Collection tombstones on every pull
   cycle
-- WAS-199 [L] (*) Verify a peer invoker's delegation chain once
-- WAS-77 [L] (fs) Per-Collection filename cache on the filesystem backend
+- WSS-199 [L] (*) Verify a peer invoker's delegation chain once
+- WSS-77 [L] (fs) Per-Collection filename cache on the filesystem backend
 
 **Docs, tests, and cleanup**
 
 Ready:
 
-- WAS-46 [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
-- WAS-47 [M] (*) Cover `start.ts` and the untested config parsers
-- WAS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
-- WAS-10 [M] (*) Open the upstream `edv-client` truncation issue
-- WAS-103 [L] (*) Make `spacePath` / `collectionPath` return the canonical
+- WSS-46 [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
+- WSS-47 [M] (*) Cover `start.ts` and the untested config parsers
+- WSS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
+- WSS-10 [M] (*) Open the upstream `edv-client` truncation issue
+- WSS-103 [L] (*) Make `spacePath` / `collectionPath` return the canonical
   container URL by default
-- WAS-168 [L] (*) `SERVER_URL` move runbook for the server DID log (portable
+- WSS-168 [L] (*) `SERVER_URL` move runbook for the server DID log (portable
   domain move)
-- WAS-202 [L] (*) Pull-loop tests beyond the two-server filesystem case
-- WAS-210 [L] (*) One function decides where a `did:webvh` resolves from
-- WAS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
+- WSS-202 [L] (*) Pull-loop tests beyond the two-server filesystem case
+- WSS-210 [L] (*) One function decides where a `did:webvh` resolves from
+- WSS-215 [L] (fs) Replace the hand-rolled usage cache in the filesystem backend
   with `LruCache`
 
 **Someday / Maybe**
 
 Ready:
 
-- WAS-12 [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
-- WAS-13 [L] (*) Tombstone GC / retention policy
-- WAS-15 [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
-- WAS-16 [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
-- WAS-18 [L] (*) Publish the StorageBackend port for npm-installable backends
-- WAS-19 [L] (*) SQLite backend
-- WAS-20 [L] (*) Full-text / vector search query profiles
-- WAS-21 [L] (*) Composite adapter
-- WAS-22 [L] (*) External KEK custody behind `recordKekLoader`
-- WAS-23 [L] (*) Sub-path-mounted `SERVER_URL` drops its base path in built URLs
-- WAS-24 [L] (*) Server-enforced JSON Schema per Collection
-- WAS-25 [L] (*) Equality-index extensions
-- WAS-36 [L] (*) Server-signed changes-feed checkpoints (split-view detection)
-- WAS-179 [L] (*) Read-only replica switch
+- WSS-12 [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
+- WSS-13 [L] (*) Tombstone GC / retention policy
+- WSS-15 [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
+- WSS-16 [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
+- WSS-18 [L] (*) Publish the StorageBackend port for npm-installable backends
+- WSS-19 [L] (*) SQLite backend
+- WSS-20 [L] (*) Full-text / vector search query profiles
+- WSS-21 [L] (*) Composite adapter
+- WSS-22 [L] (*) External KEK custody behind `recordKekLoader`
+- WSS-23 [L] (*) Sub-path-mounted `SERVER_URL` drops its base path in built URLs
+- WSS-24 [L] (*) Server-enforced JSON Schema per Collection
+- WSS-25 [L] (*) Equality-index extensions
+- WSS-36 [L] (*) Server-signed changes-feed checkpoints (split-view detection)
+- WSS-179 [L] (*) Read-only replica switch
 
 **Parking**
 
 Ready:
 
-- WAS-11 [L] (*) Space-level `/query`
-- WAS-17 [L] (*) BYOS beyond My-Drive OAuth
-- WAS-69 [L] (*) Drop `Ed25519Signature2020` from the delegation-proof verify
+- WSS-11 [L] (*) Space-level `/query`
+- WSS-17 [L] (*) BYOS beyond My-Drive OAuth
+- WSS-69 [L] (*) Drop `Ed25519Signature2020` from the delegation-proof verify
   side
-- WAS-167 [L] (*) Further uses of the server identity (write receipts, epoch
+- WSS-167 [L] (*) Further uses of the server identity (write receipts, epoch
   attestation, delegatee, signed manifest)
-- WAS-185 [L] (*) Several server processes over one store (HLC and origin id)
+- WSS-185 [L] (*) Several server processes over one store (HLC and origin id)
 
 Waiting on another repo:
 
-- WAS-241 [L] (*) Serve a tail of a Collection's history log (after WASS-63)
+- WSS-241 [L] (*) Serve a tail of a Collection's history log (after WASS-63)
 
 <!-- roadmap-order:index:end -->
 
-Open work on the Wallet Attached Storage (WAS) reference server, measured
-against `spec.md` in the
+Open work on the Portable Web Spaces (PWS) reference server, measured against
+`spec.md` in the
 [w3c-ccg/portable-web-spaces-spec](https://github.com/w3c-ccg/portable-web-spaces-spec)
-repo. The problem-type registry and the shared WAS wire model live in
+repo. The problem-type registry and the shared PWS wire model live in
 `@interop/storage-core`.
 
 The server implements the whole core protocol surface -- CRUD at all three
@@ -182,26 +182,26 @@ reads, metadata, export/import, conditional writes, key epochs, both
 `POST .../query` profiles, chunk addressing, zcap revocation, and the full
 error-type registry. This document tracks only the remaining work; completed
 items move verbatim to [archived-roadmap.md](archived-roadmap.md) as they land,
-so WAS-N references keep resolving (the shipped feature set is recorded in
+so WSS-N references keep resolving (the shipped feature set is recorded in
 CHANGELOG.md; items completed before the archive existed live only in git
 history).
 
 ## Item format
 
-Each work item is a heading `### WAS-N: [P] (B) Title`, then a field block, then
+Each work item is a heading `### WSS-N: [P] (B) Title`, then a field block, then
 free prose context. `[P]` is the priority tag (`[H]`, `[M]`, `[L]`), computed
 from the `priority` field by the ordering script. `(B)` is the backend code,
 computed from the `backend` field: `(fs)` for an item specific to the filesystem
 backend, `(pg)` for one specific to the Postgres backend, and `(*)` for one that
 applies to both, is backend-independent, or has no backend dimension. The script
-may also add `[blocks N]` and `[after WAS-X]` after them. No marker in a title
+may also add `[blocks N]` and `[after WSS-X]` after them. No marker in a title
 is edited by hand.
 
 Fields: `status` (`todo` / `in-progress` / `draft` / `done`), `priority` (`high`
 / `medium` / `low`), `backend` (`fs` / `pg` / `*`, which storage backend the
 item applies to), `labels` (comma-separated), optional `discovered-from` (the
 item, review, or question the item came out of, with its date), optional
-`blocked-by` (other `WAS-N` ids, or an external id such as `WASS-N` or `FW-N`),
+`blocked-by` (other `WSS-N` ids, or an external id such as `WASS-N` or `FW-N`),
 `blocks` (derived, written by the script), a `touches:` list where it applies,
 and an `acceptance:` checklist.
 
@@ -228,13 +228,13 @@ reset it to one past the highest id across both files, then take it.
 Statuses are edited in place (change the `status:` field); acceptance checkboxes
 are ticked as they are met. Completed items move verbatim (number, title, field
 block, prose, with their `done` date) from this file to
-[archived-roadmap.md](archived-roadmap.md) once shipped, append-only, so WAS-N
+[archived-roadmap.md](archived-roadmap.md) once shipped, append-only, so WSS-N
 references keep resolving. CHANGELOG.md remains the permanent record of what
 landed. Do not rewrite or summarize items on the way in, and do not fix old
 references.
 
 Work discovered mid-implementation gets its own item immediately, with
-`discovered-from: WAS-N` in its field block, plus a `blocked-by` link if it
+`discovered-from: WSS-N` in its field block, plus a `blocked-by` link if it
 blocks anything. `blocked-by` links only express dependencies implied by the
 work itself; do not invent orderings. Reference item ids only in the roadmap
 documents (this file and `archived-roadmap.md`), not in commit messages, PR
@@ -268,7 +268,7 @@ A wrong answer, a torn write, or two backends that disagree. Nothing here widens
 what a caller may do; it is the server answering incorrectly for a caller who is
 allowed to ask.
 
-### WAS-92: [M] (fs) Filesystem GET can observe a Resource with no validator mid-write
+### WSS-92: [M] (fs) Filesystem GET can observe a Resource with no validator mid-write
 
 - status: todo
 - priority: medium
@@ -299,7 +299,7 @@ is not affected. Candidate fixes: have reads take the resource mutex, or write
 the sidecar first and make the content file visible last (a rename), so the
 sidecar is present whenever the bytes are.
 
-### WAS-132: [M] (*) A present but unparseable `If-None-Match` on a write is a 400
+### WSS-132: [M] (*) A present but unparseable `If-None-Match` on a write is a 400
 
 - status: todo
 - priority: medium
@@ -325,7 +325,7 @@ replace: the loser of a provisioning race rewrites the winner's `controller` or
 `type`, with a 204 to both. Node joins duplicate `If-None-Match` headers with
 `, `, so a client library plus a wrapper that both set `*` produce `*, *`.
 
-### WAS-135: [M] (fs) Torn-run ordering in the filesystem backend's delete and update paths
+### WSS-135: [M] (fs) Torn-run ordering in the filesystem backend's delete and update paths
 
 - status: todo
 - priority: medium
@@ -334,7 +334,7 @@ replace: the loser of a provisioning race rewrites the winner's `controller` or
 - discovered-from: whole-codebase review (2026-09-17)
 - touches:
   - `src/backends/filesystem.ts` (`deleteResource`, `writeResource`,
-    `writeCollectionLog`, `insertRevocation`, `#collectionIds`); WAS-92 covers
+    `writeCollectionLog`, `insertRevocation`, `#collectionIds`); WSS-92 covers
     the read-side window of the content/validator split
 - acceptance:
   - [ ] Soft delete removes the chunk directory and writes the tombstone sidecar
@@ -360,7 +360,7 @@ replace: the loser of a provisioning race rewrites the winner's `controller` or
         closed or documented: a reader between the two is served the new
         `backends` under the old `ETag`
 
-### WAS-136: [M] (*) Backend registry lifecycle: cache, immutability, in-use checks, data-plane delete
+### WSS-136: [M] (*) Backend registry lifecycle: cache, immutability, in-use checks, data-plane delete
 
 - status: todo
 - priority: medium
@@ -371,7 +371,7 @@ replace: the loser of a provisioning race rewrites the winner's `controller` or
   - `src/lib/backendRegistry.ts`, `src/lib/backends.ts`,
     `src/requests/BackendRequest.ts`, `src/requests/collectionInput.ts`,
     `src/requests/CollectionRequest.ts` (`delete`),
-    `src/requests/SpaceRequest.ts` (`delete`); WAS-108 covers the container rule
+    `src/requests/SpaceRequest.ts` (`delete`); WSS-108 covers the container rule
 - acceptance:
   - [ ] The resolved-adapter cache is invalidated by Delete Space and by
         `POST /backends`, and invalidated before as well as after a record write
@@ -410,7 +410,7 @@ data-plane delete, a no-op one included, because `deleteResource` returns
 nothing. The effect is minor (a policy over an absent Resource grants a read of
 nothing), but the two backends disagree with the contract.
 
-### WAS-144: [M] (*) Ignore a non-`Signature` `Authorization` header on an anonymous read
+### WSS-144: [M] (*) Ignore a non-`Signature` `Authorization` header on an anonymous read
 
 - status: todo
 - priority: medium
@@ -432,13 +432,13 @@ nothing), but the two backends disagree with the contract.
   - [ ] Tests for `Bearer` and `Basic` on a `PublicCanRead` Resource, and an
         anonymous equality query on a public Collection
 
-### WAS-191: [M] (fs) The sidecar is the commit point of a filesystem Resource write
+### WSS-191: [M] (fs) The sidecar is the commit point of a filesystem Resource write
 
 - status: todo
 - priority: medium
 - backend: fs
 - labels: filesystem-backend, consistency, replication
-- discovered-from: WAS-172 (2026-10-03)
+- discovered-from: WSS-172 (2026-10-03)
 - touches:
   - `src/backends/filesystem.ts` (`#writeResourceLocked`, the chunk write, the
     import and later apply paths, `#findFile`), `src/lib/metaSidecar.ts`
@@ -454,18 +454,18 @@ nothing), but the two backends disagree with the contract.
   - [ ] A test tears a write between the representation and the sidecar and
         reads back the prior bytes, `ETag`, and feed position
 
-Context (discovered-from: WAS-172; decision 0004 (stamps are minted only by this
-server), last bullet, and the WAS-96 design section 5.3). The representation
+Context (discovered-from: WSS-172; decision 0004 (stamps are minted only by this
+server), last bullet, and the WSS-96 design section 5.3). The representation
 lands before the sidecar today, so a crash between them serves the new bytes
 under the old stamp. Under the stamp validator a peer holding that validator
-does not pull the Resource again, so the two servers stay different. WAS-172
-shipped the stamp without this layout change. WAS-135 covers the neighbouring
+does not pull the Resource again, so the two servers stay different. WSS-172
+shipped the stamp without this layout change. WSS-135 covers the neighbouring
 torn-run cases (delete ordering, a content-type change); this item is the write
 path's own ordering.
 
 ---
 
-### WAS-220: [M] (*) A Resource write repairs a Collection copy the data backend lost
+### WSS-220: [M] (*) A Resource write repairs a Collection copy the data backend lost
 
 - status: todo
 - priority: medium
@@ -492,7 +492,7 @@ re-check there answers 404 for a Collection that exists, and retrying the
 Resource write never repairs it; only a Collection Metadata write does. The two
 writers of one state recover differently after the same torn write.
 
-### WAS-181: [L] (*) Pin that a sidecar imported without timestamps is served with both on each backend
+### WSS-181: [L] (*) Pin that a sidecar imported without timestamps is served with both on each backend
 
 - status: todo
 - priority: low
@@ -500,7 +500,7 @@ writers of one state recover differently after the same torn write.
 - labels: import-export, filesystem-backend, postgres-backend, test-coverage
 - discovered-from: code review of src/backends and src/lib (2026-09-11)
 - touches:
-  - was-teaching-server: `test/storage-backend-contract.ts`
+  - web-spaces-server: `test/storage-backend-contract.ts`
 - acceptance:
   - [ ] The storage-backend contract test imports an archive whose
         `.meta.<id>.json` parses as a JSON object but carries no `createdAt`,
@@ -510,7 +510,7 @@ writers of one state recover differently after the same torn write.
         the sidecar did carry (`createdBy`, `custom`, `epoch`, `writerId`) are
         kept
 
-Context: discovered-from WAS-95. Both backends already import every Resource and
+Context: discovered-from WSS-95. Both backends already import every Resource and
 chunk sidecar through `restampImportedSidecar` (`src/lib/metaSidecar.ts`), which
 mints a fresh write stamp and fills a missing `createdAt` with that stamp's
 `updatedAt`, so the two agree. No contract case pins it: the existing import
@@ -520,7 +520,7 @@ Collection Metadata rule is different on purpose and stays as is: a Collection
 imported without `createdAt` keeps it absent, so a later write cannot date the
 container after the contents it holds.
 
-### WAS-83: [L] (*) Anonymous Get Policy with a malformed id now returns 401
+### WSS-83: [L] (*) Anonymous Get Policy with a malformed id now returns 401
 
 - status: todo
 - priority: low
@@ -541,16 +541,16 @@ behaved this way, but wire-observable and uncovered by any test.
 
 ---
 
-### WAS-193: [L] (*) `epoch` moves on a `/meta` write without a content stamp
+### WSS-193: [L] (*) `epoch` moves on a `/meta` write without a content stamp
 
 - status: todo
 - priority: low
 - backend: *
 - labels: data-model, replication, encryption
-- discovered-from: WAS-172 review (2026-10-03)
+- discovered-from: WSS-172 review (2026-10-03)
 - touches:
   - portable-web-spaces-spec: Update Resource Metadata, the `epoch` member
-  - was-teaching-server: both backends' `/meta` write path, the WAS-96 design
+  - web-spaces-server: both backends' `/meta` write path, the WSS-96 design
     doc section 5.3
 - acceptance:
   - [ ] Decide which record `epoch` belongs to when a `/meta` write sets it: the
@@ -558,14 +558,14 @@ behaved this way, but wire-observable and uncovered by any test.
         member) or the `/meta` record (so the design sentence changes)
   - [ ] Both backends and the design doc agree, with a test
 
-Context (discovered-from: WAS-172 review). The WAS-96 design assigns `epoch` and
+Context (discovered-from: WSS-172 review). The WSS-96 design assigns `epoch` and
 `writerId` to the content record. A `/meta` write no longer touches `writerId`,
 but it still stores `epoch`, and it mints only the `/meta` stamp. A peer that
 orders by content stamps would not see that change as a content revision.
 
 ## Spec and protocol
 
-### WAS-243: [M] (*) List the Portable Wallet Profile entry in the service description
+### WSS-243: [M] (*) List the Portable Wallet Profile entry in the service description
 
 - status: todo
 - priority: medium
@@ -612,7 +612,7 @@ may not list it.
 Conformance gaps against the spec, spec-side proposals this server would
 implement once decided, and research that may end in either.
 
-### WAS-142: [M] (*) Problem documents on every route, and Fastify's own errors typed
+### WSS-142: [M] (*) Problem documents on every route, and Fastify's own errors typed
 
 - status: todo
 - priority: medium
@@ -636,14 +636,14 @@ implement once decided, and research that may end in either.
   - [ ] Decide whether 401s carry a `WWW-Authenticate` challenge, and with what
         value (wire-level)
 
-### WAS-66: [M] (*) Accept ids beyond the unreserved charset (percent-encoding on disk, real webvh round-trip)
+### WSS-66: [M] (*) Accept ids beyond the unreserved charset (percent-encoding on disk, real webvh round-trip)
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: data-model, backend, webvh
 - touches:
-  - was-teaching-server: `src/lib/validateId.ts` (the charset gate),
+  - web-spaces-server: `src/lib/validateId.ts` (the charset gate),
     `src/backends/*` (on-disk segment encoding, glob escaping, sidecar and
     archive entry names), `src/lib/validateDid.ts` (`parseSelfHostedWebvh`
     round-trip), `src/lib/importTar.ts`, ARCHITECTURE.md Glossary (the
@@ -691,7 +691,7 @@ charset ruled out for free: case-insensitive filesystems (two ids differing only
 by case), Windows reserved names, and Unicode normalization (two byte sequences
 rendering identically) may each need an explicit stance.
 
-### WAS-64: [M] (*) Default document for public collections (`index.html`)
+### WSS-64: [M] (*) Default document for public collections (`index.html`)
 
 - status: todo
 - priority: medium
@@ -724,7 +724,7 @@ hosted-page sandbox header. Every route group installs the `sandboxHostedPage`
 gets it with no extra step. Have the tests assert the header on the served
 document.
 
-### WAS-162: [M] (*) Research verifying zcap invocations signed by a did:webvh hosted elsewhere
+### WSS-162: [M] (*) Research verifying zcap invocations signed by a did:webvh hosted elsewhere
 
 - status: todo
 - priority: medium
@@ -752,20 +752,20 @@ document.
 Context: `webvhController.ts` verifies a did:webvh only when its log is stored
 on this server ("not a did:webvh DID hosted by this server"), and the server
 never fetches over the network. A zcap delegated to a did:webvh account on
-another WAS host therefore cannot be invoked here. Freewallet FW-478
+another PWS host therefore cannot be invoked here. Freewallet FW-478
 (per-resource access for social software) wants a friend's account DID as an
 audience member eventually. It ships with per-connection did:keys first and
 keeps the member layout open for account DIDs, pending this item.
 
 ---
 
-### WAS-194: [M] (*) `encryption` is declared only when the Collection is created
+### WSS-194: [M] (*) `encryption` is declared only when the Collection is created
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: collection-metadata, encryption, wire-contract
-- discovered-from: WAS-173 (2026-10-03)
+- discovered-from: WSS-173 (2026-10-03)
 - touches:
   - portable-web-spaces-spec: WASS-49 (the sentence permitting a declaration on
     a Collection that lacks one is withdrawn)
@@ -791,18 +791,18 @@ Context: spec decision 0012 makes the immutable Collection descriptors
 creation-only. Under replication, a late first set of `encryption` on one server
 and a concurrent full replacement without it on another both pass their own
 transition check, and last-writer-wins converges on an object with `encryption`
-gone. WAS-173 shipped the `revisions` half of the rule. This item is the
+gone. WSS-173 shipped the `revisions` half of the rule. This item is the
 `encryption` half. It removes a path was-client and was-react still use as
 fallbacks, so it lands with their removal. The App Connect flow already creates
 its Collections encrypted from birth.
 
-### WAS-219: [L] (*) Changing a Collection's `backend.id` once it holds Resources
+### WSS-219: [L] (*) Changing a Collection's `backend.id` once it holds Resources
 
 - status: todo
 - priority: low
 - backend: *
 - labels: backend, spec
-- discovered-from: WAS-216 (2026-10-22)
+- discovered-from: WSS-216 (2026-10-22)
 - acceptance:
   - [ ] Decision recorded: an Update Collection that changes `backend.id` on a
         Collection holding Resources is refused, or moves the Resources
@@ -829,18 +829,18 @@ New capability. The Google Drive items are the remaining stages of the BYOS plan
 (a Google Drive `managedBy: external` "Bring Your Own Storage" backend,
 plaintext and EDV-encrypted, with encryption as a backend feature). That plan's
 staged work plan is the authoritative sequencing; stages 1-3 have shipped (the
-EDV-over-WAS client profile, registration plus the per-Collection resolver, and
+EDV-over-PWS client profile, registration plus the per-Collection resolver, and
 all four EDV server affordances). The spec has since removed the `features`
 vocabulary the plan advertised those affordances through, and so has this server
-(WAS-111); the affordances themselves are unchanged.
+(WSS-111); the affordances themselves are unchanged.
 
-### WAS-1: [H] (*) [blocks 4] Google Cloud console identity verification for interopalliance.org
+### WSS-1: [H] (*) [blocks 4] Google Cloud console identity verification for interopalliance.org
 
 - status: todo
 - priority: high
 - backend: *
 - labels: gdrive-byos, policy
-- blocks: WAS-2, WAS-3, WAS-4, WAS-5
+- blocks: WSS-2, WSS-3, WSS-4, WSS-5
 - acceptance:
   - [ ] interopalliance.org org/brand identity verification completed in the
         Google Cloud console
@@ -854,14 +854,14 @@ setup, both adapter stages, and the ToS clearance conversation all presuppose a
 verified org. Note: This is technically not necessary for the feature, but will
 help with verification and testing.
 
-### WAS-2: [H] (*) [blocks 1] [after WAS-1] Google OAuth confidential client + consent setup (plan stage 4)
+### WSS-2: [H] (*) [blocks 1] [after WSS-1] Google OAuth confidential client + consent setup (plan stage 4)
 
 - status: todo
 - priority: high
 - backend: *
 - labels: gdrive-byos, oauth
-- blocked-by: WAS-1
-- blocks: WAS-3
+- blocked-by: WSS-1
+- blocks: WSS-3
 - acceptance:
   - [ ] PKCE authorization-code exchange wired end to end (wallet obtains the
         one-time code against the server's client; server exchanges and stores
@@ -872,7 +872,7 @@ help with verification and testing.
         exchange, `invalid_grant` on refresh flips to revoked/expired, and
         deregistration revokes the token at Google
 
-Register the WAS server as a Google **confidential OAuth client** (server
+Register the PWS server as a Google **confidential OAuth client** (server
 config: `client_id` / `client_secret` / `redirect_uri`); consent screen on the
 non-sensitive tier only (`drive.file` + `openid email` -- never the restricted
 scopes, which force an annual CASA audit, and not `drive.appdata`); wire the
@@ -887,14 +887,14 @@ refresh tokens** (server master key vs. the WebKMS substrate; rotation) --
 distinct from EDV client keys, which the server never holds. Prerequisite for
 the two adapter stages below.
 
-### WAS-3: [H] (*) [blocks 1] [after WAS-1, WAS-2] Google Drive plaintext adapter (plan stage 5)
+### WSS-3: [H] (*) [blocks 1] [after WSS-1, WSS-2] Google Drive plaintext adapter (plan stage 5)
 
 - status: todo
 - priority: high
 - backend: *
 - labels: gdrive-byos, backend
-- blocked-by: WAS-1, WAS-2
-- blocks: WAS-4
+- blocked-by: WSS-1, WSS-2
+- blocks: WSS-4
 - acceptance:
   - [ ] `GoogleDriveBackend implements StorageBackend` with the folder-mirror
         layout and a persisted, rebuildable path-to-id index
@@ -909,13 +909,13 @@ still open), resumable uploads, `about.get` quotas, backoff with jitter. v1
 targets personal / My Drive only (one code path covers consumer and Workspace
 personal storage).
 
-### WAS-4: [M] (*) [after WAS-1, WAS-3] Google Drive EDV flavor (plan stage 6)
+### WSS-4: [M] (*) [after WSS-1, WSS-3] Google Drive EDV flavor (plan stage 6)
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: gdrive-byos, encryption
-- blocked-by: WAS-1, WAS-3
+- blocked-by: WSS-1, WSS-3
 - acceptance:
   - [ ] The adapter advertises the EDV feature set: JWE documents as opaque
         files, chunk subfolders
@@ -934,7 +934,7 @@ mitigations are worth their cost (size padding, keeping blinded attributes off
 settle here, along with what to upstream into the spec's privacy-considerations
 text.
 
-### WAS-58: [M] (*) Aggregate quota reporting across an account's auxiliary Spaces
+### WSS-58: [M] (*) Aggregate quota reporting across an account's auxiliary Spaces
 
 - status: todo
 - priority: medium
@@ -958,7 +958,7 @@ per-Space breakdown in a new member (which would need an addition to
 `@interop/storage-core`'s quota types). Both are permanent wire choices and need
 deciding with Dmitri before implementation.
 
-### WAS-70: [M] (*) Keystore deletion (route, backend method, orphan GC)
+### WSS-70: [M] (*) Keystore deletion (route, backend method, orphan GC)
 
 - status: todo
 - priority: medium
@@ -989,7 +989,7 @@ deciding with Dmitri before implementation.
         `controller` did:webvh no longer resolves" -- this also covers a torn
         account deletion and an account Space deleted before this route existed,
         not only the new route's own callers. The sweep that acts on that
-        decision is WAS-73
+        decision is WSS-73
   - [ ] webkms-client's `KmsClient.deleteKeystore` (tracked there)
 
 Note 2026-08-31 (freewallet FW-400 v3): freewallet's deletion ceremony calls
@@ -1008,14 +1008,14 @@ Space's own `did.jsonl`), so the keystore is not merely leaked but permanently
 unauthenticatable: no request can reach it. With no orphan GC, these accumulate
 unboundedly -- plaintext at rest unless `KMS_RECORD_KEK` is set.
 
-### WAS-73: [M] (*) Periodic sweep of Spaces and keystores whose did:webvh controller no longer resolves
+### WSS-73: [M] (*) Periodic sweep of Spaces and keystores whose did:webvh controller no longer resolves
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: cleanup, backend, kms
 - discovered-from: freewallet FW-400 design pass v3 (2026-08-31), the eventual
-  mender of its accepted (b4)-(b5) residue; also the sweep WAS-70's orphan-GC
+  mender of its accepted (b4)-(b5) residue; also the sweep WSS-70's orphan-GC
   decision calls for
 - touches:
   - `src/backends/postgres.ts` and `src/backends/filesystem.ts` --
@@ -1042,15 +1042,15 @@ are all deleted is unreachable to every client, since nothing can locate it and
 nothing can authorize against it, so the server is the only party that can
 remove it.
 
-### WAS-195: [M] (*) Store the content digest of each Resource and chunk
+### WSS-195: [M] (*) Store the content digest of each Resource and chunk
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: data-model, storage, provenance, collection-metadata
-- discovered-from: WAS-173 (2026-10-03)
+- discovered-from: WSS-173 (2026-10-03)
 - touches:
-  - was-teaching-server: both backends' Resource and chunk write paths, the
+  - web-spaces-server: both backends' Resource and chunk write paths, the
     filesystem sidecar and the Postgres `resources` and chunk rows, the store
     layout version, `src/lib/revisions.ts` (the write-once comparison),
     `src/lib/exportProvenance.ts`, `src/lib/importTar.ts`
@@ -1102,40 +1102,40 @@ the body was sent non-compact, so the comparison hashes what the write would
 store. Export provenance digests each Resource at export time and reads it
 twice. Whether export signs the stored digest or keeps hashing the archived
 bytes is open, since a stored value does not detect damaged bytes. The
-write-time statements of WAS-184 need a digest at write time and would read this
+write-time statements of WSS-184 need a digest at write time and would read this
 one.
 
-### WAS-5: [L] (*) [after WAS-1] Drive API ToS use-case clearance
+### WSS-5: [L] (*) [after WSS-1] Drive API ToS use-case clearance
 
 - status: todo
 - priority: low
 - backend: *
 - labels: gdrive-byos, policy
-- blocked-by: WAS-1
+- blocked-by: WSS-1
 - acceptance:
   - [ ] Written position on the "backup of app content to Drive" / "Drive as a
-        CDN" prohibited-use clauses, framing WAS as primary, user-driven storage
+        CDN" prohibited-use clauses, framing PWS as primary, user-driven storage
   - [ ] Decision recorded on whether to seek Google's written consent
 
 Before scaling past the teaching/prototype tier. The "backup of app content to
 Drive" and "Drive as a CDN" prohibited-use clauses are a genuine gray area for
-BYOS; frame WAS in any OAuth verification as _primary, user-driven storage_
+BYOS; frame PWS in any OAuth verification as _primary, user-driven storage_
 (never a backup target), and decide whether to seek Google's written consent. A
 legal/policy item, not a technical one.
 
 ## Multi-primary Spaces
 
 The replication program: a Space served by several primaries with a replicated
-write identity and conflict model. WAS-96 is the umbrella and names the design
+write identity and conflict model. WSS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-96: [M] (*) Multi-primary Spaces (replicated write identity and conflict model)
+### WSS-96: [M] (*) Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
 - backend: *
 - labels: data-model, replication, changes-feed, etag, sync
-- design: designs/WAS-96-multi-primary-spaces.md
+- design: designs/WSS-96-multi-primary-spaces.md
 - design-approved: 2026-10-02
 - decisions: portable-web-spaces-spec decisions 0009 to 0013 (contract); this
   repo's decisions/0003 to 0005 (server-internal)
@@ -1154,9 +1154,9 @@ doc; the other items are its sub-items in dependency order.
   - storage-core: `ChangeDocument`, the Resource and Metadata models (stamp
     members), `CollectionMetadata.revisions`. Shipped in 0.32.0 through 0.35.0;
     the publishes are pending and the server consumes them by `link:`
-  - was-teaching-server: every item in `blocked-by`; ARCHITECTURE.md's
+  - web-spaces-server: every item in `blocked-by`; ARCHITECTURE.md's
     validator, hard-delete, resolver, and container-rule sections. Shipped:
-    WAS-171 to WAS-177, WAS-182, WAS-183 archived by 2026-10-04, and
+    WSS-171 to WSS-177, WSS-182, WSS-183 archived by 2026-10-04, and
     ARCHITECTURE.md records the stamp and validator rules, Collection
     tombstones, the resolver clause and the `src/sync/` facet
   - was-client: `Collection.changes()` document type; the `replicas` member on
@@ -1176,8 +1176,8 @@ doc; the other items are its sub-items in dependency order.
 - acceptance:
   - [x] The design doc is reviewed and approved, and every wire-level convention
         it flags is individually signed off (2026-10-02; the read-only-switch
-        problem type is WAS-179's)
-  - [x] Each `blocked-by` item is done (WAS-176 and WAS-177, 2026-10-04)
+        problem type is WSS-179's)
+  - [x] Each `blocked-by` item is done (WSS-176 and WSS-177, 2026-10-04)
   - [x] A test boots two in-process servers over separate data dirs, registers
         one as the other's source for a Space, writes on the source, and asserts
         the replica serves the same bytes, the same `ETag`, and the same
@@ -1229,7 +1229,7 @@ multi-server special case. The origin id is a per-store value (`WAS_ORIGIN_ID`,
 else minted at init), not the server DID, so it exists from first boot.
 
 Checkpoints (decision 4). A client replicates against one server at a time and
-the servers replicate among themselves, so WAS-93's opaque per-server checkpoint
+the servers replicate among themselves, so WSS-93's opaque per-server checkpoint
 is unchanged and no vector checkpoint is needed. Each change document carries
 the write's stamp members, so a client switching servers re-reads from the start
 and applies by the same comparison without writing what it already holds.
@@ -1243,11 +1243,11 @@ projection after one stamp comparison. By kind: Resources, their tombstones and
 Space Metadata object's `name`, and policies apply under LWW; governed history
 logs and `did.jsonl` logs fast-forward, a fork stalls the Collection with a
 durable reason; `controller`, revocations, backend registrations, quotas,
-keystores do not replicate, and chunks replicate under WAS-14. Discovery is the
-widened `changes` feed (WAS-182). Collections get a stamped tombstone and a
-listing channel (WAS-174); Delete Space stays a hard delete per replica, since a
+keystores do not replicate, and chunks replicate under WSS-14. Discovery is the
+widened `changes` feed (WSS-182). Collections get a stamped tombstone and a
+listing channel (WSS-174); Delete Space stays a hard delete per replica, since a
 Space on two servers is two URL identities and the registration dies with the
-Space. Tombstones are never reaped in v1 (WAS-13). A received stamp more than a
+Space. Tombstones are never reaped in v1 (WSS-13). A received stamp more than a
 bound ahead of the receiver's clock stalls the pull at that position with a
 `warn` naming the peer.
 
@@ -1261,21 +1261,21 @@ registration, so a backup-only replica is a Space with one registration and no
 counterpart. The served Space Metadata object carries a server-derived
 `replicas` member for discovery. A self-hosted `did:webvh` controller resolves
 on the replica from the replicated copy of its log, still a local storage read
-(WAS-177); the `id` Collection replicates normally so the account survives the
+(WSS-177); the `id` Collection replicates normally so the account survives the
 loss of its original host. The pulling server signs as its `serverDid` with the
 one seed key, which the admin lists under `assertionMethod` and
 `capabilityInvocation`; the pull capability is delegated to `serverDid`, and
-replication requires the server identity (WAS-175).
+replication requires the server identity (WSS-175).
 
 Out of scope until later items: the reader-safety watermark (closed timestamps)
 that would be needed if per-Collection write serialization were ever relaxed;
-blob and chunk replication (WAS-14); server-signed checkpoints (WAS-36), which
-interact with per-source checkpoints; a read-only replica switch (WAS-179);
+blob and chunk replication (WSS-14); server-signed checkpoints (WSS-36), which
+interact with per-source checkpoints; a read-only replica switch (WSS-179);
 `keep-conflicts` and stale-`If-Match`-as-sibling.
 
 ---
 
-### WAS-224: [M] (*) Admit a replica Space under a bootstrap did:key, and resolve the auxiliary Space's controller across Spaces
+### WSS-224: [M] (*) Admit a replica Space under a bootstrap did:key, and resolve the auxiliary Space's controller across Spaces
 
 - status: todo
 - priority: medium
@@ -1283,15 +1283,15 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 - labels: replication, registration, webvh, zcap
 - discovered-from: freewallet FW-688 (2026-10-26)
 - touches:
-  - was-teaching-server: `src/sync/registration.ts`
+  - web-spaces-server: `src/sync/registration.ts`
     (`assertLocalControllerIsPeerKey`, `assertPeerSpaceMatches`,
     `parseReplicaRegistration`), `src/lib/webvhLogLocation.ts` (the cross-Space
     lookup), docs/replication.md ("Registration checks"), ARCHITECTURE.md (the
     `src/sync/` entry)
-  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is
-    amended and the replication companion (`replication/spec.md`, "The
-    controller check") states the branch, with no binding of the local did:key
-    to the capability; WASS-58's touches gain the `fromSpace` comparison
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is amended
+    and the replication companion (`replication/spec.md`, "The controller
+    check") states the branch, with no binding of the local did:key to the
+    capability; WASS-58's touches gain the `fromSpace` comparison
   - freewallet: the replica registration ceremony (FW-638, FW-688) creates and
     registers under the bootstrap did:key
   - was-conformance-suite: PWSCS-23's registration-check cases
@@ -1329,7 +1329,7 @@ there, delegating a read-only pull capability to that server's `serverDid`, and
 registering the source Space. The replica server creates a Space only under a
 did:key. Today the controller check admits a local did:key only when the source
 controller's document lists it under `capabilityInvocation`
-(`assertLocalControllerIsPeerKey`, `registration.ts:498-572`, the branch WAS-205
+(`assertLocalControllerIsPeerKey`, `registration.ts:498-572`, the branch WSS-205
 added; the listing check is at `:566`). An account anchored in a standing
 credential's ladder has no such key, so it cannot register a replica. The wallet
 uses a bootstrap did:key K derived from a seed on its directory entry for the
@@ -1340,14 +1340,14 @@ The branch also has to cover the client-annex auxiliary Space. Its controller is
 the account did:webvh, whose log is in the account Space, so today's requirement
 that the log be hosted in `fromSpace` itself
 (`hosted.fromSpace !== record.fromSpace`, `registration.ts:521`) refuses it.
-This is the cross-Space case of WAS-96's open question 5. WAS-206's mapping rule
+This is the cross-Space case of WSS-96's open question 5. WSS-206's mapping rule
 (`replicaMappingConflict`) is unchanged.
 
 The squat analysis, from the design. The replica server cannot read the wallet's
 replica pointer (it lives in the annex, which is not copied yet), so the gate
 sits at the source server: the registration reads the source Space through the
 capability, and the source refuses a ladder-signed pull with no pointer
-(WAS-225). A third party holding a re-delegated grant fails the one-link
+(WSS-225). A third party holding a re-delegated grant fails the one-link
 condition. One residue stays open, left to this item by the design: any reader
 of the wallet's directory can register the recorded capability under its own
 did:key in a tear between the wallet's mint and its POST, and then win
@@ -1355,12 +1355,12 @@ did:key in a tear between the wallet's mint and its POST, and then win
 capability would close it. Settled 2026-10-29 in the companion text: no binding.
 The residue is accepted and recorded in the companion's security considerations
 ("The bootstrap key"); the first acceptance box above stands as written.
-Related: WAS-207 (a log that declares witnesses still cannot replicate), WAS-210
+Related: WSS-207 (a log that declares witnesses still cannot replicate), WSS-210
 (one function for where a did:webvh resolves from).
 
 ---
 
-### WAS-225: [M] (*) Client-annex clause: a ladder-signed replica pull gated on the annex document's replica pointer
+### WSS-225: [M] (*) Client-annex clause: a ladder-signed replica pull gated on the annex document's replica pointer
 
 - status: todo
 - priority: medium
@@ -1368,7 +1368,7 @@ Related: WAS-207 (a log that declares witnesses still cannot replicate), WAS-210
 - labels: client-annex, zcap, replication, webvh
 - discovered-from: freewallet FW-688 (2026-10-26)
 - touches:
-  - was-teaching-server: `src/lib/clientAnnexClause.ts`
+  - web-spaces-server: `src/lib/clientAnnexClause.ts`
     (`ladderDelegationAdmitted` and the module header), `src/config.default.ts`
     (the `CLIENT_ANNEX_VERSION` comment), docs/client-annex-clause.md (a sixth
     shape), ARCHITECTURE.md (the clause entry), `decisions/0002` (amended
@@ -1378,10 +1378,10 @@ Related: WAS-207 (a log that declares witnesses still cannot replicate), WAS-210
     document)
   - wallet-core: the ladder-signed pull mint, the ladder-clause counterpart
     fixtures, and the `hostConformance.ts` header's predicate count
-  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is
-    amended and the replication companion ("Signing the pull capability")
-    defines the `ReplicaServer` pointer and cites the predicate by name;
-    WASS-58's touches gain the pull capability's target
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is amended
+    and the replication companion ("Signing the pull capability") defines the
+    `ReplicaServer` pointer and cites the predicate by name; WASS-58's touches
+    gain the pull capability's target
 - acceptance:
   - [ ] A ladder-signed delegation is admitted when its sole `controller` equals
         the `serviceEndpoint` of a `https://w3id.org/pws#ReplicaServer` service
@@ -1445,7 +1445,7 @@ log, once per replica server.
 
 ---
 
-### WAS-226: [M] (*) Open the replicas route to a root-chained delegated invocation
+### WSS-226: [M] (*) Open the replicas route to a root-chained delegated invocation
 
 - status: todo
 - priority: medium
@@ -1453,7 +1453,7 @@ log, once per replica server.
 - labels: replication, registration, zcap, client-annex
 - discovered-from: freewallet FW-688 (2026-10-26)
 - touches:
-  - was-teaching-server: `src/requests/ReplicaRequest.ts` (each handler's
+  - web-spaces-server: `src/requests/ReplicaRequest.ts` (each handler's
     `containerRule: 'controller-only'`, `:78`, `:144`, `:180`, `:224`, `:305`,
     and the module header), `src/routes.ts` (the replicas comment),
     `src/lib/containerRule.ts`, `src/lib/clientAnnexClause.ts`,
@@ -1461,10 +1461,10 @@ log, once per replica server.
     operations"), ARCHITECTURE.md (the `src/sync/` entry, "controller-only"),
     `decisions/0002` (amended 2026-10-26), `decisions/0005` (its Context says
     the registration record is controller-only)
-  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is
-    amended and the replication companion ("Registrations", Authorization)
-    states the delegated path and the `POST` bound; WASS-1 / WAS-59's
-    Authorization column for `replicas` still open
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is amended
+    and the replication companion ("Registrations", Authorization) states the
+    delegated path and the `POST` bound; WASS-1 / WSS-59's Authorization column
+    for `replicas` still open
   - app-connect-spec: decision 0003 (the replica-server-side predicate)
   - was-client: the replica methods' "Controller-only" JSDoc
     (`Space.ts:791-875`); `/paths` exports `spaceReplicas` and
@@ -1473,7 +1473,7 @@ log, once per replica server.
     controller-only, including GET") revised
 - acceptance:
   - [ ] Every replicas route (list, register, read, remove, status, and
-        WAS-227's PUT) admits a delegated invocation whose chain roots in the
+        WSS-227's PUT) admits a delegated invocation whose chain roots in the
         Space's root, in place of `controller-only`. The reads keep demanding
         the auth headers
   - [ ] Clause A gains a predicate for it: the `invocationTarget` is the Space's
@@ -1510,13 +1510,13 @@ widening: without it a phished credential's holder could register its own server
 as a second source serving the account DID as `controller`
 (`assertPeerSpaceMatches` only string-compares it, `registration.ts:452`), and
 have that source's tombstones applied to the copy. It is shape-gated, like
-predicates 1 to 5. WAS-225 and this item both edit `clientAnnexClause.ts` and
+predicates 1 to 5. WSS-225 and this item both edit `clientAnnexClause.ts` and
 the clause's predicate count; whichever lands second updates the count. Related:
-WAS-209 (a ladder-signed delegation on a replica, under the clause).
+WSS-209 (a ladder-signed delegation on a replica, under the clause).
 
 ---
 
-### WAS-238: [M] (*) `serverDid` moves to the core `specs` entry, and the replication entry carries `url`
+### WSS-238: [M] (*) `serverDid` moves to the core `specs` entry, and the replication entry carries `url`
 
 - status: todo
 - priority: medium
@@ -1524,7 +1524,7 @@ WAS-209 (a ladder-signed delegation on a replica, under the clause).
 - labels: wire-contract, service-description, server-identity, replication
 - discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
 - touches:
-  - was-teaching-server (this repo): `src/serviceDescription.ts` (the `instance`
+  - web-spaces-server (this repo): `src/serviceDescription.ts` (the `instance`
     member it composes and the core entry beside `originId`; the
     `REPLICATION_IDENTIFIER` entry's members), `src/config.default.ts` (the "no
     `url` until the text is published" comment), the two server-identity tests,
@@ -1557,12 +1557,12 @@ disclosure a client may not gate on, and a wallet gates on the DID: it is the
 `controller` it delegates the pull capability to, and a server without one
 cannot hold a replica. So the member sits on the core entry, as `originId` does
 and for the same reason. The companion text now exists, so the replication
-entry's `url` can be served. Related: WAS-235 (the other `instance` member that
+entry's `url` can be served. Related: WSS-235 (the other `instance` member that
 moves or is renamed).
 
 ---
 
-### WAS-239: [M] (*) Refuse a second registration of one source Space sharing a Collection on the same local Space
+### WSS-239: [M] (*) Refuse a second registration of one source Space sharing a Collection on the same local Space
 
 - status: todo
 - priority: medium
@@ -1570,7 +1570,7 @@ moves or is renamed).
 - labels: replication, registration
 - discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
 - touches:
-  - was-teaching-server (this repo): `src/sync/registration.ts`
+  - web-spaces-server (this repo): `src/sync/registration.ts`
     (`assertReplicaAcceptable`), `src/lib/webvhLogLocation.ts`
     (`replicaMappingConflict`), docs/replication.md ("Two registrations on one
     local Space may overlap" goes), ARCHITECTURE.md (the `src/sync/` entry)
@@ -1600,11 +1600,11 @@ is: two loops writing one copy of a Collection race each other's checkpoints and
 stamps for no benefit, and two registrations mapping one controller log give the
 registration-mapped resolver (`locateWebvhLog`, which requires exactly one
 holder) two answers, so the controller stops resolving. The check is not atomic
-with the write today; that stays as it is (WAS-206's note).
+with the write today; that stays as it is (WSS-206's note).
 
 ---
 
-### WAS-240: [M] (*) The foreign `did:webvh` fetch and the companion's `space:server:id` bound
+### WSS-240: [M] (*) The foreign `did:webvh` fetch and the companion's `space:server:id` bound
 
 - status: todo
 - priority: medium
@@ -1612,7 +1612,7 @@ with the write today; that stays as it is (WAS-206's note).
 - labels: replication, webvh, security, spec
 - discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
 - touches:
-  - was-teaching-server (this repo): `src/lib/peerWebvh.ts` (`mayFetch`, the
+  - web-spaces-server (this repo): `src/lib/peerWebvh.ts` (`mayFetch`, the
     module header), `src/lib/validateDid.ts` (`parseCrossHostWebvh`),
     `src/zcap.ts` (`peerInvokerGrant`), docs/replication.md and the
     server-identity docs, ARCHITECTURE.md
@@ -1644,13 +1644,13 @@ refusal, rate limit, concurrency, cache) match the text either way.
 
 ---
 
-### WAS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
+### WSS-207: [L] (*) Resolve a replicated `did:webvh` log that declares witnesses
 
 - status: todo
 - priority: low
 - backend: *
 - labels: replication, webvh
-- discovered-from: WAS-177 (2026-10-04)
+- discovered-from: WSS-177 (2026-10-04)
 - acceptance:
   - [ ] A decision on witness proofs for a log this server holds a copy of:
         replicate `did-witness.json` beside the log, or keep refusing
@@ -1664,13 +1664,13 @@ A wallet that uses witnesses cannot use a replica until this is decided.
 
 ---
 
-### WAS-209: [L] (pg) Cover the replicated-controller path on Postgres and under the client-annex clause
+### WSS-209: [L] (pg) Cover the replicated-controller path on Postgres and under the client-annex clause
 
 - status: todo
 - priority: low
 - backend: pg
 - labels: replication, webvh, tests, postgres-backend
-- discovered-from: WAS-177 (2026-10-04)
+- discovered-from: WSS-177 (2026-10-04)
 - acceptance:
   - [ ] The two-server replicated-controller test runs on the Postgres backend,
         including the key-retirement case (the applied `did.jsonl` drops the
@@ -1683,13 +1683,13 @@ two-server test runs on the filesystem backend only.
 
 ---
 
-### WAS-201: [L] (*) Replicate a Collection stored on a registered external backend
+### WSS-201: [L] (*) Replicate a Collection stored on a registered external backend
 
 - status: todo
 - priority: low
 - backend: *
 - labels: replication, backends
-- discovered-from: WAS-176 (2026-10-04)
+- discovered-from: WSS-176 (2026-10-04)
 - acceptance:
   - [ ] A pull loop applies the Resources of a Collection whose `backend` names
         a registered external backend through that backend's adapter
@@ -1706,13 +1706,13 @@ layer does (`fetchCollectionAndBackend`).
 
 ---
 
-### WAS-198: [L] (*) Keep peer did:webvh head records and fetch bounds across eviction and restart
+### WSS-198: [L] (*) Keep peer did:webvh head records and fetch bounds across eviction and restart
 
 - status: todo
 - priority: low
 - backend: *
 - labels: security, replication, webvh
-- discovered-from: WAS-175 (adversarial review, 2026-10-03; code review,
+- discovered-from: WSS-175 (adversarial review, 2026-10-03; code review,
   2026-10-03)
 - acceptance:
   - [ ] Head records live in their own store with their own limit, well above
@@ -1736,7 +1736,7 @@ Context: `src/lib/peerWebvh.ts` keeps heads and per-host counters in LRU caches
 bounded by `PEER_WEBVH_CACHE_MAX`. A Space owner with many hostnames can fill
 either cache and evict a legitimate peer's entry. A hijacked peer host could
 then serve an older log that still lists a retired key. The local resolver's
-head record is in memory too, and a registered peer (WAS-176) is the natural
+head record is in memory too, and a registered peer (WSS-176) is the natural
 place to persist one. The DNS lookup is shared with the CORS proxy, which has
 the same threadpool exposure.
 
@@ -1750,7 +1750,7 @@ and is the part to design first.
 
 ---
 
-### WAS-184: [L] (*) Write-time creation and revision statements
+### WSS-184: [L] (*) Write-time creation and revision statements
 
 - status: todo
 - priority: low
@@ -1762,7 +1762,7 @@ and is the part to design first.
   - storage-core: the statement types
   - space-archive: `provenance.jsonl` with several signers, one `did.jsonl`
     snapshot per signing origin
-  - was-teaching-server: `src/lib/provenanceStatement.ts`,
+  - web-spaces-server: `src/lib/provenanceStatement.ts`,
     `src/lib/exportProvenance.ts`, `src/lib/importProvenance.ts`, both backends'
     sidecar and row layouts, the change document or `/meta` projection that
     carries a stored statement to a puller
@@ -1780,7 +1780,7 @@ and is the part to design first.
         per signing origin
   - [ ] Import verifies each statement against its own signer's log and keeps
         `createdBy` only when a creation statement over it verifies; the
-        foreign-origin omission rule of WAS-165's successor becomes unnecessary
+        foreign-origin omission rule of WSS-165's successor becomes unnecessary
         and is removed
   - [ ] A chunked Resource's revision statement is minted at each parent write,
         over the parent's bytes and the chunk set as it stands at that write
@@ -1793,8 +1793,8 @@ and is the part to design first.
   - [ ] Tests cover both statements across a two-server replication and an
         export-import round trip from the replica
 
-Context (discovered-from: WAS-96, open point 11; promoted from the write
-receipts bullet of WAS-167). A replica exporting a record it did not create
+Context (discovered-from: WSS-96, open point 11; promoted from the write
+receipts bullet of WSS-167). A replica exporting a record it did not create
 cannot sign that record's `createdBy` without laundering the origin's claim into
 its own statement, so v1 omits the member from a foreign-origin statement and
 import strips it. A single per-revision statement cannot fix that, since the
@@ -1804,13 +1804,13 @@ with the record and `createdBy` stays verifiable by whoever actually verified
 the creating invocation. Signing costs one Ed25519 operation per write; the cost
 is in the storage, archive and import shapes.
 
-The chunked-Resource bullet follows the chunk replication design (WAS-14, design
+The chunked-Resource bullet follows the chunk replication design (WSS-14, design
 section 5.2): the finalizing parent write is the only server-visible event that
 says a chunk set is complete, so it is where the statement over the set is
 minted, and a replica mints its own only after the chunk pull that fetched the
 set.
 
-### WAS-221: [L] (*) Registration check under the data backend's lock for a Resource apply
+### WSS-221: [L] (*) Registration check under the data backend's lock for a Resource apply
 
 - status: todo
 - priority: low
@@ -1838,13 +1838,13 @@ contract rather than confined to the loop.
 
 ---
 
-### WAS-229: [L] (*) A pause stops an in-flight pull cycle at its next apply
+### WSS-229: [L] (*) A pause stops an in-flight pull cycle at its next apply
 
 - status: todo
 - priority: low
 - backend: *
 - labels: replication, registration
-- discovered-from: WAS-227 (2026-10-27)
+- discovered-from: WSS-227 (2026-10-27)
 - acceptance:
   - [ ] An apply made for a registration whose stored record carries `pausedAt`
         resolves without writing, as one for a removed registration does, so a
@@ -1872,7 +1872,7 @@ mechanism as the removal, with no cancellation state in the manager.
 
 Request cost on a path that already answers correctly.
 
-### WAS-196: [M] (*) Bound the cost of accumulated Collection tombstones
+### WSS-196: [M] (*) Bound the cost of accumulated Collection tombstones
 
 - status: todo
 - priority: medium
@@ -1897,7 +1897,7 @@ Request cost on a path that already answers correctly.
   - [ ] `?include=deleted` still lists every tombstone, and export still carries
         each one
 
-Context: a Collection tombstone is never reaped (WAS-13) and does not count
+Context: a Collection tombstone is never reaped (WSS-13) and does not count
 toward `maxCollectionsPerSpace`. A controller that creates and deletes
 Collections in a loop therefore leaves an unlimited number of tombstone
 directories in the Space. In the filesystem backend, `#collectionEntries` reads
@@ -1909,14 +1909,14 @@ tombstone the Space has ever made. Before tombstones, the Collection quota
 bounded the directory count and a listing was one `readdir`.
 
 Reaping is not the fix here. Replication keeps every tombstone until peers
-report their position (WAS-13), so the tombstones stay and the request cost has
+report their position (WSS-13), so the tombstones stay and the request cost has
 to stop depending on them. One option is a per-Space tombstone index (one file
 naming the tombstoned ids), so a live listing skips them without opening each
 Metadata file. Another is moving a tombstone out of the Collection directory
 namespace. The Postgres backend filters on the `deleted` column in SQL, so its
 per-request cost is an index question, but its row count grows the same way.
 
-### WAS-203: [M] (*) Skip a feed document the puller already holds before reading its body
+### WSS-203: [M] (*) Skip a feed document the puller already holds before reading its body
 
 - status: todo
 - priority: medium
@@ -1955,7 +1955,7 @@ The feed document already carries the record's stamp, so the decision needs no
 peer request. The local read is the sidecar on the filesystem backend and the
 stamp columns in Postgres.
 
-### WAS-212: [M] (*) Open a Resource's byte stream lazily so a conditional read costs one metadata read
+### WSS-212: [M] (*) Open a Resource's byte stream lazily so a conditional read costs one metadata read
 
 - status: todo
 - priority: medium
@@ -2001,7 +2001,7 @@ order (locate the file, read the sidecar, open), and simply stops opening. The
 decision stays in the request layer, where the header is parsed, and the backend
 interface learns nothing about `If-None-Match`.
 
-This item absorbs WAS-86 (filed 2026-09-03 from a signup request-pattern review,
+This item absorbs WSS-86 (filed 2026-09-03 from a signup request-pattern review,
 dropped 2026-10-05), which reached the same single read by passing the held
 validators into the backend and letting it resolve a not-modified result. That
 put the `If-None-Match` decision inside `StorageBackend`. The Postgres
@@ -2012,7 +2012,7 @@ deployment target for the wallet log workloads that motivated the 304 path.
 `StorageBackend` and `ResourceResult` are server-local types with no implementer
 outside this repo, so the shape change needs no cross-repo follow-up.
 
-### WAS-204: [L] (*) Stop re-applying a peer's Collection tombstones on every pull cycle
+### WSS-204: [L] (*) Stop re-applying a peer's Collection tombstones on every pull cycle
 
 - status: todo
 - priority: low
@@ -2034,7 +2034,7 @@ outside this repo, so the shape change needs no cross-repo follow-up.
 
 Context: the pull loop lists the peer Space under `?include=deleted` and calls
 `applyCollection` for each selected tombstone, every cycle. Tombstones are never
-reaped (WAS-13), so the count only grows. Each call answers `skipped` after the
+reaped (WSS-13), so the count only grows. Each call answers `skipped` after the
 first. On the filesystem backend the call runs on the exclusive side of the
 Space gate, which blocks every other write on the Space while it holds. On
 Postgres it opens a transaction and locks the `spaces` row. The cost per cycle
@@ -2043,10 +2043,10 @@ ever made.
 
 Two ways to decide without the lock: a read of the local Collection record
 before the call, or the stamps of the tombstones already applied kept in the
-registration's loop state. WAS-196 bounds what tombstones cost a request. This
+registration's loop state. WSS-196 bounds what tombstones cost a request. This
 item is the pull loop's share of the same growth.
 
-### WAS-199: [L] (*) Verify a peer invoker's delegation chain once
+### WSS-199: [L] (*) Verify a peer invoker's delegation chain once
 
 - status: todo
 - priority: low
@@ -2061,7 +2061,7 @@ item is the pull loop's share of the same growth.
   - http-signature-zcap-verify (`@interop/http-signature-zcap-verify`):
     `verifyCapabilityInvocation` passes that option through. Follow-up item not
     filed there yet
-  - was-teaching-server: `src/zcap.ts` (`peerInvokerGrant`, `verifyZcap`),
+  - web-spaces-server: `src/zcap.ts` (`peerInvokerGrant`, `verifyZcap`),
     ARCHITECTURE.md
 - acceptance:
   - [ ] `@interop/zcap` takes an already verified chain for the invoked
@@ -2083,7 +2083,7 @@ item is the pull loop's share of the same growth.
         (observable through a counter on `isRevoked`), and a header whose
         embedded capability differs from the pre-verified one is refused
 
-Context: a peer server DID may invoke a delegated capability on the WAS routes.
+Context: a peer server DID may invoke a delegated capability on the PWS routes.
 The HTTP-signature verifier resolves the signing key before it reads the
 capability, so `handleZcapVerify` runs a pre-pass first (`peerInvokerGrant`). It
 verifies the embedded delegation chain with local-only resolution, and only then
@@ -2104,7 +2104,7 @@ The library option must not weaken verification. It should carry the verified
 chain result itself, keyed to the capability it was computed for, and the
 invocation proof and the invoker-is-controller check still run in full.
 
-### WAS-77: [L] (fs) Per-Collection filename cache on the filesystem backend
+### WSS-77: [L] (fs) Per-Collection filename cache on the filesystem backend
 
 - status: todo
 - priority: low
@@ -2150,7 +2150,7 @@ plus a survey of the server's own `test/` suite. Suite-side items land in
 `@interop/was-conformance-suite` (tracked here per convention); the `test/`
 items are in-repo.
 
-### WAS-46: [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
+### WSS-46: [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
 
 - status: todo
 - priority: high
@@ -2172,7 +2172,7 @@ tests that only run when a backend advertises `hardQuota`/`exactUsage` then run
 against _no_ backend at all, since the filesystem harness sets both flags false
 -- the race-condition tests the flags exist for are dormant by default.
 
-### WAS-47: [M] (*) Cover `start.ts` and the untested config parsers
+### WSS-47: [M] (*) Cover `start.ts` and the untested config parsers
 
 - status: todo
 - priority: medium
@@ -2199,7 +2199,7 @@ the forks. Draft issue text below, ready to paste (trim the fork references if
 filing before the forks are published). The two issues reference each other as
 companions.
 
-### WAS-9: [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
+### WSS-9: [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 
 - status: todo
 - priority: medium
@@ -2240,7 +2240,7 @@ caller-supplied protected-header params"**
 > document id, key epoch, scheme version -- and detect ciphertext swapped
 > between addresses by verifying the parsed header after decrypt.
 
-### WAS-10: [M] (*) Open the upstream `edv-client` truncation issue
+### WSS-10: [M] (*) Open the upstream `edv-client` truncation issue
 
 - status: todo
 - priority: medium
@@ -2275,7 +2275,7 @@ caller-supplied protected-header params"**
 
 ---
 
-### WAS-103: [L] (*) Make `spacePath` / `collectionPath` return the canonical container URL by default
+### WSS-103: [L] (*) Make `spacePath` / `collectionPath` return the canonical container URL by default
 
 - status: todo
 - priority: low
@@ -2304,7 +2304,7 @@ no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
 sub-resource builders extend; about 9 external call sites use it, and each
 should move to the named base builder or a sub-resource builder.
 
-### WAS-168: [L] (*) `SERVER_URL` move runbook for the server DID log (portable domain move)
+### WSS-168: [L] (*) `SERVER_URL` move runbook for the server DID log (portable domain move)
 
 - status: todo
 - priority: low
@@ -2323,7 +2323,7 @@ should move to the named base builder or a sub-resource builder.
         and asserts `serverDid` is dropped from `/service` before the move entry
         lands and served again after it
 
-Split from WAS-164 on 2026-09-30 (discovered-from: WAS-164), so the mint,
+Split from WSS-164 on 2026-09-30 (discovered-from: WSS-164), so the mint,
 rotate, and restore runbooks can land without waiting on the domain-move
 command. The mechanism is the one the existing prose of that runbook describes:
 the DID string carries the host, so a log written for another host does not
@@ -2333,13 +2333,13 @@ with the same SCID. Not scheduled for implementation yet.
 
 ---
 
-### WAS-202: [L] (*) Pull-loop tests beyond the two-server filesystem case
+### WSS-202: [L] (*) Pull-loop tests beyond the two-server filesystem case
 
 - status: todo
 - priority: low
 - backend: *
 - labels: tests, replication
-- discovered-from: WAS-176 (2026-10-04)
+- discovered-from: WSS-176 (2026-10-04)
 - acceptance:
   - [ ] A two-server test pulls a governed Collection: the log fast-forwards on
         the replica, and a forked log stalls the Collection as `fork`
@@ -2359,13 +2359,13 @@ at all for the first two loop branches.
 
 ---
 
-### WAS-210: [L] (*) One function decides where a `did:webvh` resolves from
+### WSS-210: [L] (*) One function decides where a `did:webvh` resolves from
 
 - status: todo
 - priority: low
 - backend: *
 - labels: webvh, authorization, cleanup
-- discovered-from: review of the WAS-177 change (2026-10-04)
+- discovered-from: review of the WSS-177 change (2026-10-04)
 - acceptance:
   - [ ] One exported function answers, for a DID, whether it resolves from a
         stored log (and where), from the network, or not at all
@@ -2387,7 +2387,7 @@ because it restructures the authorization path.
 
 ---
 
-### WAS-215: [L] (fs) Replace the hand-rolled usage cache in the filesystem backend with `LruCache`
+### WSS-215: [L] (fs) Replace the hand-rolled usage cache in the filesystem backend with `LruCache`
 
 - status: todo
 - priority: low
@@ -2472,7 +2472,7 @@ section is ordered by id, not by dependency.
 
 <!-- roadmap-order: by-id -->
 
-### WAS-12: [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
+### WSS-12: [L] (*) Live `pull.stream$` SSE endpoint for the changes feed
 
 - status: todo
 - priority: low
@@ -2484,7 +2484,7 @@ section is ordered by id, not by dependency.
   - [ ] Filesystem backend implements it via poll-diffs; Postgres via
         `LISTEN/NOTIFY`
 
-### WAS-13: [L] (*) Tombstone GC / retention policy
+### WSS-13: [L] (*) Tombstone GC / retention policy
 
 - status: todo
 - priority: low
@@ -2495,16 +2495,16 @@ section is ordered by id, not by dependency.
         client
   - [ ] GC implemented per that policy (tombstones currently accumulate forever)
 
-Interlocks with WAS-15: how long a tombstone must outlive the slowest client is
+Interlocks with WSS-15: how long a tombstone must outlive the slowest client is
 really "how far back the newest checkpoint reaches".
 
-Under replication (WAS-96) a tombstone must also outlive the slowest peer: one
+Under replication (WSS-96) a tombstone must also outlive the slowest peer: one
 reaped before every peer has pulled past it resurrects on the next pull. The
 pull-only transport gives the serving server no view of what a peer has pulled,
-so v1 of replication never reaps (Collection tombstones included, WAS-174);
+so v1 of replication never reaps (Collection tombstones included, WSS-174);
 retention needs peers to report their position back, which this item designs.
 
-### WAS-15: [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
+### WSS-15: [L] (*) Client-produced snapshot/checkpoint entries in the changes feed
 
 - status: todo
 - priority: low
@@ -2524,9 +2524,9 @@ the changes feed that supersedes earlier entries. This is also the fix path for
 ciphertext rollback/freshness (a signed snapshot/manifest lets a reader detect a
 server serving stale state -- the gap Cryptomator leaves open after two audits,
 per the hardening notes) and the compaction tier the linear `changesSince` feed
-currently lacks. Interlocks with the tombstone-GC follow-on (WAS-13).
+currently lacks. Interlocks with the tombstone-GC follow-on (WSS-13).
 
-### WAS-16: [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
+### WSS-16: [L] (*) Opaque/blinded Resource ids + padded sizes (opt-in)
 
 - status: todo
 - priority: low
@@ -2549,7 +2549,7 @@ axis. Feeds the "server knowledge" spec section (ECS-4 in the Encrypted
 Collections spec roadmap): whatever stays visible should be listed there as a
 documented, deliberate residue.
 
-### WAS-18: [L] (*) Publish the StorageBackend port for npm-installable backends
+### WSS-18: [L] (*) Publish the StorageBackend port for npm-installable backends
 
 - status: todo
 - priority: low
@@ -2577,7 +2577,7 @@ the port; the in-repo `test/` suites, which already run against an injected
 backend, are the seed). Open scoping question: ship the three together or
 piecemeal.
 
-### WAS-19: [L] (*) SQLite backend
+### WSS-19: [L] (*) SQLite backend
 
 - status: todo
 - priority: low
@@ -2596,7 +2596,7 @@ LMDB is effectively superseded (port already proven twice, misaligned with the
 query roadmap, buffers blobs in RAM); FoundationDB stays a far-future hyperscale
 note.
 
-### WAS-20: [L] (*) Full-text / vector search query profiles
+### WSS-20: [L] (*) Full-text / vector search query profiles
 
 - status: todo
 - priority: low
@@ -2614,7 +2614,7 @@ interacts with the byte-exact vs. normalized-projection tension (the shipped
 profiles keep stored bytes exact and index write-time projections; search would
 ride the same path).
 
-### WAS-21: [L] (*) Composite adapter
+### WSS-21: [L] (*) Composite adapter
 
 - status: todo
 - priority: low
@@ -2632,7 +2632,7 @@ composition lives behind the port or above it. (Different axis from BYOS
 `managedBy: external`, which selects _whose_ storage a Collection lives on, not
 how the server's own backend is composed.)
 
-### WAS-22: [L] (*) External KEK custody behind `recordKekLoader`
+### WSS-22: [L] (*) External KEK custody behind `recordKekLoader`
 
 - status: todo
 - priority: low
@@ -2652,7 +2652,7 @@ step, worth doing before any adapter exists: widen the loader's return type,
 since an external custodian needs an async loader (network fetch, with caching
 and a negative-cache policy for retired KEKs).
 
-### WAS-23: [L] (*) Sub-path-mounted `SERVER_URL` drops its base path in built URLs
+### WSS-23: [L] (*) Sub-path-mounted `SERVER_URL` drops its base path in built URLs
 
 - status: todo
 - priority: low
@@ -2679,7 +2679,7 @@ fixture. Because it touches the ZCap match path, treat it as its own change.
 This is the server side of the same defect `was-client` fixed in its 2026-07
 refactor (its finding #12).
 
-### WAS-24: [L] (*) Server-enforced JSON Schema per Collection
+### WSS-24: [L] (*) Server-enforced JSON Schema per Collection
 
 - status: todo
 - priority: low
@@ -2700,7 +2700,7 @@ post-authorization write path, plaintext-JSON-only, mutually exclusive with
 `encryption` for the same reason. Worth speccing as its own registry or
 Collection-property section.
 
-### WAS-25: [L] (*) Equality-index extensions
+### WSS-25: [L] (*) Equality-index extensions
 
 - status: todo
 - priority: low
@@ -2711,7 +2711,7 @@ Collection-property section.
         `{ "names": ["parentId", "author"],     "unique": true }`) with zero
         changes to the query wire shape
   - [ ] `custom`-only indexes permitted on `encryption`-marked Collections, with
-        a pointed privacy warning (superseded as written, see WAS-63: the spec's
+        a pointed privacy warning (superseded as written, see WSS-63: the spec's
         `plaintext`/`encryption` exclusion is presence-based and an encrypted
         Collection's `custom` metadata is itself an envelope)
   - [ ] Path-valued index names (JSON Pointer) for nested attributes
@@ -2724,7 +2724,7 @@ encrypted photos, since `custom` metadata is server-visible plaintext
 regardless; (c) _path-valued index names_ -- extending the `name` grammar to
 JSON Pointer for nested attributes.
 
-### WAS-36: [L] (*) Server-signed changes-feed checkpoints (split-view detection)
+### WSS-36: [L] (*) Server-signed changes-feed checkpoints (split-view detection)
 
 - status: todo
 - priority: low
@@ -2733,26 +2733,26 @@ JSON Pointer for nested attributes.
 - acceptance:
   - [ ] The server signs feed checkpoints ("as of feed version N, the head hash
         is X") with its server DID key, reusing the canonical serialization
-        WAS-165 defines and referencing the DID log `versionId`
+        WSS-165 defines and referencing the DID log `versionId`
   - [ ] The signed checkpoint is available to sync clients (in `changesSince`
-        responses and, once WAS-12 lands, SSE checkpoint batches)
+        responses and, once WSS-12 lands, SSE checkpoint batches)
   - [ ] Two clients comparing signed checkpoints for the same feed version can
         detect a split view (the server showing different histories to different
         clients); the comparison procedure is documented
 
-Raised 2026-07-22 during the WAS-7 server-DID design discussion
-(discovered-from: WAS-7). TLS authenticates what a client reads live, so a
+Raised 2026-07-22 during the WSS-7 server-DID design discussion
+(discovered-from: WSS-7). TLS authenticates what a client reads live, so a
 server signature only adds value where the statement outlives the connection --
 and a feed checkpoint is exactly that: a claim two clients can later _compare_.
 Without signatures, a malicious or compromised server can serve different
 histories to different sync clients (equivocation) undetectably; with them, any
 two clients (or a client and an auditor) holding checkpoints for the same feed
-version can catch the fork. Complements WAS-15, which covers the _client_-signed
+version can catch the fork. Complements WSS-15, which covers the _client_-signed
 direction (a reader detecting a server serving stale ciphertext); this item is
-the server-attested direction. Interlocks with WAS-12 (the SSE `checkpoint`
+the server-attested direction. Interlocks with WSS-12 (the SSE `checkpoint`
 batch is a natural carrier).
 
-### WAS-179: [L] (*) Read-only replica switch
+### WSS-179: [L] (*) Read-only replica switch
 
 - status: todo
 - priority: low
@@ -2764,7 +2764,7 @@ batch is a natural carrier).
         registration management
   - [ ] Refused writes answer a problem type pending sign-off
 
-Context (discovered-from: WAS-96, decision 6). A backup-only replica is still
+Context (discovered-from: WSS-96, decision 6). A backup-only replica is still
 writable by any grant the controller delegates on it, and such a write never
 reaches the source. For v1 the controller manages this by not delegating write
 grants on the replica; this item enforces it.
@@ -2774,7 +2774,7 @@ grants on the replica; this item enforces it.
 Every `draft` item: no actionable done-state yet. A draft states why it is
 parked and gains acceptance criteria when promoted to `todo`.
 
-### WAS-241: [L] (*) [after WASS-63] Serve a tail of a Collection's history log
+### WSS-241: [L] (*) [after WASS-63] Serve a tail of a Collection's history log
 
 - status: draft (spec-blocked)
 - priority: low
@@ -2792,7 +2792,7 @@ size. Once the spec defines a tail read, the handler serves the entries after a
 named `versionId` (with the Collection's log validator, so the client's append
 compare-and-swap still holds) and the whole log when none is named.
 
-### WAS-11: [L] (*) Space-level `/query`
+### WSS-11: [L] (*) Space-level `/query`
 
 - status: draft (spec-blocked)
 - priority: low
@@ -2812,7 +2812,7 @@ MVP -- tombstones, `changesSince`, the `changes` query profile, and the
 freewallet browser adapter -- all shipped; the wire contract is normative in the
 spec's Query Profile Registry appendix + Conditional Requests section).
 
-### WAS-17: [L] (*) BYOS beyond My-Drive OAuth
+### WSS-17: [L] (*) BYOS beyond My-Drive OAuth
 
 - status: draft (parking record)
 - priority: low
@@ -2824,7 +2824,7 @@ spec's Query Profile Registry appendix + Conditional Requests section).
 Deferred alternatives from the Google Drive BYOS plan: (a) _Shared Drive
 support_ -- deliberately deferred; org-owned storage undercuts the BYOS trust
 model (admin can delete/transfer/lock, and org members with drive access can
-read plaintext bytes directly, bypassing WAS zcaps), and the API surface changes
+read plaintext bytes directly, bypassing PWS zcaps), and the API surface changes
 (`supportsAllDrives`, `corpora=drive`, per-file `capabilities`); revisit only on
 demand. (b) _Service account with domain-wide delegation_ -- an admin-driven
 registration flow for org rollouts, replacing per-user OAuth. (c) _Other
@@ -2832,7 +2832,7 @@ providers_ -- the `provider`-keyed adapter + OAuth registration generalizes to
 Dropbox / OneDrive / S3-compatible; Google Drive is the first concrete
 `external` provider, not a special case.
 
-### WAS-69: [L] (*) Drop `Ed25519Signature2020` from the delegation-proof verify side
+### WSS-69: [L] (*) Drop `Ed25519Signature2020` from the delegation-proof verify side
 
 - status: draft
 - priority: low
@@ -2861,21 +2861,21 @@ Promote this to `todo` when both hold, with acceptance criteria naming how each
 was confirmed. Until then the cost of carrying the old suite is one extra suite
 instance per verification, which only ever matches proofs of its own type.
 
-### WAS-167: [L] (*) Further uses of the server identity (write receipts, epoch attestation, delegatee, signed manifest)
+### WSS-167: [L] (*) Further uses of the server identity (write receipts, epoch attestation, delegatee, signed manifest)
 
 - status: draft
 - priority: low
 - backend: *
 - labels: someday, security
 
-Parking record split from WAS-7 (archived) on 2026-09-29, so the option value of
+Parking record split from WSS-7 (archived) on 2026-09-29, so the option value of
 the server identity is not lost. It is a draft because none of these has a
 consumer asking for it yet; each is promoted to its own item when one does. The
 razor: TLS already authenticates live reads, so a server signature earns its
 keep only where the statement outlives the connection, is stored for later,
 shown to a third party, or compared between parties.
 
-- **Write receipts** (the stored half is now WAS-184): the WAS-165 statement
+- **Write receipts** (the stored half is now WSS-184): the WSS-165 statement
   minted at write time and returned to the writer, not stored; the
   signing-time-agnostic envelope keeps the signatures bit-compatible. For a
   chunked Resource the full-content digest exists only once the last chunk
@@ -2888,21 +2888,21 @@ shown to a third party, or compared between parties.
   replication, migration). Needs a `capabilityInvocation` method on the server
   DID, which the current design deliberately withholds; adding one is an admin
   log entry plus a review of the client-annex clause consequences recorded in
-  WAS-7.
+  WSS-7.
 - **Signed export manifest**: a whole-archive receipt over the manifest's
-  content digests, the completeness complement to WAS-165's per-object
+  content digests, the completeness complement to WSS-165's per-object
   statements, which cannot detect an omitted object.
 
-Signed changes-feed checkpoints already have their own item, WAS-36.
+Signed changes-feed checkpoints already have their own item, WSS-36.
 
-### WAS-185: [L] (*) Several server processes over one store (HLC and origin id)
+### WSS-185: [L] (*) Several server processes over one store (HLC and origin id)
 
 - status: draft
 - priority: low
 - backend: *
 - labels: someday, replication, filesystem-backend, postgres-backend
 
-Parking record (discovered-from: WAS-96, open point 12). v1 requires one server
+Parking record (discovered-from: WSS-96, open point 12). v1 requires one server
 process per store: the hybrid logical clock is in memory, so two processes
 sharing one origin id can mint identical `(ms, 0, originId)` stamps for two
 successive writes to one record, giving different bytes the same strong

@@ -17,7 +17,7 @@ import type { KeystoreConfig } from '../types.js'
 
 /**
  * Loads a keystore config by its URL param, masking an unknown (or
- * non-URL-safe) id as the 404 `KeystoreNotFoundError` -- the WAS
+ * non-URL-safe) id as the 404 `KeystoreNotFoundError` -- the PWS
  * existence-masking convention. The verification-free half of
  * `fetchKeystoreAndVerify`, for handlers that need the config before they can
  * build their expected values (the revocation route).
@@ -51,7 +51,7 @@ export async function fetchKeystore({
 
 /**
  * Loads the keystore config (404 `KeystoreNotFoundError` when absent -- the
- * WAS existence-masking convention) and verifies the capability invocation
+ * PWS existence-masking convention) and verifies the capability invocation
  * against the *stored* config's controller, with the keystore URL as the root
  * invocation target. `allowedAction` is the webkms action (`read` / `write` /
  * an operation name), not the HTTP verb. The verification carries the unified

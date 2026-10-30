@@ -18,7 +18,7 @@ import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import { attestArchiveEntries } from '../src/lib/exportProvenance.js'
 import type { ExportAttestor } from '../src/lib/exportProvenance.js'
 
-const serverUrl = 'https://was.example'
+const serverUrl = 'https://pws.example'
 const spaceId = 'space-1'
 const collectionId = 'notes'
 
@@ -50,7 +50,7 @@ describe('attestArchiveEntries', () => {
   let attestor: ExportAttestor
 
   beforeAll(async () => {
-    const serverDid = 'did:webvh:scid:was.example:space:server:id'
+    const serverDid = 'did:webvh:scid:pws.example:space:server:id'
     const generated = await Ed25519VerificationKey.generate()
     attestor = {
       serverUrl,

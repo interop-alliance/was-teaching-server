@@ -2,7 +2,7 @@
  * ZCap verification: handleZcapVerify() checks the capability-invocation
  * signature against the Space controller's Ed25519 key, synthesizing the root
  * capability via the document loader. Also home to the zcap *revocation*
- * verification pair, shared by the `/kms` and WAS route families:
+ * verification pair, shared by the `/kms` and PWS route families:
  * verifyRevocationChain() validates a to-be-revoked capability's delegation
  * chain, and handleRevocationInvocationVerify() authorizes the submission
  * under the dual-root rule (the scope's root -- a keystore or a Space -- or
@@ -25,7 +25,7 @@
  *
  * A foreign `did:webvh` with no stored log -- a peer server's own DID, or a
  * service's or agent's DID on any host, under any path -- is resolved over
- * the network, as the invoker of a delegated capability on the WAS routes.
+ * the network, as the invoker of a delegated capability on the PWS routes.
  * The HTTP-signature verifier resolves the invoker's key before it reads the
  * capability, so `handleZcapVerify` first verifies the embedded delegation
  * chain without that key ({@link peerInvokerGrant}). Only a chain that
@@ -185,7 +185,7 @@ export const ROOT_PREFIX = 'urn:zcap:root:'
 
 /**
  * The root capability id convention: `urn:zcap:root:` + the url-encoded
- * invocation target (shared by WAS and webkms).
+ * invocation target (shared by PWS and webkms).
  * @param target {string}   the root invocation target (full URL)
  * @returns {string}
  */
@@ -734,7 +734,7 @@ export function verifiedInvocation({
  *   `did:webvh` with no stored log invoke a delegated capability here: when
  *   the request is signed by one, its delegation chain is verified first
  *   ({@link peerInvokerGrant}), and only a chain that verifies lets this
- *   resolver fetch the DID's log. Passed by the WAS route families; requires
+ *   resolver fetch the DID's log. Passed by the PWS route families; requires
  *   `webvh`.
  * @returns {Promise<VerifyCapabilityInvocationResult>}   the successful
  *   verification result (callers needing the dereferenced chain, e.g. the
@@ -796,7 +796,7 @@ export async function handleZcapVerify({
   }
   // The other two rules compare the tail's target against the Space URL; the
   // `controller-only` rule reads no target, so it also serves a container
-  // outside the WAS route family (a `/kms` keystore).
+  // outside the PWS route family (a `/kms` keystore).
   if (
     containerRule &&
     containerRule !== 'controller-only' &&
@@ -898,7 +898,7 @@ export async function handleZcapVerify({
  * `did:webvh` resolver context (the control plane, the backend set and the
  * base URL) are all read off `request`. The network resolver for a foreign
  * `did:webvh` invoker is an opt-in: set `peerWebvh` to hand it
- * `request.server.peerWebvh`, which only the WAS route families do.
+ * `request.server.peerWebvh`, which only the PWS route families do.
  *
  * @param options {object}
  * @param options.request {FastifyRequest}   the request being authorized
@@ -1438,7 +1438,7 @@ async function peerInvokerGrant({
  *   `allowedTarget` root (the webkms authorization model, which roots the
  *   invocation target at the keystore id).
  * @param [options.attenuatedRootTarget] {string}   when set, an *ancestor*
- *   invocation target (the Space URL for the WAS route families) whose root
+ *   invocation target (the Space URL for the PWS route families) whose root
  *   capability is accepted -- in addition to `allowedTarget`'s own -- as the
  *   root of the invocation. This is what lets a controller delegate one
  *   capability for a whole Space (or a Collection under it, by attenuating
@@ -1773,7 +1773,7 @@ export async function verifyRevocationChain({
  * @param options.chainControllers {string[]}   every controller in the
  *   to-be-revoked capability's (already verified) chain
  * @param options.expectedAction {string}   the action the invocation must
- *   carry: the webkms `write` on `/kms`, the HTTP verb (`POST`) on the WAS
+ *   carry: the webkms `write` on `/kms`, the HTTP verb (`POST`) on the PWS
  *   route families, whose capabilities are scoped by HTTP method
  * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   the
  *   revocation-store hook, run against the *invoking* chain

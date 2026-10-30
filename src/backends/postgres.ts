@@ -7697,7 +7697,7 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Merges a WAS space-export tarball into an existing Space with the same
+   * Merges a PWS space-export tarball into an existing Space with the same
    * three-invariant pre-flight (per-entry 413, fail-closed 422 encryption
    * conformance, cumulative 507) and skip-not-overwrite merge semantics as
    * the filesystem backend -- including tombstone carry-over and "a tombstone

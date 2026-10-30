@@ -1,9 +1,9 @@
 # Architecture
 
-How a request flows through the Wallet Attached Storage (WAS) reference server,
-the domain model, and the ZCap authorization structure. For contribution
-conventions see [CONTRIBUTING.md](CONTRIBUTING.md); for agent-facing rules
-(tests, logging, endpoint recipes) see [AGENTS.md](AGENTS.md).
+How a request flows through the Portable Web Spaces (PWS) reference server, the
+domain model, and the ZCap authorization structure. For contribution conventions
+see [CONTRIBUTING.md](CONTRIBUTING.md); for agent-facing rules (tests, logging,
+endpoint recipes) see [AGENTS.md](AGENTS.md).
 
 This file is the map. Each module entry below summarizes what the module does
 and names the topic doc under [docs/](docs/README.md) that holds the full
@@ -97,7 +97,7 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   [ZCap Structure](#zcap-structure).
 - **`src/lib/hostedPageSandbox.ts`** -- an `onSend` hook every route group
   installs (`installGroupHooks`) stamps `Content-Security-Policy: sandbox ...`
-  on every response in the WAS and `/kms` groups, 304s, redirects and errors
+  on every response in the PWS and `/kms` groups, 304s, redirects and errors
   included, except a response whose `content-type` is `application/pdf`. A
   stored HTML page then runs with an opaque origin and cannot read the storage
   of the origin serving it. The policy leaves out `allow-same-origin` and
@@ -268,7 +268,7 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 - **`src/errors.ts`** -- custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** -- the ephemeral exchanges facet
-  (`/workflows/ephemeral/exchanges`), a self-contained sibling of the WAS route
+  (`/workflows/ephemeral/exchanges`), a self-contained sibling of the PWS route
   groups: a transient rendezvous for cross-device flows (a desktop page mints an
   exchange, a phone scans its QR, and posts the answer back). It installs none
   of the auth/digest hooks and is unauthenticated by design, a capability URL
@@ -455,7 +455,7 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
   authorizes. Must exactly match the server's `serverUrl`-derived URL.
 - **Root capability** -- `urn:zcap:root:<url-encoded target>`, whose controller
   is the Space controller. Synthesized by the document loader in `zcap.ts`. For
-  the WAS route family, `target` is the Space's canonical trailing-slash URL
+  the PWS route family, `target` is the Space's canonical trailing-slash URL
   (`spaceRootTarget` in `requests/spaceContext.ts`), the same URL a delegated
   chain attenuates from.
 - **`did:key`** -- the default DID method here; keys are Ed25519
@@ -502,7 +502,7 @@ chain, which the verifier walks down to.
 
 The `allowTargetQuery` option of `verifyZcap`, set on the paginated listings and
 the other reads that carry a query, bounds the accepted root set only. It adds
-the query-bearing request URL's own root capability to that set. Every WAS route
+the query-bearing request URL's own root capability to that set. Every PWS route
 passes the Space's root as an accepted ancestor root, so on those routes the
 request URL, query included, is always an accepted invocation target.
 
@@ -515,7 +515,7 @@ ignores the flag and lists live Collections only.
 `did:webvh` resolver, whatever the scope's own controller is: route invocations,
 both halves of a revocation submission, create consent, and List Spaces. It
 refuses any DID this server holds no log for, with one bounded exception: a
-foreign `did:webvh` may invoke a delegated capability on the WAS routes, and its
+foreign `did:webvh` may invoke a delegated capability on the PWS routes, and its
 log is fetched only after a local-only pre-pass verified the chain
 (`peerInvokerGrant`). Full rules in
 [docs/webvh-controllers.md](docs/webvh-controllers.md).

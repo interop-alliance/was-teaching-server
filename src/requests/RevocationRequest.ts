@@ -5,8 +5,8 @@
  *
  * Both share one submission flow (`submitRevocation`), differing only in the
  * scope the revocation aggregates under -- a keystore or a Space -- the action
- * the invocation must carry (the webkms `write` vs the WAS route families'
- * HTTP verb), and the `/kms` delegation policy the WAS families do not impose.
+ * the invocation must carry (the webkms `write` vs the PWS route families'
+ * HTTP verb), and the `/kms` delegation policy the PWS families do not impose.
  *
  * The wire contract is protocol-fixed by ezcap-express's
  * `authorizeZcapRevocation` / `@interop/webkms-client` (the conformance
@@ -157,7 +157,7 @@ async function validateSubmittedCapability({
  *   roots)
  * @param options.rootController {IDID}   the scope's controller
  * @param options.expectedAction {string}   the action the invocation must
- *   carry (`write` on `/kms`, `POST` on the WAS route families)
+ *   carry (`write` on `/kms`, `POST` on the PWS route families)
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
  * @param [options.maxChainLength] {number}   max chain length, root included
@@ -316,8 +316,8 @@ export class RevocationRequest {
    * is rejected from then on wherever a Space-rooted chain is verified: the
    * write/privileged routes (`fetchSpaceAndVerify`) and the capability leg of
    * the read routes (`authorize`). The invoked action is the HTTP verb, since
-   * WAS capabilities are scoped by HTTP method. No delegation-policy caps
-   * apply, matching the rest of the WAS route families.
+   * PWS capabilities are scoped by HTTP method. No delegation-policy caps
+   * apply, matching the rest of the PWS route families.
    *
    * Responds 204, no body; a concurrent duplicate insert is the 409
    * `DuplicateRevocationError`.

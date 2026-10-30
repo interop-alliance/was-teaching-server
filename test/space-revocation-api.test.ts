@@ -736,7 +736,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('registers no other POST at Resource sub-resource depth', () => {
-      // The claim the comment rests on: nothing real is shadowed, because WAS
+      // The claim the comment rests on: nothing real is shadowed, because PWS
       // has no POST there. The only POST handler at that depth is the 405
       // `refuseUnimplementedMethods` synthesizes, which this route takes over
       // for the `zcaps`/`revocations` id pair alone.

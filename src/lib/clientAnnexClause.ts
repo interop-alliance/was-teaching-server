@@ -22,7 +22,7 @@
  *    under that URL, except the Space Metadata URL `/space/<S>/meta` and
  *    anything under it; the no-slash Space URL and any keystore target are
  *    refused. Its `allowedAction` is present, non-empty, and within the closed
- *    WAS verb vocabulary.
+ *    PWS verb vocabulary.
  * 2. Bridge-shaped target, two branches: the delegation's `invocationTarget`
  *    equals the delegator account's own history log resource URL -- derived
  *    from the account DID itself, which carries its log's Space and Collection
@@ -198,7 +198,7 @@
  * any other failed verification (a world-readable read still serves). The
  * clause is fail-open across servers -- one running unmodified verification
  * accepts what this refuses -- so a wallet publishes a ladder VM only on a host
- * it assumes enforces the client-annex profile. WAS defines no venue at the
+ * it assumes enforces the client-annex profile. PWS defines no venue at the
  * authorization-profile layer for a server to advertise the clause, so the
  * wallet's assumption is unverified today; a migration path would need one.
  */
@@ -236,7 +236,7 @@ import { absoluteUrl, resourcePath, spaceMetaPath, spacePath } from './paths.js'
 const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
 
 /**
- * The closed set of actions the WAS routes recognize. It is the whole
+ * The closed set of actions the PWS routes recognize. It is the whole
  * vocabulary, not a chosen subset: predicate 1 uses it to refuse an absent or
  * open `allowedAction` and any action outside the protocol, while the target
  * bound does the narrowing.
@@ -687,7 +687,7 @@ async function ladderDelegationAdmitted({
   // is what keeps them out of ladder reach.
   //
   // Bound three -- the action. `allowedAction` must be present, non-empty, and
-  // drawn from the full closed WAS verb vocabulary. The full set is admitted
+  // drawn from the full closed PWS verb vocabulary. The full set is admitted
   // rather than a narrower one: the generation delegation (app-connect-spec
   // decision 0002) carries exactly that vocabulary, and a child capability may
   // not exceed its parent, so any verb left out here would hold every
@@ -865,7 +865,7 @@ function spaceOperationOf({
  * below a ladder-signed link can narrow itself INTO the target-exact
  * DELETE-only shape, and a tail-only check would read that narrowing as the
  * predicate 3 grant it is not. Concretely: a ladder VM signs a predicate 1
- * whole-subtree grant (target `/space/<S>/`, the full WAS verb vocabulary) to
+ * whole-subtree grant (target `/space/<S>/`, the full PWS verb vocabulary) to
  * the annex DID; the annex verification method publishes under
  * `capabilityInvocation` beside `capabilityDelegation` (wallet-core decision
  * 0013), so it is not itself a ladder VM and may mint onward grants; it mints

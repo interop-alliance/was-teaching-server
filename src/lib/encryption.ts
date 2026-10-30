@@ -24,7 +24,7 @@ import { bareMediaType } from './mediaType.js'
  * The encryption schemes this server recognizes and can enforce on write (spec
  * "Encryption Scheme Registry"). Each entry pins the scheme token to its
  * required stored-representation media type and the structural validator for its
- * envelope profile. v1 has exactly one entry: `edv` (EDV-over-WAS), an EDV
+ * envelope profile. v1 has exactly one entry: `edv` (EDV-over-PWS), an EDV
  * **Encrypted Document** (a JSON object whose `jwe` member is a JWE in JSON
  * serialization) carried as `application/json` -- matching what the EDV codec
  * actually stores and how a native EDV server serves an Encrypted Document.

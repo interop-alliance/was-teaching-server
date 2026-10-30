@@ -14,7 +14,7 @@
   normative home is app-connect-spec `decisions/0003` (clause A) and the
   companion-profile text it governs, amended in step. The replica pointer's
   service entry type is app-connect-spec `decisions/0001`'s, and the replication
-  side is wallet-attached-storage-spec decision 0013's. wallet-core and the
+  side is portable-web-spaces-spec decision 0013's. wallet-core and the
   wallets mint the shapes the clause admits.
 
 ## Context
@@ -45,7 +45,7 @@ ladder-signed delegation is admitted iff one of six predicates holds:
 1. Annex-DID controller inside the account Space's items subtree: the sole
    `controller` is the annex DID the account document's `DelegatedClients` entry
    names, the target lies under the account Space's URL outside `/meta`, and the
-   actions lie within the closed WAS verb set.
+   actions lie within the closed PWS verb set.
 2. Bridge-shaped target: the delegator's own history log with actions within
    {PUT}, or a whole Space typed `AuxiliarySpace` and `DelegatedClientsSpace`
    with actions within {GET, PUT, POST}.
@@ -73,7 +73,7 @@ no grantee bound. A delegated POST there may only name a `fromSpace` a
 registration on that Space already names.
 
 The sixth predicate's targets and the replicas URL also match their `*` subtree
-form under the WAS spec's explicit subtree scope.
+form under the PWS spec's explicit subtree scope.
 
 Two invocation-time bounds sit on top of the predicates. A chain with a
 ladder-signed link is refused as a PUT on a Space Metadata URL, and as a DELETE

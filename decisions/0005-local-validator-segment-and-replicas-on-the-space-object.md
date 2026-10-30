@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-10-02
 - Driving work: the multi-primary Spaces design
-  (`designs/WAS-96-multi-primary-spaces.md`, approved 2026-10-02). The design
+  (`designs/WSS-96-multi-primary-spaces.md`, approved 2026-10-02). The design
   makes the origin stamp the validator of every record, and a container Metadata
   object's served representation moves on changes that are not writes, so the
   stamp alone could not be its validator.

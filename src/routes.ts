@@ -16,7 +16,7 @@
  * has no public reads -- and no slash redirects, since the protocol's URLs
  * are exact. Its 405 refusals are the same as every other group's.)
  *
- * A method a WAS URL does not implement is refused with a 405
+ * A method a PWS URL does not implement is refused with a 405
  * (`refuseUnimplementedMethods`), and a path beneath a reserved segment that
  * no route serves is not found (`refusePathsBeneath`). Both, like the slash
  * redirects, are marked `config.noAuth`: they answer the same whoever asks,
@@ -348,7 +348,7 @@ function methodNotAllowed(
 }
 
 /**
- * The methods a WAS container URL (a Space or a Collection) accepts: list its
+ * The methods a PWS container URL (a Space or a Collection) accepts: list its
  * members, add one, delete the container.
  */
 const CONTAINER_METHODS: HTTPMethods[] = ['GET', 'HEAD', 'POST', 'DELETE']
@@ -596,7 +596,7 @@ export async function initSpacesRepositoryRoutes(
   const urls = collectRouteUrls(app)
 
   // The repository container: canonically `/spaces/`; the bare form redirects
-  // there for every WAS method (see the Space container's note on OPTIONS).
+  // there for every PWS method (see the Space container's note on OPTIONS).
   app.route({
     method: CONTAINER_REDIRECT_METHODS,
     url: '/spaces',
@@ -639,7 +639,7 @@ export async function initSpaceRoutes(
   const urls = collectRouteUrls(app)
 
   // The Space container: canonically `/space/:spaceId/`; the bare form
-  // redirects there for every WAS method (a 308 replays the method and body).
+  // redirects there for every PWS method (a 308 replays the method and body).
   // Listed explicitly rather than `app.all`, which would also claim OPTIONS
   // and shadow the CORS plugin's preflight route with a redirect a browser
   // will not follow.
@@ -788,7 +788,7 @@ export async function initCollectionRoutes(
   const urls = collectRouteUrls(app)
 
   // The Collection container: canonically `/space/:spaceId/:collectionId/`;
-  // the bare form redirects there for every WAS method (see the Space
+  // the bare form redirects there for every PWS method (see the Space
   // container's note on OPTIONS).
   app.route({
     method: CONTAINER_REDIRECT_METHODS,
@@ -837,7 +837,7 @@ export async function initCollectionRoutes(
   app.get('/space/:spaceId/:collectionId/quota', CollectionRequest.getQuota)
 
   // Collection query (reserved segment; spec "Collection-level reserved
-  // endpoints"). The WAS server serves the replication change feed as the
+  // endpoints"). The PWS server serves the replication change feed as the
   // `changes` profile; params ride the signed
   // POST body. Static-beats-parametric routing keeps this ahead of the
   // `:resourceId` parameter in Resource routes.
@@ -886,7 +886,7 @@ export async function initResourceRoutes(
   const urls = collectRouteUrls(app)
 
   // A Resource URL carries no trailing slash; the slash form redirects to it
-  // for every WAS method (see the Space container's note on OPTIONS).
+  // for every PWS method (see the Space container's note on OPTIONS).
   app.route({
     method: STRIP_SLASH_METHODS,
     url: '/space/:spaceId/:collectionId/:resourceId/',
@@ -946,7 +946,7 @@ export async function initResourceRoutes(
       JSON_MEDIA_TYPE
     ])
     // A chunk URL carries no trailing slash either; the slash form redirects
-    // to it for every WAS method.
+    // to it for every PWS method.
     chunkWrites.route({
       method: STRIP_SLASH_METHODS,
       url: '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex/',
@@ -997,7 +997,7 @@ export async function initResourceRoutes(
 
 /**
  * Registers the WebKMS keystore and key routes (the `/kms` facet).
- * Installs the same hook chain as the WAS groups
+ * Installs the same hook chain as the PWS groups
  * except that the auth requirement is the strict `requireAuthHeaders`: every
  * webkms route, GETs included, is zcap-invoked -- the protocol has no public
  * reads. No slash-redirect variants either; the protocol's URLs are exact --

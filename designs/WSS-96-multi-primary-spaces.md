@@ -1,10 +1,10 @@
-# WAS-96: Multi-primary Spaces (design)
+# WSS-96: Multi-primary Spaces (design)
 
-- item: WAS-96
+- item: WSS-96
 - status: approved
 - approved: 2026-10-02
 - wire-level decisions contained: listed in section 5 under "Wire-level
-  decisions", all signed off; the read-only-switch problem type is WAS-179's
+  decisions", all signed off; the read-only-switch problem type is WSS-179's
 - decision records extracted: contract-binding, in portable-web-spaces-spec's
   decisions: 0009 (origin-stamped write identity), 0010 (the stamp validator and
   the local container segment), 0011 (Collection tombstones, delete wins), 0012
@@ -43,8 +43,8 @@ The design settles six decisions:
    resolution from a replicated log.
 
 Out of scope: `keep-conflicts` and stale-`If-Match`-as-sibling (reserved); chunk
-replication (WAS-14, designed separately); tombstone retention (WAS-13);
-server-signed checkpoints (WAS-36); a read-only replica switch (WAS-179);
+replication (WSS-14, designed separately); tombstone retention (WSS-13);
+server-signed checkpoints (WSS-36); a read-only replica switch (WSS-179);
 host-independent (DID-relative) capability targets, future spec work; a
 reader-safety watermark, which only matters if per-Collection write
 serialization is ever relaxed.
@@ -83,7 +83,7 @@ How the design meets each invariant it touches.
    on sync signing; the other relationships stay refused.
 8. Network resolution of a foreign `did:webvh` is refused. Changed in one
    bounded form: a foreign DID with no stored log may invoke a delegated
-   capability on the WAS routes, fetched only after a local-only pre-pass
+   capability on the PWS routes, fetched only after a local-only pre-pass
    verified the chain, under host, size, rate and cache bounds (section 5.10).
 9. The container rule. Upheld, and the `replicas` sub-resource is
    controller-only for every method, reads included, since the record holds a
@@ -589,7 +589,7 @@ controller log buys.
 12. The feed document's `kind` set, `contentType`, `generation`, URL `id` on the
     non-Resource kinds, and `deleted` in place of `_deleted`.
 13. The provenance statement's stamp claims and the `createdBy` omission for a
-    foreign origin (transitional; WAS-184's write-time creation statement is the
+    foreign origin (transitional; WSS-184's write-time creation statement is the
     lasting answer).
 14. The checkpoint embeds the Collection feed generation; a mismatch stays
     `invalid-request-body` (400).
@@ -693,17 +693,17 @@ and `pnpm conformance:local`.
 
 ## 8. Left to other items
 
-- Chunk replication: WAS-14, designed and shipped separately.
-- Tombstone retention, which needs peers to report their position back: WAS-13.
+- Chunk replication: WSS-14, designed and shipped separately.
+- Tombstone retention, which needs peers to report their position back: WSS-13.
 - Whether `keep-conflicts` accepts a stale `If-Match` write as a sibling on a
   single server: the item that promotes `keep-conflicts`.
 - Pull cadence and an unauthenticated "changes available" nudge: interval first.
-- The multi-process store: WAS-185.
+- The multi-process store: WSS-185.
 - The write-time creation statement that replaces the `createdBy` omission:
-  WAS-184.
+  WSS-184.
 - wallet-core's account on more than one host (the chain-head pin keyed by Space
   id, the single `host` in the account pointer, the DID-derived host in the
   annex log), and the per-replica re-mint of every grant in section 5.12: a
   wallet-core item.
 - Delete Space's ordering tear between revocations and the Space directory:
-  WAS-180.
+  WSS-180.

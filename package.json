@@ -1,6 +1,6 @@
 {
-  "name": "was-teaching-server",
-  "description": "A basic Wallet Attached Storage server used to demonstrate the WAS specification.",
+  "name": "@interop/web-spaces-server",
+  "description": "A reference Portable Web Spaces (PWS) server.",
   "version": "0.43.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -122,12 +122,12 @@
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "https://github.com/interop-alliance/was-teaching-server"
+    "url": "https://github.com/interop-alliance/web-spaces-server"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
-  "homepage": "https://github.com/interop-alliance/was-teaching-server",
-  "bugs": "https://github.com/interop-alliance/was-teaching-server/issues"
+  "homepage": "https://github.com/interop-alliance/web-spaces-server",
+  "bugs": "https://github.com/interop-alliance/web-spaces-server/issues"
 }

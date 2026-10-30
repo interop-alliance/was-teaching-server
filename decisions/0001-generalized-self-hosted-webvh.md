@@ -69,7 +69,7 @@ Reopen this decision when one or more of the following holds:
 
 1. Observed abuse of the widened surface (resolution-churn load or hosted-DID
    spam) that the caveat-3 bound does not contain.
-2. The WAS spec homes self-hosted did:webvh resolution normatively, superseding
+2. The PWS spec homes self-hosted did:webvh resolution normatively, superseding
    this server-local contract.
 
 If revisited, narrow by reference (which collections a document points at), not

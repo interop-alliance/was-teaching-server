@@ -39,7 +39,7 @@ export type Migration = string | ((client: pg.PoolClient) => Promise<void>)
  * version.
  */
 export const MIGRATIONS: Migration[] = [
-  // v1: the full WAS + WebKMS + chunked-storage surface. (The 'description'
+  // v1: the full PWS + WebKMS + chunked-storage surface. (The 'description'
   // columns its comments describe were renamed by v6.)
   `
   -- The Spaces tree. 'description' is NULL for a placeholder row created by a
@@ -184,7 +184,7 @@ export const MIGRATIONS: Migration[] = [
     PRIMARY KEY (space_id, backend_id)
   );
 
-  -- Space-scoped zcap revocations -- the WAS route families' sibling of the
+  -- Space-scoped zcap revocations -- the PWS route families' sibling of the
   -- keystore-scoped 'revocations' table below. A separate table (rather than
   -- a nullable-FK union over one table) lets each keep its own
   -- ON DELETE CASCADE to its parent and its own composite primary key;

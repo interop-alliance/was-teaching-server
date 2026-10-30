@@ -15,6 +15,9 @@
 
 ### Changed
 
+- **Breaking:** the package is renamed to `@interop/web-spaces-server`
+  (repository: <https://github.com/interop-alliance/web-spaces-server>). The
+  test support entry point is now `@interop/web-spaces-server/testing`.
 - **Breaking (`/service` wire change):** the `instance` member advertises the
   server's export-signing key as `exportSigningMethod`, the name the PWS spec
   resolved for its Instance Disclosure list, in place of `exportSigningKey`. The
@@ -1064,7 +1067,7 @@
 
 - A server resolves a peer server's `did:webvh`
   (`did:webvh:<scid>:<host>:space:server:id`) over the network, only as the
-  invoker of a delegated capability on the WAS routes. The embedded delegation
+  invoker of a delegated capability on the PWS routes. The embedded delegation
   chain must first verify to the Space controller with local resolution, and the
   invoked capability's sole `controller` must be that DID. The log is fetched
   from `https://<host>/space/server/id/did.jsonl` and verified. It must extend
@@ -1344,7 +1347,7 @@
   Space created under the same id. A policy write no longer creates a Collection
   that has no Metadata object.
 
-- Every response on a WAS or `/kms` route (including 304s, redirects and error
+- Every response on a PWS or `/kms` route (including 304s, redirects and error
   responses) carries
   `Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-top-navigation-by-user-activation`,
   whatever the stored content type, except `application/pdf`, which Chromium
@@ -1451,8 +1454,8 @@
 
 ### Changed
 
-- Space exports name the corrected WAS spec URLs in their `manifest.yml`: the
-  spec's rendered host `https://w3c-ccg.github.io/wallet-attached-storage-spec/`
+- Space exports name the corrected PWS spec URLs in their `manifest.yml`: the
+  spec's rendered host `https://w3c-ccg.github.io/portable-web-spaces-spec/`
   and, for the Collection Metadata and policy entries, the anchors
   `#collection-metadata-data-model` and `#access-control-policies`. The values
   come from `@interop/space-archive`; this server holds no copy of them.
@@ -1502,7 +1505,7 @@
   it is deeper than any Collection or Resource route; it is the same depth as
   `/space/:spaceId/:collectionId/:resourceId/meta` and one shallower than the
   chunk routes. What keeps them apart is the method: the route is `POST`-only
-  and WAS registers no other `POST` at that depth, so find-my-way resolves the
+  and PWS registers no other `POST` at that depth, so find-my-way resolves the
   other methods to the parametric routes and a Collection named `zcaps` stays
   usable. `test/space-revocation-api.test.ts` now pins the routing. Comments and
   tests only; no behavior change.
@@ -1580,7 +1583,7 @@
   entry onto the profile entry; the values they carry (`EdDSA`;
   `Ed25519Signature2020` and `eddsa-jcs-2022`) are unchanged.
 - **Breaking for clients matching problem types or link relations by their full
-  URI.** Every problem `type` and every WAS link relation the server emits now
+  URI.** Every problem `type` and every PWS link relation the server emits now
   carries the base identifier `https://w3id.org/pws`, replacing
   `https://wallet.storage/spec`. The fragments are unchanged, so `not-found`
   becomes `https://w3id.org/pws#not-found` and the `policy` relation becomes
@@ -1681,7 +1684,7 @@
 
 ### Changed
 
-Breaking: this server now speaks WAS spec v0.5's route table for Spaces and
+Breaking: this server now speaks PWS spec v0.5's route table for Spaces and
 Collections.
 
 - A Space or Collection is canonically addressed with a trailing slash: `GET`
@@ -2178,7 +2181,7 @@ Defects found in a review of the route-table change above.
   Space URL or a path under it. The bare Space URL is refused, since it reaches
   Update Space Description (a controller rewrite) and Delete Space; keystore
   (`/kms/...`) targets are refused as well. Its `allowedAction` must be present,
-  non-empty, and drawn from the closed WAS verb vocabulary (`GET`, `HEAD`,
+  non-empty, and drawn from the closed PWS verb vocabulary (`GET`, `HEAD`,
   `POST`, `PUT`, `DELETE`). The predicate previously admitted on grantee
   identity alone and read neither target nor action.
 
@@ -2246,7 +2249,7 @@ Defects found in a review of the route-table change above.
   grant. The refusal is masked as a 404, byte-identical to the symptom of the
   wallet bug the fix removes, so a wallet that still sees 404s after upgrading
   should check the server version. (The webvh context itself has been threaded
-  on the WAS routes since 0.16.0, widened in 0.16.1; 0.22.0 is the binding
+  on the PWS routes since 0.16.0, widened in 0.16.1; 0.22.0 is the binding
   requirement.)
 
 ## 0.22.0 - 2026-08-19
@@ -2706,7 +2709,7 @@ Defects found in a review of the route-table change above.
   the KEK variables dropped entirely. Idempotent (records already in the target
   form are untouched); filesystem backend only (refuses to run when
   `DATABASE_URL` is set).
-- **ZCap revocation on the WAS route families.** A capability delegated from a
+- **ZCap revocation on the PWS route families.** A capability delegated from a
   Space's root capability can now be revoked, via
   `POST /space/:spaceId/zcaps/revocations/:revocationId` -- the sibling of the
   existing `/kms` revocation endpoint, and the same wire contract
@@ -2844,7 +2847,7 @@ Defects found in a review of the route-table change above.
   attribute-blinding version. The response is `{ documents, hasMore, cursor? }`
   -- the matching stored documents verbatim, ascending by resource id -- or
   `{ count }` for a count query. Pagination closes the known EDV protocol gap
-  (`limit` + `hasMore` with no way to resume) by reusing WAS's opaque cursor
+  (`limit` + `hasMore` with no way to resume) by reusing PWS's opaque cursor
   convention: `cursor` is present iff `hasMore`, and echoing it back in the next
   query body resumes the scan. Query parameters ride the signed JSON POST body
   (covered by the `Digest`); authorization is capability-or-policy with the same
@@ -2940,7 +2943,7 @@ Defects found in a review of the route-table change above.
 
 - **PostgreSQL storage backend (`DATABASE_URL`).** A second first-party
   `StorageBackend` (`src/backends/postgres.ts`, schema in
-  `src/backends/postgresSchema.ts`), implementing the full WAS + WebKMS surface
+  `src/backends/postgresSchema.ts`), implementing the full PWS + WebKMS surface
   over rows and selected by setting `DATABASE_URL` (unset keeps the default
   filesystem backend). Four deliberate design departures: **transactional quota
   accounting** (`spaces.usage_bytes`, maintained in the same transaction as
@@ -3135,12 +3138,12 @@ Defects found in a review of the route-table change above.
   durability there is the database's WAL.)
 - **The `conformance/` suite no longer pins the default backend's display name**
   (`Server Filesystem`); it asserts a non-empty `name` instead, so the suite
-  passes against any conforming WAS server -- including a Postgres-backed one
+  passes against any conforming PWS server -- including a Postgres-backed one
   (`DATABASE_URL=... pnpm conformance:local`).
-- **The WAS protocol surface is now a registerable Fastify plugin, `fastifyWas`
+- **The PWS protocol surface is now a registerable Fastify plugin, `fastifyWas`
   (`src/plugin.ts`).** The plugin owns the `serverUrl` / `storage` /
   backend-provider decorations, CORS, multipart, the content-type parsers, and
-  the route groups (the four WAS groups plus the WebKMS `/kms` facet) --
+  the route groups (the four PWS groups plus the WebKMS `/kms` facet) --
   everything from `routes.ts` down, including the per-group auth/digest hook
   chains and error handler. `createApp()` (`src/server.ts`) is now the thin
   community-edition composition: it registers `fastifyWas` (passing its options
@@ -3203,7 +3206,7 @@ Defects found in a review of the route-table change above.
   - `handleZcapVerify` now returns the verification result (the dereferenced
     chain feeds the per-key gate), and `verifyZcap` grew optional
     `inspectCapabilityChain` / `maxChainLength` / `maxDelegationTtl`
-    pass-throughs -- absent on the WAS route families, whose behavior is
+    pass-throughs -- absent on the PWS route families, whose behavior is
     unchanged. New runtime dependencies `@interop/zcap` and
     `@interop/jsonld-signatures` (both already in the tree transitively) power
     the revocation route's standalone `CapabilityDelegation` chain verification.
@@ -3272,7 +3275,7 @@ Defects found in a review of the route-table change above.
   body (`{ "status": "pass", "version": ... }`, following the IETF
   `draft-inadarei-api-health-check` shape) so load balancers, uptime monitors,
   and orchestrators can poll cheaply; `HEAD /health` serves a bodyless `200` for
-  probes that don't want a body. This is an operational affordance, not a WAS
+  probes that don't want a body. This is an operational affordance, not a PWS
   protocol feature. `scripts/conformance-local.ts` now polls `/health` for
   startup readiness instead of the HTML welcome page.
 
@@ -3422,7 +3425,7 @@ Defects found in a review of the route-table change above.
 
 - **Replication change feed: the `changes` query profile.** The reserved
   Collection query endpoint `POST /space/{id}/{cid}/query` now serves a
-  `changes` profile -- the basis for replicating a WAS Collection into a
+  `changes` profile -- the basis for replicating a PWS Collection into a
   local-first in-browser database such as RxDB. The signed JSON body carries
   `{ profile: "changes", checkpoint?, limit? }`; the response is the
   Collection's JSON documents and tombstones changed strictly after
@@ -3513,7 +3516,7 @@ Defects found in a review of the route-table change above.
   lands.
 
 - Accept `application/<suffix>+json` request bodies (e.g. `application/edv+json`
-  for EDV-over-WAS encrypted documents, `application/ld+json`) by parsing them
+  for EDV-over-PWS encrypted documents, `application/ld+json`) by parsing them
   as JSON. Fastify's built-in parser only matches `application/json` exactly, so
   structured-suffix JSON media types previously returned 415; a root-level
   content-type parser now handles them (the suffix content type is preserved on
@@ -3821,7 +3824,7 @@ Defects found in a review of the route-table change above.
 
 ### Changed
 
-- Adopt `@interop/storage-core` for the shared WAS wire model and error
+- Adopt `@interop/storage-core` for the shared PWS wire model and error
   vocabulary, replacing the in-repo declarations that were drifting from the
   `was-client` copies. `src/types.ts` now imports/re-exports the data-model
   shapes (`SpaceDescription`, `CollectionDescription`, `BackendDescriptor`,
@@ -3941,7 +3944,7 @@ Defects found in a review of the route-table change above.
   existence. Body-validation responses now also carry a `pointer` (RFC 6901 JSON
   Pointer, `#/field` form) identifying the offending field; the combined
   Create/Update Space "name and controller" check is split so each missing field
-  reports its own `#/name` / `#/controller` pointer. The WAS spec gains an
+  reports its own `#/name` / `#/controller` pointer. The PWS spec gains an
   "Error Type Registry" appendix documenting the catalog.
 
 ### Changed

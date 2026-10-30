@@ -95,7 +95,7 @@ export function isValidController(value: unknown): value is IDID {
  * `<spaceId>/<collectionId>/did.jsonl`.
  *
  * The `collectionId` may be any Collection whose name round-trips the DID path
- * encoding. WAS Collection ids are restricted to the RFC 3986 unreserved
+ * encoding. PWS Collection ids are restricted to the RFC 3986 unreserved
  * charset ({@link isUrlSafeSegment}), and unreserved characters are never
  * percent-encoded, so that encoding is the identity and the round-trip rule
  * collapses to the same check: a segment carrying `%` or any other reserved

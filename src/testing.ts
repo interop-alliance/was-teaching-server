@@ -1,5 +1,5 @@
 /**
- * Test support entry point (`was-teaching-server/testing`): the in-process
+ * Test support entry point (`@interop/web-spaces-server/testing`): the in-process
  * boot the server's own suites use, for a consumer that runs its tests against
  * the real server. Carries `startTestServer`, a temp-dir filesystem backend,
  * the request fault seam, the hand-built `did:webvh` identity provisioner,

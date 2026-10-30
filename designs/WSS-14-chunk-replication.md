@@ -1,6 +1,6 @@
-# WAS-14: Chunk replication (design)
+# WSS-14: Chunk replication (design)
 
-- item: WAS-14
+- item: WSS-14
 - status: approved
 - approved: 2026-10-25
 - wire-level decisions contained: listed in section 5 under "Wire-level and
@@ -51,8 +51,8 @@ remove the one the chunk model has everywhere: a reader whose stream read spans
 a rewrite, on the source server as on the replica server.
 
 Out of scope: a `chunk` kind in the `changes` feed; chunk tombstones; chunk
-retention (WAS-13); write-time statements over a chunked Resource (WAS-184); the
-stored content digest (WAS-195); any change to the chunk routes' authorization
+retention (WSS-13); write-time statements over a chunked Resource (WSS-184); the
+stored content digest (WSS-195); any change to the chunk routes' authorization
 or to the client's write plan.
 
 ## 2. Invariants
@@ -226,7 +226,7 @@ unchanged.
   answered with `count` 0 and nothing else.
 - Export from the replica server: skips staging and never meets a torn set.
 - `WAS_DEFAULT_BACKEND` switched between a chunk pull and its re-run: staging on
-  the old backend is stranded until that backend's boot reclaim (WAS-219 owns
+  the old backend is stranded until that backend's boot reclaim (WSS-219 owns
   the alias move).
 
 ## 5. Design

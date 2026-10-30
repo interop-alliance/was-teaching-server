@@ -1064,7 +1064,7 @@ describe('the did:webvh blocklist setting', () => {
   it('refuses a malformed plugin option at registration', async () => {
     const backend = await openTempBackend()
     const app = createApp({
-      serverUrl: 'https://was.example',
+      serverUrl: 'https://pws.example',
       backend,
       logger: false,
       webvhBlocklist: ['not a host']

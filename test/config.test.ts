@@ -89,8 +89,8 @@ describe('parseServerUrl', () => {
       'http://localhost:3002'
     )
     assert.equal(
-      parseServerUrl('https://was.example.com/'),
-      'https://was.example.com/'
+      parseServerUrl('https://pws.example.com/'),
+      'https://pws.example.com/'
     )
   })
 
@@ -192,7 +192,7 @@ describe('loopbackPortMismatch', () => {
     // A public host sits behind a reverse proxy on a port of its own.
     assert.equal(
       loopbackPortMismatch({
-        serverUrl: 'https://was.example.com',
+        serverUrl: 'https://pws.example.com',
         port: 3002
       }),
       undefined
@@ -287,7 +287,7 @@ describe('loadConfigFromEnv', () => {
 
   it('parses each configured variable', () => {
     const config = loadConfigFromEnv({
-      SERVER_URL: 'https://was.example.com',
+      SERVER_URL: 'https://pws.example.com',
       PORT: '8080',
       DATABASE_URL: ' postgres://was:was@localhost:5433/was ',
       WAS_DATA_DIR: ' ./scratch/was-data ',
@@ -299,7 +299,7 @@ describe('loadConfigFromEnv', () => {
       WAS_ONBOARDING_TOKEN: ' abc123 ',
       WAS_DISCLOSE_VERSION: ' FALSE '
     })
-    assert.equal(config.serverUrl, 'https://was.example.com')
+    assert.equal(config.serverUrl, 'https://pws.example.com')
     assert.equal(config.port, 8080)
     assert.equal(config.databaseUrl, 'postgres://was:was@localhost:5433/was')
     // A relative WAS_DATA_DIR resolves against the process working directory.
@@ -314,13 +314,13 @@ describe('loadConfigFromEnv', () => {
   })
 
   it('reads an unset WAS_DEFAULT_BACKEND or WAS_CONTROL_PLANE_BACKEND as undefined and refuses an unknown id', () => {
-    const unset = loadConfigFromEnv({ SERVER_URL: 'https://was.example.com' })
+    const unset = loadConfigFromEnv({ SERVER_URL: 'https://pws.example.com' })
     assert.equal(unset.defaultBackend, undefined)
     assert.equal(unset.controlPlaneBackend, undefined)
     assert.throws(
       () =>
         loadConfigFromEnv({
-          SERVER_URL: 'https://was.example.com',
+          SERVER_URL: 'https://pws.example.com',
           WAS_DEFAULT_BACKEND: 'sqlite'
         }),
       /WAS_DEFAULT_BACKEND must be one of fs, postgres; got "sqlite"/
@@ -328,7 +328,7 @@ describe('loadConfigFromEnv', () => {
     assert.throws(
       () =>
         loadConfigFromEnv({
-          SERVER_URL: 'https://was.example.com',
+          SERVER_URL: 'https://pws.example.com',
           WAS_CONTROL_PLANE_BACKEND: 'sqlite'
         }),
       /WAS_CONTROL_PLANE_BACKEND must be one of fs, postgres; got "sqlite"/

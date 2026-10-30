@@ -1,7 +1,7 @@
 # Consuming the Server as a Library
 
 Besides running standalone, this package can be consumed as a dependency: the
-whole WAS protocol surface (the WAS route groups, the WebKMS `/kms` facet, the
+whole PWS protocol surface (the PWS route groups, the WebKMS `/kms` facet, the
 auth/digest hook chains, zcap verification, and the error handler) is exposed as
 a single registerable Fastify plugin, `fastifyWas`. A downstream server composes
 its own Fastify instance -- its own persistence, security plugins, and
@@ -13,12 +13,12 @@ section.)
 ## Install
 
 ```bash
-pnpm add was-teaching-server    # or: npm install was-teaching-server
+pnpm add @interop/web-spaces-server    # or: npm install @interop/web-spaces-server
 ```
 
 The package is ESM-only (`"type": "module"`) and requires Node.js >= 24. Two
 entry points are importable. The package root carries the server. The
-`was-teaching-server/testing` subpath carries test support (see
+`@interop/web-spaces-server/testing` subpath carries test support (see
 [Testing against the server](#testing-against-the-server)). The `exports` map
 does not expose deep `dist/...` paths.
 
@@ -26,7 +26,7 @@ does not expose deep `dist/...` paths.
 
 | Export                         | What it is                                                                          |
 | ------------------------------ | ----------------------------------------------------------------------------------- |
-| `fastifyWas`                   | The WAS protocol surface as a Fastify plugin                                        |
+| `fastifyWas`                   | The PWS protocol surface as a Fastify plugin                                        |
 | `FastifyWasOptions`            | The plugin's options type (see below)                                               |
 | `createApp`                    | The teaching server's own composition, as a factory                                 |
 | `FileSystemBackend`            | The reference persistence backend (JSON + blobs on disk)                            |
@@ -38,7 +38,7 @@ does not expose deep `dist/...` paths.
 
 The test support helpers (`startTestServer`, `openTempBackend`,
 `provisionWebvhIdentity`, the `RequestFaults` seam) are exported from
-`was-teaching-server/testing`, not from the root. See
+`@interop/web-spaces-server/testing`, not from the root. See
 [Testing against the server](#testing-against-the-server).
 
 Importing anything from the package also loads its Fastify module augmentation,
@@ -50,7 +50,7 @@ on the decorated instance for free.
 ```ts
 import path from 'node:path'
 import Fastify from 'fastify'
-import { fastifyWas, FileSystemBackend } from 'was-teaching-server'
+import { fastifyWas, FileSystemBackend } from '@interop/web-spaces-server'
 
 const serverUrl = process.env.SERVER_URL ?? 'http://localhost:3002'
 
@@ -73,7 +73,7 @@ fastify.get('/', async () => {
 await fastify.listen({ port: 3002, host: '0.0.0.0' })
 ```
 
-That is a complete WAS + WebKMS server: `POST /spaces/`, the Space / Collection
+That is a complete PWS + WebKMS server: `POST /spaces/`, the Space / Collection
 / Resource routes, access-control policies, quotas, export/import, and the
 `/kms` keystore facet all work, and the full conformance suite passes against it
 (verified against exactly this composition).
@@ -107,7 +107,7 @@ Two things to get right:
 | `backends`                | The server's own storage backends: an array of open `StorageBackend`s, or functions `({ logger }) => Promise<StorageBackend>` the plugin calls at registration, after validating its other options, with `fastify.log`, and closes with the app. Defaults to the fallback filesystem backend (see the caveat above). A backend with no origin id (one not obtained from `open()`) is refused, as are two backends under one fixed id or with different origin ids. Every backend opened so far is closed with the app |
 | `defaultBackend`          | The fixed id (`fs` or `postgres`) that `default` aliases. Unset: `fs` when that backend is present, else the only backend                                                                                                                                                                                                                                                                                                                                                                                             |
 | `ownsBackend`             | Whether the plugin manages every backend's lifecycle (default `true`): it sets each backend's `logger` to `fastify.log` and calls `close()` on Fastify's `onClose`. `false` does neither, for a composition that runs them itself, and requires injected, already open backends (the function form is refused). A backend is obtained from its async `open()` factory, which runs the migrations, so neither setting opens one                                                                                        |
-| `cors`                    | The `@fastify/cors` registration. `false` registers none, so the composition can bring its own. An object overrides `origin` and/or `methods`. Default: `origin: '*'`, the methods the WAS routes serve, and the exposed headers browser clients need                                                                                                                                                                                                                                                                 |
+| `cors`                    | The `@fastify/cors` registration. `false` registers none, so the composition can bring its own. An object overrides `origin` and/or `methods`. Default: `origin: '*'`, the methods the PWS routes serve, and the exposed headers browser clients need                                                                                                                                                                                                                                                                 |
 | `dataDir`                 | Filesystem root of the fallback backend the plugin opens when no `backends` or `backend` is given. Injected backends carry their own root. `undefined` uses the project `data/` directory                                                                                                                                                                                                                                                                                                                             |
 | `storageLimitPerSpace`    | Per-Space byte quota, applied only to the fallback filesystem backend (an injected backend carries its own `capacityBytes`)                                                                                                                                                                                                                                                                                                                                                                                           |
 | `maxUploadBytes`          | Per-upload byte cap, likewise only for the fallback backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap                                                                                                                                                                                                                                                                                                                                        |
@@ -129,7 +129,7 @@ Two things to get right:
   `ServerBackends` set, whose `default` is `storage`), `backendProviders`,
   `enabledBackendProviders`;
 - `@fastify/cors`, unless `cors: false` (by default `origin: '*'` and every
-  method a WAS route serves -- WAS auth is signature-based, not cookie-based, so
+  method a PWS route serves -- PWS auth is signature-based, not cookie-based, so
   wide-open CORS is the protocol-appropriate setting; do not register
   `@fastify/cors` again yourself unless you pass `cors: false`);
 - `@fastify/multipart` (its `fileSize` limit follows the backend's
@@ -154,7 +154,7 @@ CORS proxy included) inside your own process, use `createApp` -- it takes the
 same options and passes them through to the plugin:
 
 ```ts
-import { createApp } from 'was-teaching-server'
+import { createApp } from '@interop/web-spaces-server'
 
 const serverUrl = process.env.SERVER_URL
 if (serverUrl === undefined) {
@@ -175,7 +175,7 @@ package.
 import Fastify from 'fastify'
 import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
-import { fastifyWas, PostgresBackend } from 'was-teaching-server'
+import { fastifyWas, PostgresBackend } from '@interop/web-spaces-server'
 
 const serverUrl = process.env.SERVER_URL
 if (serverUrl === undefined) {
@@ -260,7 +260,7 @@ invariants are documented on the interface itself; the load-bearing ones:
   server log.
 
 ```ts
-import type { StorageBackend } from 'was-teaching-server'
+import type { StorageBackend } from '@interop/web-spaces-server'
 
 export class S3Backend implements StorageBackend {
   // ...
@@ -270,8 +270,8 @@ export class S3Backend implements StorageBackend {
 ## Testing against the server
 
 A consumer's own tests can boot the real server in-process through the
-`was-teaching-server/testing` entry point. It carries the boot this package's
-own suites use. It imports no test runner, so it works under Vitest,
+`@interop/web-spaces-server/testing` entry point. It carries the boot this
+package's own suites use. It imports no test runner, so it works under Vitest,
 `node:test`, or any other runner. It adds nothing to the plugin's options. It is
 test support, not part of a production composition.
 
@@ -325,7 +325,10 @@ import { afterAll, beforeAll, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
-import { openTempBackend, startTestServer } from 'was-teaching-server/testing'
+import {
+  openTempBackend,
+  startTestServer
+} from '@interop/web-spaces-server/testing'
 
 let fastify: FastifyInstance
 let baseServerUrl: string
@@ -380,8 +383,8 @@ resolve only on the same port. The test removes its dir when it is done.
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { FileSystemBackend } from 'was-teaching-server'
-import { startTestServer } from 'was-teaching-server/testing'
+import { FileSystemBackend } from '@interop/web-spaces-server'
+import { startTestServer } from '@interop/web-spaces-server/testing'
 
 const dataDir = await mkdtemp(path.join(tmpdir(), 'my-suite-'))
 
@@ -410,7 +413,7 @@ since this package does not depend on `@interop/was-client`. When a step fails
 after the Space was created, the Space is deleted before the error is rethrown.
 
 ```ts
-import { provisionWebvhIdentity } from 'was-teaching-server/testing'
+import { provisionWebvhIdentity } from '@interop/web-spaces-server/testing'
 
 const ownerKey = await Ed25519VerificationKey.generate()
 const owner = {
@@ -471,8 +474,8 @@ import {
   bootPeerServer,
   registerReplica,
   replicaStatus
-} from 'was-teaching-server/testing'
-import type { PeerServer } from 'was-teaching-server/testing'
+} from '@interop/web-spaces-server/testing'
+import type { PeerServer } from '@interop/web-spaces-server/testing'
 
 // The controller of the Spaces on both servers, and the signer of every
 // request the test sends.
@@ -631,7 +634,7 @@ await first
 
 The `pws-conformance` CLI (from
 [`@interop/pws-conformance-suite`](https://github.com/interop-alliance/pws-conformance-suite))
-runs against any WAS server by URL and is the definition of "speaks WAS." Point
+runs against any PWS server by URL and is the definition of "speaks PWS." Point
 it at your composed server:
 
 ```bash

@@ -82,7 +82,7 @@ const UNRELAYED_HEADERS = new Set([
 
 /**
  * Headers every proxy reply carries, errors included. The proxy is served on
- * the WAS origin, which may also be a wallet's origin, so an upstream
+ * the PWS origin, which may also be a wallet's origin, so an upstream
  * `text/html` body must not run there when a browser opens the proxy URL
  * directly. The sandbox gives such a page an opaque origin, `default-src
  * 'none'` loads nothing, `nosniff` stops a generic type from being sniffed as

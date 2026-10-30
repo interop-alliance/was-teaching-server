@@ -440,7 +440,7 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
       assert.equal(response.status, 401)
     })
 
-    it('anonymous reads are 401 too (unlike WAS public reads)', async () => {
+    it('anonymous reads are 401 too (unlike PWS public reads)', async () => {
       const created = await createKeystore(alice)
       const getResponse = await fetch(created.id!)
       assert.equal(getResponse.status, 401)

@@ -25,7 +25,7 @@ through CORS. The server allows any origin (`Access-Control-Allow-Origin: *`),
 so several wallets and apps can share it on equal terms. Its welcome page at `/`
 stays reachable, and it deploys on its own schedule.
 
-The cost is preflights. A signed WAS request carries `Authorization`,
+The cost is preflights. A signed PWS request carries `Authorization`,
 `Capability-Invocation` and `Digest` headers, and a browser sends a CORS
 preflight before any request with those headers. The server marks its preflight
 answers cacheable for a day. Browsers cache them per URL, though, and cap the
@@ -113,7 +113,7 @@ options 2 and 4 are not available.
 
 Option 3 suits a deployment whose hosted pages are static sites: documents,
 galleries, demos, pages that read public data. It needs one domain and no DNS
-beyond the wallet's own. Every response on the server's WAS routes, except a
+beyond the wallet's own. Every response on the server's PWS routes, except a
 PDF, carries:
 
 ```
@@ -129,7 +129,7 @@ out without the header. Chromium will not render a PDF in a sandboxed document,
 and a browser's PDF viewer cannot reach the origin's storage anyway.
 
 A sandboxed page keeps scripts, the DOM, WebCrypto, `fetch()` to any CORS API
-(WAS included, with `Origin: null`), forms, dialogs, downloads and popups. A
+(PWS included, with `Origin: null`), forms, dialogs, downloads and popups. A
 popup it opens inherits the sandbox, so a wallet page opened that way also runs
 with an opaque origin and cannot read the wallet's keys. The page loses
 `localStorage`, `sessionStorage`, IndexedDB, the Cache API, cookies, service

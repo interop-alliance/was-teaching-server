@@ -138,7 +138,7 @@ describe('Resource API', () => {
 
   it('[root] PUT and GET an application/edv+json (structured-suffix JSON) resource', async () => {
     // Structured-suffix JSON media types (e.g. `application/edv+json` for
-    // EDV-over-WAS encrypted documents) must be accepted as JSON, not rejected
+    // EDV-over-PWS encrypted documents) must be accepted as JSON, not rejected
     // with a 415. Send raw bytes with an explicit content type so the server's
     // `application/<suffix>+json` parser is exercised.
     const resourceId = 'edv-doc'
@@ -161,7 +161,7 @@ describe('Resource API', () => {
   })
 
   it('[root] PUT Resource to non-existent collection should fail (NotFoundError)', async () => {
-    // Writing into a missing collection is a write -- WAS does not auto-create
+    // Writing into a missing collection is a write -- PWS does not auto-create
     // parents, so it surfaces as NotFoundError (server 404).
     await assert.rejects(
       aliceSpace

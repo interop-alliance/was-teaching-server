@@ -361,14 +361,14 @@ export const CORS_PROXY_AGENT_CACHE_TTL = 300_000 // milliseconds
 export const RESOLVED_BACKEND_CACHE_MAX = 1_000
 
 /**
- * The WAS specification's persistent identifier, the key of its entry in the
+ * The PWS specification's persistent identifier, the key of its entry in the
  * service description's `specs` object. Provisional until the specification's
  * rename registers it.
  */
 export const SPEC_IDENTIFIER = 'https://w3id.org/pws'
 
 /**
- * The WAS specification version this server's route table implements, as the
+ * The PWS specification version this server's route table implements, as the
  * service description advertises it (`major.minor`, no patch level).
  */
 export const SPEC_VERSION = '0.5'
@@ -377,7 +377,7 @@ export const SPEC_VERSION = '0.5'
  * The zCap authorization profile's persistent identifier, the key of its entry
  * in the service description's `specs` object. Listing the profile is how a
  * client learns this server authorizes requests with capability invocations,
- * and the entry -- not the WAS entry -- carries the signature algorithms and
+ * and the entry -- not the PWS entry -- carries the signature algorithms and
  * delegation cryptosuites the server accepts.
  */
 export const AUTHZ_PROFILE_IDENTIFIER = 'https://w3id.org/pws/authz-profile'
@@ -1461,4 +1461,4 @@ export function parseWebvhBlocklist(
 export const IMPORT_MAX_REVOCATIONS = 1_000
 
 export const SPEC_URL =
-  'https://digitalcredentials.github.io/portable-web-spaces-spec/'
+  'https://w3c-ccg.github.io/portable-web-spaces-spec/'

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Production image for the WAS teaching server. Generic: every setting comes
+# Production image for the Web Spaces server. Generic: every setting comes
 # from the environment at run time (see the README's Environment Variables
 # table). docs/deployment-fly.io.md covers running it.
 

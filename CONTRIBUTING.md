@@ -1,6 +1,6 @@
 # Contributing
 
-Code style and contribution conventions for the Wallet Attached Storage (WAS)
+Code style and contribution conventions for the Portable Web Spaces (PWS)
 reference server. Coding agents receive this file via the include in
 [AGENTS.md](AGENTS.md); for a map of the codebase, see
 [ARCHITECTURE.md](ARCHITECTURE.md).
