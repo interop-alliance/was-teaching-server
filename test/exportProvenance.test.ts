@@ -56,7 +56,7 @@ describe('attestArchiveEntries', () => {
       serverUrl,
       serverDid,
       didLog: new Uint8Array(),
-      didLogVersionId: '1-abc',
+      didVersionId: '1-abc',
       keyPair: new Ed25519VerificationKey({
         id: `${serverDid}#${generated.publicKeyMultibase}`,
         controller: serverDid,

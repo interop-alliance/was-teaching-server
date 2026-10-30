@@ -11,7 +11,7 @@
  * Each statement is then judged on its own. Its `verificationMethod` must name
  * the snapshot's DID, and its `id` must sit on the host that DID is anchored
  * at. The method must appear in the document at the log entry whose
- * `versionId` equals the statement's `didLogVersionId`, under
+ * `versionId` equals the statement's `didVersionId`, under
  * `assertionMethod`. It may also be listed under `capabilityInvocation`, the
  * relationship a server signs sync invocations under, and under no other.
  * Then the `eddsa-jcs-2022` proof is verified, and last the statement's
@@ -473,7 +473,7 @@ async function judgeStatement({
         'names.'
     }
   }
-  const versionId = statement.didLogVersionId
+  const versionId = statement.didVersionId
   const doc =
     typeof versionId === 'string'
       ? await documentAt({ signer, versionId })

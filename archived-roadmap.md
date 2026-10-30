@@ -6760,3 +6760,100 @@ back under the name consumers now construct from. The spec's new root-reserved
 Collection ids (`service`, `spaces`, `space`) apply only to a single fixed Space
 served from an origin root, which this multi-tenant server is not, so nothing
 changes in its reserved-segment handling.
+
+### WAS-236: [M] (*) Rename the provenance statement's `didLogVersionId` to `didVersionId`
+
+- status: done (2026-10-29)
+- priority: medium
+- backend: *
+- labels: wire-contract, provenance, server-identity
+- discovered-from: portable-web-spaces-spec WASS-7 (2026-10-29)
+- touches:
+  - was-teaching-server (this repo): shipped 2026-10-29 --
+    `src/lib/exportProvenance.ts` (the statement type and the member it writes),
+    `src/lib/importProvenance.ts` (the verifier's read of it),
+    `test/exportProvenance.test.ts`, `test/storage-backend-contract.ts`,
+    `test/sync-identity.test.ts`, `docs/admin-guide.md`,
+    `docs/server-identity-and-provenance.md`, CHANGELOG.md; ARCHITECTURE.md did
+    not name the member
+  - space-archive: SAR-10 shipped 2026-10-29, unpublished (0.11.0) -- the
+    fixture re-signed by this server's export; consumed here through a temporary
+    `link:` until published
+  - portable-web-spaces-spec: resolved 2026-10-29 -- the Archive provenance
+    section and the did:webvh archive signer profile use `didVersionId`
+  - was-conformance-suite: unaffected (no provenance cases yet)
+- acceptance:
+  - [x] an exported `provenance.jsonl` statement carries `didVersionId`, the
+        `versionId` of the log entry whose document lists the signing key, and
+        no `didLogVersionId`
+  - [x] the import verifier resolves the signer at `didVersionId` and reports
+        `unknownSigner` when it names no entry of the log; a statement carrying
+        only `didLogVersionId` is `unknownSigner`
+  - [x] the three tests and both docs name the member by its new name
+  - [x] CHANGELOG entry names the rename as a wire change to the archive
+
+Context: each provenance statement names the version of the signing DID's
+document that listed the signing key when the statement was made, so that a
+later key rotation does not invalidate an older archive. The member was
+`didLogVersionId`, which is did:webvh's vocabulary. The PWS spec made its
+provenance text method-neutral on 2026-10-29: the statement now carries
+`didVersionId`, and a did:webvh archive signer profile in the spec's DID method
+registry says it is the log entry's `versionId`. This server is the one writer
+and verifier of the statement, so the rename lands here, and the space-archive
+fixture is re-signed from it. Archives written under the old name are not
+rewritten; the verifier does not accept them.
+
+### WAS-237: [M] (*) Export manifest `url` values name the spec identifier `https://w3id.org/pws`
+
+- status: done (2026-10-29)
+- priority: medium
+- backend: *
+- labels: wire-contract, import-export, test-coverage
+- discovered-from: portable-web-spaces-spec Space Archive Format review
+  (2026-10-29)
+- touches:
+  - was-teaching-server (this repo): shipped 2026-10-29 --
+    `test/storage.test.ts` (the manifest entry's own `url` and the Spaces `url`
+    assertions), `test/space-archive-fixture.test.ts` (compares against the
+    repacked space-archive fixtures), `package.json` (the space-archive version
+    carrying the change), `docs/export-import.md`, ARCHITECTURE.md (the
+    export/import paragraph), CHANGELOG.md
+  - space-archive: SAR-9 shipped 2026-10-29, unpublished (0.11.0) -- the packer
+    writes the five documenting URLs; consumed here through a temporary `link:`
+    until published
+  - portable-web-spaces-spec: resolved 2026-10-29 -- the manifest example and
+    the prose under it name the identifier plus the section anchor as the `url`,
+    not the rendered document's location
+  - was-conformance-suite: unaffected (no suite reads the manifest's `url`
+    values)
+- acceptance:
+  - [x] an exported archive's manifest carries
+        `https://w3id.org/pws#archive-manifest` on its own entry,
+        `https://w3id.org/pws#spaces` on `space` and the Space directory, and
+        the `#collection-metadata-data-model`, `#access-control-policies` and
+        `#resource-metadata-data-model` fragments on the entries the spec gives
+        a shape to; no `github.io` URL appears in the manifest
+  - [x] `test/storage.test.ts` asserts the `manifest.yml` entry's own `url` and
+        the Spaces `url` under the new host
+  - [x] the fixture counterpart test passes against the repacked space-archive
+        fixtures (through the `link:`; the registry range follows the 0.11.0
+        publish)
+  - [x] `docs/export-import.md` and ARCHITECTURE.md say the manifest's `url`
+        values are the spec identifier with a section fragment, and that
+        archives written before this change carry the rendered-document host
+  - [x] CHANGELOG entry names the change as wire text in exported archives
+
+Context: the PWS spec's Space Archive Format section declares the manifest's
+`url` values permanent wire text, and on 2026-10-29 settled that each is the
+spec's identifier (`https://w3id.org/pws`) with the defining section's anchor as
+the fragment, in place of the `https://w3c-ccg.github.io/...` location of the
+rendered document. The packer is `@interop/space-archive`, which this server
+exports through, so the server's manifests change on the version bump with no
+code of its own; what the server owns is the test that pins the Spaces URL
+(`test/storage.test.ts:183`, still the old host), the fixture comparison, and
+the operator docs that describe the manifest. The w3id redirect for
+`https://w3id.org/pws` is not registered yet; that is the spec's concern, and
+the archive strings are opaque to the reader (the manifest is descriptive and
+entries are classified by path), so this item does not wait on it. Archives
+exported before the bump keep the old host; the importer does not read the
+values, so they import unchanged.

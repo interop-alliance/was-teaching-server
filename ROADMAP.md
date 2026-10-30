@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 236
+nextAvailableId: 238
 
 <!-- roadmap-order:index:start -->
 
@@ -755,15 +755,14 @@ its Collections encrypted from birth.
 - discovered-from: portable-web-spaces-spec WASS-7 (2026-10-29)
 - blocked-by: SC-12
 - touches:
-  - was-teaching-server (this repo): `src/serviceDescription.ts` (the
-    `instance` member it composes), `src/lib/serverIdentity.ts` (the field on
-    the signing-key record and the identity log entry it writes),
-    `src/plugin.ts` (the option it threads through), the two server-identity
-    tests, README.md (the `WAS_SERVER_KEY_SEED` row), ARCHITECTURE.md (the
-    service description and server identity paragraphs),
-    `docs/admin-guide.md` (provisioning and rotation steps, the `jq` line),
-    `docs/server-identity-and-provenance.md`, `docs/service-description.md`,
-    CHANGELOG.md
+  - was-teaching-server (this repo): `src/serviceDescription.ts` (the `instance`
+    member it composes), `src/lib/serverIdentity.ts` (the field on the
+    signing-key record and the identity log entry it writes), `src/plugin.ts`
+    (the option it threads through), the two server-identity tests, README.md
+    (the `WAS_SERVER_KEY_SEED` row), ARCHITECTURE.md (the service description
+    and server identity paragraphs), `docs/admin-guide.md` (provisioning and
+    rotation steps, the `jq` line), `docs/server-identity-and-provenance.md`,
+    `docs/service-description.md`, CHANGELOG.md
   - storage-core: SC-12 (the type the member is read from)
   - portable-web-spaces-spec: resolved 2026-10-29 -- the Instance Disclosure
     list and the Archive provenance section use the new name
@@ -778,13 +777,13 @@ its Collections encrypted from birth.
         name, including the admin guide's `jq` read and rotation step
   - [ ] CHANGELOG entry names the rename as a wire change to `/service`
 
-Context: the service description advertises the key the server signs its
-Space archive exports with, under `instance.exportSigningKey`. The value is a
+Context: the service description advertises the key the server signs its Space
+archive exports with, under `instance.exportSigningKey`. The value is a
 `did:key`, which identifies a verification method rather than carrying key
 material, so the PWS spec renamed the member to `exportSigningMethod` on
 2026-10-29. This server is the one writer of the member and its docs are the
-operator's guide to provisioning the identity, so the rename reaches the
-service description, the identity module, the tests and every doc that tells an
+operator's guide to provisioning the identity, so the rename reaches the service
+description, the identity module, the tests and every doc that tells an
 administrator to read the value off `/service`. No alias for the old name is
 served.
 

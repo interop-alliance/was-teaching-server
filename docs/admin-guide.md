@@ -356,7 +356,7 @@ the root of the archive, beside `manifest.yml` and `service.json`:
   statement names the object's URL, its `createdBy`, `createdAt`, and write
   stamp (`updatedAt`, `updatedAtCounter`, `originId`), a Resource's `/meta`
   record stamp (`meta`), a digest of a Resource's content, and the `versionId`
-  of the log entry the key was listed in (`didLogVersionId`).
+  of the log entry the key was listed in (`didVersionId`).
 - `did.jsonl` -- a copy of the server's history log as it stood at export time,
   so an importer verifies the statements offline, with no request to this
   server.

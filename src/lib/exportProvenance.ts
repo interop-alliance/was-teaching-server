@@ -5,7 +5,7 @@
  *
  * A statement is a plain JSON object,
  * `{ id, type: 'StorageAttestation', createdBy, createdAt, updatedAt,
- * updatedAtCounter, originId, meta, digest, didLogVersionId }`, with one
+ * updatedAtCounter, originId, meta, digest, didVersionId }`, with one
  * `eddsa-jcs-2022` Data Integrity proof
  * (`proofPurpose` `assertionMethod`) by the export-signing key, named as
  * `{serverDid}#{publicKeyMultibase}`. `id` is the object's absolute URL on
@@ -16,8 +16,9 @@
  * `originId` are the object's write stamp; a Resource's `meta` is its `/meta`
  * record's stamp and generation, present once metadata was written. A Space
  * or Collection Metadata statement carries no `meta` and no `digest`.
- * `didLogVersionId` names the log entry whose document lists the key, since
- * `proof.created` is not trustworthy.
+ * `didVersionId` names the version of the signing DID's document that lists
+ * the key, since `proof.created` is not trustworthy: for a `did:webvh` signer,
+ * the `versionId` of the log entry.
  *
  * The signed bytes say nothing about the export itself: no export time and
  * no reference to the manifest. The proof carries no `created` either, and
@@ -85,8 +86,11 @@ export interface ExportAttestor {
   serverDid: string
   /** the log's bytes, exactly as the log Resource serves them */
   didLog: Uint8Array
-  /** the `versionId` of the snapshot's head entry */
-  didLogVersionId: string
+  /**
+   * the version of the signing DID's document that lists the key; for this
+   * server's `did:webvh` signer, the `versionId` of the snapshot's head entry
+   */
+  didVersionId: string
   /** the signing key pair, its `id` `{serverDid}#{publicKeyMultibase}` */
   keyPair: Ed25519VerificationKey
 }
@@ -182,7 +186,7 @@ export async function loadExportAttestor({
         serverUrl,
         serverDid,
         didLog,
-        didLogVersionId: headOf(log).versionId,
+        didVersionId: headOf(log).versionId,
         keyPair: serverKeyPair({ serverDid, signingKey })
       }
     }
@@ -281,7 +285,7 @@ export async function attestArchiveEntries({
       await signStatement({
         statement: {
           ...statement,
-          didLogVersionId: attestor.didLogVersionId
+          didVersionId: attestor.didVersionId
         },
         suite
       })

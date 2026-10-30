@@ -109,7 +109,7 @@ holds no content and gets none. A Collection tombstone is a Space-level file
 entry and gets no statement either.
 
 A statement is
-`{ id, type, createdBy, createdAt, updatedAt, updatedAtCounter, originId, meta, digest, didLogVersionId }`.
+`{ id, type, createdBy, createdAt, updatedAt, updatedAtCounter, originId, meta, digest, didVersionId }`.
 
 - `id` is the object's absolute URL on this server.
 - The server-managed members are read back off the archived Metadata file or
@@ -123,8 +123,11 @@ A statement is
   archived. See [validators-and-stamps.md](validators-and-stamps.md).
 - A Resource's `meta` is its `/meta` record's stamp and generation, present once
   metadata was written. A Metadata statement carries no `meta` and no `digest`.
-- `didLogVersionId` is the snapshot head's `versionId`, since `proof.created` is
-  not trustworthy.
+- `didVersionId` is the version of the signing DID's document that lists the
+  key, since `proof.created` is not trustworthy. For a `did:webvh` signer it is
+  the `versionId` of the log entry, here the snapshot head's. The name is
+  method-neutral; the spec's `did:webvh` archive signer profile gives it this
+  meaning.
 
 ### The proof
 
@@ -171,7 +174,7 @@ A statement is judged on its own.
 1. Its `verificationMethod` must name the snapshot's DID, and that DID must be
    the `server/id` DID of the host the statement's `id` names.
 2. The document is resolved at the log entry whose `versionId` equals the
-   statement's `didLogVersionId`, by verifying the log up to that entry. It must
+   statement's `didVersionId`, by verifying the log up to that entry. It must
    list the method under `assertionMethod`, and at most `capabilityInvocation`.
 3. The `eddsa-jcs-2022` proof is verified.
 4. The statement's claims are compared with the archived object: `createdBy`,

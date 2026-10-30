@@ -30,7 +30,12 @@ is the file-name dialect, the `manifest.yml` document and the packer. It lives
 in `@interop/space-archive`, shared with the wallets that read a backup.
 `src/lib/importTar.ts` reads the same dialect back. The codec is isomorphic and
 resolves a streamx-based tar-stream `Pack`, which the backend wraps with
-`Readable.from`.
+`Readable.from`. The manifest's `url` values are the PWS spec's identifier with
+the defining section's anchor as the fragment (`https://w3id.org/pws#spaces` on
+the Space entries, `https://w3id.org/pws#archive-manifest` on the manifest's own
+entry). They are descriptive: the import walk classifies entries by path and
+never reads them, so an archive written before this change, which carries the
+rendered document's `w3c-ccg.github.io` host, imports unchanged.
 
 The Export Space handler passes this server's Service Description to
 `exportSpace`. The codec writes it into the archive verbatim as its

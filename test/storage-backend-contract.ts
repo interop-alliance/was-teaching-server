@@ -11878,7 +11878,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         for (const statement of statements) {
           assert.equal(statement.type, 'StorageAttestation')
-          assert.equal(statement.didLogVersionId, attestor.didLogVersionId)
+          assert.equal(statement.didVersionId, attestor.didVersionId)
           assert.equal(statement.proof.cryptosuite, 'eddsa-jcs-2022')
           assert.equal(statement.proof.proofPurpose, 'assertionMethod')
           assert.equal(
@@ -12377,7 +12377,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           serverUrl,
           serverDid: did,
           didLog: Buffer.from(logToJsonlString(log)),
-          didLogVersionId: log.at(-1)!.versionId,
+          didVersionId: log.at(-1)!.versionId,
           keyPair: new Ed25519VerificationKey({
             id: `${did}#${signingKey.publicKeyMultibase}`,
             controller: did,
@@ -12411,7 +12411,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const renamed = await rewriteArchive((name, body) =>
           name === 'provenance.jsonl'
             ? editJsonLine(body, isPlainStatement, line => {
-                line.didLogVersionId = '9-QmNoSuchEntry'
+                line.didVersionId = '9-QmNoSuchEntry'
               })
             : body
         )

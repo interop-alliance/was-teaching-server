@@ -179,9 +179,10 @@ describe('Storage API', () => {
 
         assert.equal(manifest['ubc-version'], '0.1')
         assert.equal(
-          manifest.contents.space.url,
-          'https://w3c-ccg.github.io/portable-web-spaces-spec/#spaces'
+          manifest.contents['manifest.yml'].url,
+          'https://w3id.org/pws#archive-manifest'
         )
+        assert.equal(manifest.contents.space.url, 'https://w3id.org/pws#spaces')
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

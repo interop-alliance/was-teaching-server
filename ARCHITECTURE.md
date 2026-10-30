@@ -203,11 +203,13 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   **`src/lib/importRevocations.ts`** and each backend's `exportSpace` /
   `importSpace` -- Export and Import Space. The archive codec lives in
   `@interop/space-archive`; a backend builds the entry tree and the plan builder
-  reads it back. Import is skip-not-overwrite, applies the live write shape
-  checks to archived objects before anything is written, and installs archived
-  revocations last. No write creates a container implicitly, and every other
-  write re-checks its container under the delete lock. See
-  [docs/export-import.md](docs/export-import.md).
+  reads it back. The manifest's `url` values are the spec identifier
+  `https://w3id.org/pws` with a section fragment; import never reads them, so an
+  archive written under the rendered document's host imports unchanged. Import
+  is skip-not-overwrite, applies the live write shape checks to archived objects
+  before anything is written, and installs archived revocations last. No write
+  creates a container implicitly, and every other write re-checks its container
+  under the delete lock. See [docs/export-import.md](docs/export-import.md).
 - **`src/storage.ts`** -- supplies `defaultBackend()`, which opens the
   `FileSystemBackend` that the plugin uses when no `backends` option is given.
   The open backends form a `ServerBackends` set, decorated onto the instance as

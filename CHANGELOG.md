@@ -2,6 +2,27 @@
 
 ## 0.43.0 - TBD
 
+### Changed
+
+- **Breaking (archive wire change):** a provenance statement in an export
+  archive's `provenance.jsonl` names the version of the signing DID's document
+  that lists the signing key as `didVersionId`, the member the PWS spec's
+  Archive provenance section now fixes, in place of `didLogVersionId`. For this
+  server's `did:webvh` identity it is the log entry's `versionId`, as the spec's
+  `did:webvh` archive signer profile says. The import verifier reads
+  `didVersionId` alone: a statement carrying only `didLogVersionId` names no
+  version and is counted as `unknownSigner`, so its `createdBy` is dropped.
+  Archives written under the old name are not rewritten. The
+  `@interop/space-archive` provenance fixture is re-signed under the new member.
+- **Archive wire text:** the `url` values in an exported archive's
+  `manifest.yml` are the PWS spec's identifier with the defining section's
+  anchor as the fragment (`https://w3id.org/pws#spaces`,
+  `https://w3id.org/pws#archive-manifest`, ...), as the spec's Space Archive
+  Format section fixes them, in place of the rendered document's
+  `w3c-ccg.github.io` location. The packer is `@interop/space-archive` 0.11.0.
+  Import never reads the values, so archives written under the old host import
+  unchanged.
+
 ### Added
 
 - `startTestServer` (the `was-teaching-server/testing` entry point) returns

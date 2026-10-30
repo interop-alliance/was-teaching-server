@@ -192,7 +192,7 @@ describe('Server key relationships', () => {
             serverUrl,
             serverDid: did,
             didLog: Buffer.from(didLog),
-            didLogVersionId: readLogFromString(didLog).at(-1)!.versionId,
+            didVersionId: readLogFromString(didLog).at(-1)!.versionId,
             keyPair: new Ed25519VerificationKey({
               id: `${did}#${publicKeyMultibase}`,
               controller: did,
