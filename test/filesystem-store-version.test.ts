@@ -22,6 +22,7 @@ import {
   STORE_FILE_NAME,
   STORE_MIGRATIONS,
   applyStoreMigrations,
+  fileExists,
   type StoreMigration
 } from '../src/backends/filesystemStore.js'
 import { TEMP_FILE_ORPHAN_AGE_MS } from '../src/lib/atomicFile.js'
@@ -37,7 +38,7 @@ const logger = pino({ level: 'silent' })
 /**
  * A migration that does nothing.
  */
-const noop: StoreMigration = async () => {}
+const noop: StoreMigration = { kind: 'convert', run: async () => {} }
 
 /**
  * A migration that counts how often it runs.
@@ -48,8 +49,11 @@ function countingMigration(): {
 } {
   let ran = 0
   return {
-    migration: async () => {
-      ran++
+    migration: {
+      kind: 'convert',
+      run: async () => {
+        ran++
+      }
     },
     runs: () => ran
   }
@@ -153,15 +157,88 @@ describe('Filesystem store version', () => {
     assert.equal(counting.runs(), 1)
   })
 
+  it('runs every pending refusing step before any converting step writes', async () => {
+    // A store the previous release wrote, at the newest layout it knows.
+    await stamp(dataDir, 1)
+    await mkdir(path.join(dataDir, 'spaces'))
+    const previous: StoreMigration[] = [noop]
+    const marker = path.join(dataDir, 'converted')
+    const convert: StoreMigration = {
+      kind: 'convert',
+      run: async () => {
+        await writeFile(marker, '')
+      }
+    }
+    const refuse: StoreMigration = {
+      kind: 'refuse',
+      run: async () => {
+        throw new StoreVersionError({ detail: 'no conversion for this store' })
+      }
+    }
+    await assert.rejects(
+      applyStoreMigrations({
+        dataDir,
+        logger,
+        migrations: [...previous, convert, refuse]
+      }),
+      StoreVersionError
+    )
+    assert.equal(await storedVersion(dataDir), 1, 'nothing was stamped')
+    assert.equal(
+      await fileExists(marker),
+      false,
+      'the converting step before the refusal did not run'
+    )
+    // The previous release boots on the store as it left it.
+    const { version } = await applyStoreMigrations({
+      dataDir,
+      logger,
+      migrations: previous
+    })
+    assert.equal(version, 1)
+  })
+
+  it('runs a passing refusing step once, ahead of the converting steps', async () => {
+    await stamp(dataDir, 1)
+    await mkdir(path.join(dataDir, 'spaces'))
+    const order: string[] = []
+    const migrations: StoreMigration[] = [
+      noop,
+      {
+        kind: 'convert',
+        run: async () => {
+          order.push('convert-2')
+        }
+      },
+      {
+        kind: 'refuse',
+        run: async () => {
+          order.push('refuse-3')
+        }
+      }
+    ]
+    const { version } = await applyStoreMigrations({
+      dataDir,
+      logger,
+      migrations
+    })
+    assert.equal(version, 3)
+    assert.deepEqual(order, ['refuse-3', 'convert-2'])
+    assert.equal(await storedVersion(dataDir), 3)
+  })
+
   it('re-runs a step interrupted before its stamp write', async () => {
     await stamp(dataDir, 1)
     const marker = path.join(dataDir, 'marker')
     let fail = true
     // Idempotent: writes the same marker however often it runs.
-    const interruptible: StoreMigration = async ({ dataDir: root }) => {
-      await writeFile(path.join(root, 'marker'), 'migrated')
-      if (fail) {
-        throw new Error('interrupted')
+    const interruptible: StoreMigration = {
+      kind: 'convert',
+      run: async ({ dataDir: root }) => {
+        await writeFile(path.join(root, 'marker'), 'migrated')
+        if (fail) {
+          throw new Error('interrupted')
+        }
       }
     }
     const migrations = [noop, interruptible]
@@ -182,9 +259,12 @@ describe('Filesystem store version', () => {
   it('lets only one of two concurrent runners migrate', async () => {
     await stamp(dataDir, 1)
     let ran = 0
-    const slow: StoreMigration = async () => {
-      ran++
-      await new Promise(resolve => setTimeout(resolve, 200))
+    const slow: StoreMigration = {
+      kind: 'convert',
+      run: async () => {
+        ran++
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
     }
     const migrations = [noop, slow]
     const results = await Promise.all([
@@ -772,9 +852,12 @@ describe('Filesystem store origin id', () => {
     await mkdir(path.join(dataDir, 'spaces'))
     await writeFile(path.join(dataDir, 'spaces', 'entry'), 'data')
     let fail = true
-    const interruptible: StoreMigration = async () => {
-      if (fail) {
-        throw new Error('interrupted')
+    const interruptible: StoreMigration = {
+      kind: 'convert',
+      run: async () => {
+        if (fail) {
+          throw new Error('interrupted')
+        }
       }
     }
     const migrations = [interruptible]
@@ -799,8 +882,11 @@ describe('Filesystem store origin id', () => {
     await stamp(dataDir, 0, 'kept-id')
     await mkdir(path.join(dataDir, 'spaces'))
     const seen: Array<{ version: number; originId?: string }> = []
-    const observe: StoreMigration = async ({ dataDir: root }) => {
-      seen.push(await storedRecord(root))
+    const observe: StoreMigration = {
+      kind: 'convert',
+      run: async ({ dataDir: root }) => {
+        seen.push(await storedRecord(root))
+      }
     }
     const result = await applyStoreMigrations({
       dataDir,
@@ -825,9 +911,12 @@ describe('Filesystem store origin id', () => {
     )
     await mkdir(path.join(dataDir, 'spaces'))
     const seen: Array<{ version: number; clockHighWater?: number }> = []
-    const observe: StoreMigration = async ({ dataDir: root }) => {
-      const { version, clockHighWater } = await storedRecord(root)
-      seen.push({ version, clockHighWater })
+    const observe: StoreMigration = {
+      kind: 'convert',
+      run: async ({ dataDir: root }) => {
+        const { version, clockHighWater } = await storedRecord(root)
+        seen.push({ version, clockHighWater })
+      }
     }
     const result = await applyStoreMigrations({
       dataDir,

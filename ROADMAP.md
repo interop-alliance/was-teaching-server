@@ -27,8 +27,6 @@ Ready:
   write
 - WAS-220 [M] (*) A Resource write repairs a Collection copy the data backend
   lost
-- WAS-242 [M] (fs) A refused layout step strands the store between releases, and
-  the deploy has no rollback
 - WAS-181 [L] (*) Pin that a sidecar imported without timestamps is served with
   both on each backend
 - WAS-83 [L] (*) Anonymous Get Policy with a malformed id now returns 401
@@ -494,44 +492,6 @@ re-check there answers 404 for a Collection that exists, and retrying the
 Resource write never repairs it; only a Collection Metadata write does. The two
 writers of one state recover differently after the same torn write.
 
-### WAS-242: [M] (fs) A refused layout step strands the store between releases, and the deploy has no rollback
-
-- status: todo
-- priority: medium
-- backend: fs
-- labels: server, storage, deploy, ops
-- discovered-from: the v0.43.0 production deploy failure (2026-10-30)
-- acceptance:
-  - [ ] The migration runner evaluates every refusing step (one that only
-        inspects and throws) before any converting step writes, so a refused
-        boot leaves `store.json` and the data dir as the previous release wrote
-        them
-  - [ ] A test boots a store the previous layout wrote through a migration list
-        whose converting step precedes a refusing step, and asserts the refusal
-        leaves the store bootable by the previous migration list
-  - [ ] The Deploy workflow takes a volume snapshot before `flyctl deploy`
-        (`flyctl volumes snapshots create`), so a failed deploy has a restore
-        point of its own
-  - [ ] docs/deployment-fly.io.md gains a "Rolling back" section: dispatch the
-        workflow on the previous tag, when that works, and restore the snapshot
-        into a new volume when it does not
-
-The v0.43.0 release deploy failed its health check. The boot ran layout steps 6,
-7 and 8 (step 8 moves each Space's revocation records into its Space dir),
-stamped `store.json` at 8 after each, and step 9 refused the Metadata files
-under their old names. Dispatching the Deploy workflow on the v0.42.3 tag then
-failed the same way: that release knows layouts up to 5 and refuses a
-`store.json` stamped newer. Neither release booted, and the only machine was
-left on a non-booting image, since Fly's rolling update replaces it in place
-with no automatic rollback. The only way out was a wipe.
-
-Two defects. The runner stamps converting steps before a later refusing step has
-had its say, so a refusal that is meant to be harmless (boot again after fixing
-the store) instead leaves the store readable by no release. And the deploy has
-no safety net: no snapshot before the roll, no documented rollback, and a
-dispatch on an older tag is only a rollback while the store is still at that
-tag's layout.
-
 ### WAS-181: [L] (*) Pin that a sidecar imported without timestamps is served with both on each backend
 
 - status: todo
@@ -614,8 +574,8 @@ orders by content stamps would not see that change as a content revision.
 - discovered-from: portable-wallet-profile-spec PWP-1 (archived 2026-10-30)
 - touches:
   - portable-wallet-profile-spec: PWP-1. SHIPPED (2026-09-16): identifier
-    `https://w3id.org/pws/wallet-profile`, version `0.1`, entry members
-    exactly `version` and an optional `url`
+    `https://w3id.org/pws/wallet-profile`, version `0.1`, entry members exactly
+    `version` and an optional `url`
     (`https://interop-alliance.github.io/portable-wallet-profile-spec/`), no
     `features`. A server MUST NOT list the entry unless its PWS `0.5` entry
     carries `listing`, `collection-management`, `space-management`, `policy`,
@@ -627,28 +587,27 @@ orders by content stamps would not see that change as a content revision.
 - acceptance:
   - [ ] `SERVICE_FEATURES` (`src/serviceDescription.ts:74`) gains the
         `encryption` token. The server already implements the Collection
-        `encryption` member (set-once, served from the governed log's head)
-        but does not advertise it, and the wallet profile requires the token.
-        Verify the PWS spec's definition of the token is met in full before
-        adding it
+        `encryption` member (set-once, served from the governed log's head) but
+        does not advertise it, and the wallet profile requires the token. Verify
+        the PWS spec's definition of the token is met in full before adding it
   - [ ] `WALLET_PROFILE_IDENTIFIER`, `WALLET_PROFILE_VERSION` (`'0.1'`) and
         `WALLET_PROFILE_URL` constants in `src/config.default.ts`, documented
         like the authz and EC profile constants beside them
   - [ ] The service description lists the entry under its identifier with
         `version` and `url` only
-  - [ ] A test asserts the listing, and a test asserts the invariant the
-        profile states: every token the profile requires is present in the
-        PWS and PWS-EC entries this server serves, so the entry can never be
-        listed while a required token is missing
+  - [ ] A test asserts the listing, and a test asserts the invariant the profile
+        states: every token the profile requires is present in the PWS and
+        PWS-EC entries this server serves, so the entry can never be listed
+        while a required token is missing
   - [ ] ARCHITECTURE.md's service description section names the profile among
         the `specs` keys the server lists
   - [ ] CHANGELOG entry
 
 Filed 2026-10-30 from portable-wallet-profile-spec PWP-1, whose spec text
 shipped 2026-09-16; this is the server half it named. Listing the entry is a
-conformance claim and adds no route. The one substantive change is the
-missing `encryption` token, without which the server does not satisfy the
-profile and may not list it.
+conformance claim and adds no route. The one substantive change is the missing
+`encryption` token, without which the server does not satisfy the profile and
+may not list it.
 
 Conformance gaps against the spec, spec-side proposals this server would
 implement once decided, and research that may end in either.
@@ -1329,7 +1288,7 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
     `parseReplicaRegistration`), `src/lib/webvhLogLocation.ts` (the cross-Space
     lookup), docs/replication.md ("Registration checks"), ARCHITECTURE.md (the
     `src/sync/` entry)
-  - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is
     amended and the replication companion (`replication/spec.md`, "The
     controller check") states the branch, with no binding of the local did:key
     to the capability; WASS-58's touches gain the `fromSpace` comparison
@@ -1419,7 +1378,7 @@ Related: WAS-207 (a log that declares witnesses still cannot replicate), WAS-210
     document)
   - wallet-core: the ladder-signed pull mint, the ladder-clause counterpart
     fixtures, and the `hostConformance.ts` header's predicate count
-  - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is
     amended and the replication companion ("Signing the pull capability")
     defines the `ReplicaServer` pointer and cites the predicate by name;
     WASS-58's touches gain the pull capability's target
@@ -1502,7 +1461,7 @@ log, once per replica server.
     operations"), ARCHITECTURE.md (the `src/sync/` entry, "controller-only"),
     `decisions/0002` (amended 2026-10-26), `decisions/0005` (its Context says
     the registration record is controller-only)
-  - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is
     amended and the replication companion ("Registrations", Authorization)
     states the delegated path and the `POST` bound; WASS-1 / WAS-59's
     Authorization column for `replicas` still open

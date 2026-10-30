@@ -409,3 +409,33 @@ but deploys only when the run passed and was triggered by a push.
 
 A deploy from a workstation needs the same two values, passed as in the
 first-time setup above. A plain `fly deploy` would deploy the placeholders.
+
+### Rolling back
+
+The production workflow snapshots the app's data volume before each deploy
+(`fly volumes snapshots create`), so a deploy that fails its health check has a
+restore point from just before the roll. Fly replaces the one machine in place,
+so a failed deploy leaves it on the new image, down, with no automatic rollback.
+The snapshot step needs the deploy token to cover volume snapshots; if it fails,
+the deploy does not run.
+
+Which way back depends on what the failed boot wrote. The server stamps
+`store.json` after each converting layout step, and a server refuses a
+`store.json` newer than it knows. The runner runs every pending refusing step
+before any converting step writes, so a boot a refusing step refused wrote
+nothing.
+
+- The new release stamped nothing. Dispatch the Deploy workflow on the previous
+  tag (`gh workflow run deploy.yml --ref v<previous>`). The previous release
+  boots on the volume as it is.
+- The new release stamped a newer layout, or the failure is not a layout refusal
+  and the previous release still does not boot. Restore the snapshot into a new
+  volume (`fly volumes snapshots list <volume-id>`, then
+  `fly volumes create <name> --snapshot-id <snapshot-id>`), attach it to the
+  machine in place of the current one, and dispatch the workflow on the previous
+  tag. If the data is disposable, wipe the volume instead, as the staging
+  workflow's `wipe_data` option does, and re-run the failed deploy.
+
+Read the machine's log first (`fly logs --app <app> --no-tail`): a
+`StoreVersionError` names the layout version `store.json` carries and the one
+the running release knows, which tells the two cases apart.
