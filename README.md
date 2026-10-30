@@ -614,9 +614,9 @@ and deletes the Spaces it created so far.
 
 `--record <dir>` with `--runner <name>` also writes the run as a JSON run
 record, at `<dir>/<runner>/<host>/<stamp>.json`, once the run completes: its
-start, the target, the version and build time the target's `/health` reports,
-the runner and its machine, the settings, and every measurement. A run that
-fails or is interrupted records nothing, and an existing record is never
+start and finish, the target, the version and build time the target's `/health`
+reports, the runner and its machine, the settings, and every measurement. A run
+that fails or is interrupted records nothing, and an existing record is never
 replaced. The runner names the machine, so the records under one runner and host
 form one series. They are kept in the `perf-results/` folder of the
 [ops repo](https://github.com/interop-alliance/ops), whose README describes the

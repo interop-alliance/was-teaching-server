@@ -1,5 +1,14 @@
 # History
 
+## 0.43.1 - TBD
+
+### Added
+
+- A `pnpm perf:remote --record` run record carries `finished_at`, when the run's
+  measurements ended, before it deletes its Spaces, so the minutes from
+  `datetime` to it are how long the run took. The record stays `schema` 1:
+  `finished_at` is a new member, absent in records made before it.
+
 ## 0.43.0 - 2026-10-29
 
 ### Changed
