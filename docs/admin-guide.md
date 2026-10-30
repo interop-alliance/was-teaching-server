@@ -208,10 +208,11 @@ easier to recover from with a backup.
 **Scope.** The server has an identity of its own, separate from every Space
 controller: a `did:webvh` DID whose document lists the key the server will sign
 export archives with. Both are published on `GET /service` under `instance`
-(`exportSigningKey`, `serverDid`). Once the identity is provisioned, every Space
-export carries signed provenance (see Signed exports below). Until then exports
-are unsigned. The same key signs the server's invocations when it replicates a
-Space from a peer, once the log allows it (see Enabling replication below).
+(`exportSigningMethod`, `serverDid`). Once the identity is provisioned, every
+Space export carries signed provenance (see Signed exports below). Until then
+exports are unsigned. The same key signs the server's invocations when it
+replicates a Space from a peer, once the log allows it (see Enabling replication
+below).
 
 **Three secrets, two holders.** The server holds one secret, the seed its
 signing key is derived from (`WAS_SERVER_KEY_SEED`). The administrator holds the
@@ -229,7 +230,8 @@ CLI is the only writer, and the admin's wallet copy is the source of truth. A
 compromised server can forge signatures until the seed is rotated, but it cannot
 take the DID over. A data wipe cannot lose the update key, because the server
 never had it. The admin, in turn, never holds or sees the seed. The server key
-enters the log only as its public `exportSigningKey`, read off `/service`.
+enters the log only as its public key, read off `/service` as
+`exportSigningMethod`.
 
 **Where the log lives.** The DID is `did:webvh:{scid}:{host}:space:server:id`,
 and its log is the `did.jsonl` Resource of the `id` Collection in the `server`
@@ -257,7 +259,7 @@ change, so the next rotation needs a fresh identity.
 
 | variable              | role                                                                                                                                                                                         |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WAS_SERVER_KEY_SEED` | 32-byte Ed25519 seed in bnid's secret-key-seed encoding (`z1A...`). Unset: no signing key, `/service` carries no `exportSigningKey`, and exports carry no provenance.                        |
+| `WAS_SERVER_KEY_SEED` | 32-byte Ed25519 seed in bnid's secret-key-seed encoding (`z1A...`). Unset: no signing key, `/service` carries no `exportSigningMethod`, and exports carry no provenance.                     |
 | `WAS_ADMIN_DID`       | The admin's Ed25519 `did:key`, controller of the `server` Space. It is not the log's update key. Unset: the `server` Space is not provisioned, and no client can be told apart as the admin. |
 
 Both are read at startup. A malformed seed, a seed of the wrong length, or a
@@ -314,14 +316,14 @@ wallet handles `admin` (the admin `did:key`), `server` (the `server` Space) and
    `did:key:`:
 
    ```bash
-   curl -s {SERVER_URL}/service | jq -r .instance.exportSigningKey
+   curl -s {SERVER_URL}/service | jq -r .instance.exportSigningMethod
    ```
 
 6. Mint the DID around that key:
 
    ```bash
    di did create webvh --url {SERVER_URL}/space/server/id \
-     --verification-key <exportSigningKey multibase> --purpose assertionMethod \
+     --verification-key <exportSigningMethod multibase> --purpose assertionMethod \
      --vm-id-fragment multibase --save --handle server-id
    ```
 
@@ -378,7 +380,7 @@ one, so the SCID and the DID stay the same.
 
 1. Set the new `WAS_SERVER_KEY_SEED` and restart. `/service` drops `serverDid`
    from here until step 4.
-2. Read the new `exportSigningKey` off `/service`, as in provisioning step 5.
+2. Read the new `exportSigningMethod` off `/service`, as in provisioning step 5.
 3. Replace the key in the log:
 
    ```bash

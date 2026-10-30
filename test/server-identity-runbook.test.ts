@@ -75,7 +75,7 @@ describe(
       seed: Uint8Array,
       serverDid: string,
       logPath: string,
-      firstExportSigningKey: string
+      firstExportSigningMethod: string
 
     /**
      * Runs `di` with the suite's wallet directory; rejects with the CLI's
@@ -130,9 +130,9 @@ describe(
       return versionId
     }
 
-    function signingKeyMultibase(exportSigningKey: string): string {
-      assert.match(exportSigningKey, /^did:key:z/)
-      return exportSigningKey.slice('did:key:'.length)
+    function signingKeyMultibase(exportSigningMethod: string): string {
+      assert.match(exportSigningMethod, /^did:key:z/)
+      return exportSigningMethod.slice('did:key:'.length)
     }
 
     async function syncSigner() {
@@ -207,7 +207,7 @@ describe(
 
       const instance = await serviceInstance()
       assert.equal(instance.serverDid, undefined)
-      firstExportSigningKey = instance.exportSigningKey
+      firstExportSigningMethod = instance.exportSigningMethod
       const { stdout } = await di([
         'did',
         'create',
@@ -215,7 +215,7 @@ describe(
         '--url',
         `${baseServerUrl}space/server/id`,
         '--verification-key',
-        signingKeyMultibase(firstExportSigningKey),
+        signingKeyMultibase(firstExportSigningMethod),
         '--purpose',
         'assertionMethod',
         '--vm-id-fragment',
@@ -260,7 +260,7 @@ describe(
 
       const instance = await serviceInstance()
       assert.equal(instance.serverDid, undefined)
-      assert.notEqual(instance.exportSigningKey, firstExportSigningKey)
+      assert.notEqual(instance.exportSigningMethod, firstExportSigningMethod)
 
       await di([
         'did',
@@ -268,7 +268,7 @@ describe(
         'replace-key',
         'server-id',
         '--verification-key',
-        signingKeyMultibase(instance.exportSigningKey),
+        signingKeyMultibase(instance.exportSigningMethod),
         '-y'
       ])
       await putLog()
@@ -319,7 +319,7 @@ describe(
       assert.ok('refusal' in before)
       assert.equal(before.refusal, 'no-server-did')
 
-      const multibase = signingKeyMultibase(instance.exportSigningKey)
+      const multibase = signingKeyMultibase(instance.exportSigningMethod)
       await di([
         'did',
         'webvh',

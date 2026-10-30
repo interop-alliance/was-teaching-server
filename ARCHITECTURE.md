@@ -150,7 +150,7 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `specs` entries (the core spec, the zCap authorization profile, the Encrypted
   Collections profile, the client-annex profile, and the replication
   specification). Listing an entry is a conformance claim. The core entry
-  carries `originId`; the `instance` member carries `exportSigningKey` and
+  carries `originId`; the `instance` member carries `exportSigningMethod` and
   `serverDid`. A root-level `onSend` hook appends
   `Link: <.../service>; rel="service"` to every response. See
   [docs/service-description.md](docs/service-description.md).
@@ -344,10 +344,10 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
 - **Server identity** -- the server's `did:webvh`
   (`did:webvh:{scid}:{host}:space:server:id`) together with the export-signing
   key derived from `WAS_SERVER_KEY_SEED`. The key is advertised on `/service` as
-  `exportSigningKey`; the DID as `serverDid` once the log lists the key under
-  `assertionMethod`, and under `capabilityInvocation` at most. The same key
-  signs export provenance, only while the DID is advertised, and, once listed
-  under `capabilityInvocation`, sync invocations, as the method
+  `exportSigningMethod`, its `did:key`; the DID as `serverDid` once the log
+  lists the key under `assertionMethod`, and under `capabilityInvocation` at
+  most. The same key signs export provenance, only while the DID is advertised,
+  and, once listed under `capabilityInvocation`, sync invocations, as the method
   `{serverDid}#{publicKeyMultibase}`. Distinct from the admin identity, which
   holds the log's update key. Avoid: server DID key, server controller.
 - **Origin id** -- the store-level id that is the origin half of a write's

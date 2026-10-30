@@ -1,6 +1,15 @@
 # History
 
-## 0.43.1 - TBD
+## 0.44.0 - TBD
+
+### Changed
+
+- **Breaking (`/service` wire change):** the `instance` member advertises the
+  server's export-signing key as `exportSigningMethod`, the name the PWS spec
+  resolved for its Instance Disclosure list, in place of `exportSigningKey`. The
+  value is unchanged, the key's `did:key`. No alias for the old name is served.
+  The identity module's signing-key record carries the new field name too; the
+  plugin options are unchanged.
 
 ### Added
 

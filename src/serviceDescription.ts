@@ -120,7 +120,7 @@ export function serviceDescriptionUrl(serverUrl: string): string {
  *   core specification's entry
  * @param options.discloseVersion {boolean}   include `instance.version`
  * @param [options.identity] {object}   the instance's identity members
- *   (`exportSigningKey`, `serverDid`); absent members are left out
+ *   (`exportSigningMethod`, `serverDid`); absent members are left out
  * @returns {ServiceDescription}
  */
 export function buildServiceDescription({
@@ -134,7 +134,7 @@ export function buildServiceDescription({
   discloseVersion: boolean
   identity?: Pick<
     NonNullable<ServiceDescription['instance']>,
-    'exportSigningKey' | 'serverDid'
+    'exportSigningMethod' | 'serverDid'
   >
 }): ServiceDescription {
   return {
@@ -183,8 +183,8 @@ export function buildServiceDescription({
       ...(discloseVersion && { version: SERVER_VERSION }),
       source: PACKAGE_INSTANCE.source,
       homepage: PACKAGE_INSTANCE.homepage,
-      ...(identity.exportSigningKey !== undefined && {
-        exportSigningKey: identity.exportSigningKey
+      ...(identity.exportSigningMethod !== undefined && {
+        exportSigningMethod: identity.exportSigningMethod
       }),
       ...(identity.serverDid !== undefined && {
         serverDid: identity.serverDid
@@ -278,7 +278,7 @@ export async function initServiceDescriptionRoutes(
             originId: storage.originId,
             discloseVersion,
             identity: {
-              exportSigningKey: serverSigningKey?.exportSigningKey,
+              exportSigningMethod: serverSigningKey?.exportSigningMethod,
               serverDid: did
             }
           })
