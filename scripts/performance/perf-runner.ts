@@ -17,7 +17,6 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
-import { spacesUrl } from '@interop/was-client/paths'
 import type { Collection } from '@interop/was-client'
 
 import {
@@ -39,6 +38,7 @@ import {
   poolBackends,
   seedResourceCount,
   serialWriteLoad,
+  serverPathUrl,
   type EncryptedReadIds,
   type LoadSettings,
   type MatrixRow,
@@ -514,7 +514,7 @@ export async function runAgainstServer<Result>({
  * Makes a client of the server at `serverUrl`, signing with the `did:key`
  * `seed` derives: the identity the seeded Spaces were written under.
  * @param options {object}
- * @param options.serverUrl {string}   the server's base URL
+ * @param options.serverUrl {string}   the server's base server URL
  * @param options.seed {Uint8Array}
  * @returns {Promise<WasClient>}
  */
@@ -527,7 +527,7 @@ export async function connect({
 }): Promise<WasClient> {
   const keyPair = await Ed25519VerificationKey.generate({ seed })
   return WasClient.fromSigner({
-    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    baseServerUrl: serverUrl,
     signer: keyPair.didKeySigner()
   })
 }
@@ -785,7 +785,7 @@ export async function runTests({
       clients,
       durationSeconds,
       pool: sizeTargets({ spaceId: privateSpaceId, size, path: 'vc-1' }),
-      op: ({ path }) => was.request({ path })
+      op: ({ path }) => was.request({ url: serverPathUrl({ was, path }) })
     })
     await record({ rows, row: { test: 'Signed read', size, result } })
   }
@@ -796,7 +796,7 @@ export async function runTests({
       pool: write,
       op: ({ path }, worker, count) =>
         was.request({
-          path: `${path}/w-${worker}-${count}`,
+          url: serverPathUrl({ was, path: `${path}/w-${worker}-${count}` }),
           method: 'PUT',
           json: { worker, count }
         })

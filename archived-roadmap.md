@@ -6701,3 +6701,62 @@ filesystem store's layout as well as the archive; layout step 9 refuses a store
 written under the old names, in the pattern of the earlier no-conversion steps,
 instead of renaming files in place. No Space id is reserved for the archive any
 more; `validateId.ts` still reserves `server`.
+
+### WAS-234: [M] (*) `startTestServer` returns the base server URL
+
+- status: done (2026-10-29)
+- priority: medium
+- labels: tests, testing-counterpart
+- backend: *
+- discovered-from: WCL-140 (was-client, 2026-10-28); re-scoped 2026-10-29 to
+  was-client decision 0003
+- touches:
+  - was-client: its `test/integration/globalSetup.ts` derives the base with
+    `baseServerUrlOf` from the service URL it discovers off `serverUrl`; it
+    switches to the returned value once this ships (follow-up to file there once
+    this server's testing entry is published)
+  - was-react, was-sync and dcw: their counterpart tests build clients from the
+    value (follow-ups to file there on the same publish)
+  - pws-conformance-suite: 0.34.0 still imports `spacesUrl` from
+    `@interop/was-client/paths`, which was-client 0.100.0 removed, so
+    `pnpm conformance:local` fails to load the suite under this repo's
+    was-client 0.100.1 dedup (follow-up to file there; the server's wire
+    behavior is unchanged)
+- acceptance:
+  - [x] `startTestServer` returns `baseServerUrl` (the listen origin in
+        canonical form, with its trailing slash: the URL under which this server
+        serves `service`, `spaces/` and `space/{id}/`) beside `serverUrl`, and
+        `src/testing.ts` documents that ZCap clients are built with
+        `new WasClient({ baseServerUrl })`
+  - [x] `test/helpers.ts` builds its `@interop/was-client` from `baseServerUrl`
+        instead of `spacesUrl({ baseUrl: serverUrl })`, opens Spaces with
+        `was.space(id)` or `spaceAt(space.url)` as each test holds, and the
+        suite is green against the was-client release that ships `baseServerUrl`
+        (0.101.0 or later); the pair rule of LEARNINGS.md applies to the bump
+        (shipped: was-client 0.100.1 is the release that carries
+        `baseServerUrl`; the pair bump also ported every `was.request({ path })`
+        in `test/` and `scripts/performance/` to the absolute `url` 0.100.0
+        requires, and roots the one bare `was.grant({ target })` on a Collection
+        at its Space with `spaceUrl`)
+  - [x] A counterpart test asserts the layout the spec's Server Discovery
+        section fixes: the service description's `url` is
+        `{baseServerUrl}service`, its `spaces` member is
+        `{baseServerUrl}spaces/`, and a Create Space `Location` is
+        `{baseServerUrl}space/{id}/` (`test/server-layout-api.test.ts`)
+  - [x] On the `@interop/storage-core` bump that makes `SpaceMetadata.id`
+        optional (0.42.0), `StoredSpaceMetadata` in `src/types.ts` pins `id`
+        back to required, so `listSpaces()` keeps returning a definite id and no
+        call site adds a `!` or a throw (`listSpaces()` is typed as the stored
+        shape less the validator parts; the perf seed script, outside `src/`,
+        guards the was-client Space handle's now-optional `id` with one throw)
+
+was-client decision 0003 (2026-10-29) supersedes 0002: a `WasClient` is built
+from `{ baseServerUrl }`, the URL under which the spec's Server Layout places
+`service`, `spaces/` and `space/{space_id}/`; `was.space(id)` is back and
+`was.spaceAt(url)` still opens a Space the server named in `Location`. This
+server's `serverUrl` (`createApp({ serverUrl })`, the listen origin) is that
+base already, minus the trailing slash, so the counterpart only has to hand it
+back under the name consumers now construct from. The spec's new root-reserved
+Collection ids (`service`, `spaces`, `space`) apply only to a single fixed Space
+served from an origin root, which this multi-tenant server is not, so nothing
+changes in its reserved-segment handling.

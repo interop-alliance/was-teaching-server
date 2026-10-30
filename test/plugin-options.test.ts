@@ -361,7 +361,7 @@ describe('serverUrl with a trailing slash', () => {
       controller: alice.did
     })
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: collectionId }
     })

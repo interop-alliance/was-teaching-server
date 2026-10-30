@@ -168,7 +168,7 @@ describe('did:webvh Space controller', () => {
     jsonl: string
   }) {
     return signerClient.request({
-      path: `/space/${spaceId}/${collectionId}/did.jsonl`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([jsonl], { type: 'text/jsonl' })
@@ -249,7 +249,7 @@ describe('did:webvh Space controller', () => {
     controller: string
   }) {
     return signerClient.request({
-      path: `/space/${spaceId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/meta`,
       method: 'PUT',
       json: { id: spaceId, name: 'Promotable Space', controller }
     })
@@ -828,7 +828,7 @@ describe('did:webvh Space controller', () => {
       // the current document, so it does not resolve, which is the masked 404.
       const err = await requestError(
         space.was.request({
-          path: `/space/${space.spaceId}/credentials/doc-1`,
+          url: `${serverUrl}/space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
       )
@@ -866,7 +866,7 @@ describe('did:webvh Space controller', () => {
 
     it('the cross-Space controller key invokes on the controlled Space', async () => {
       const response = await logSpace.was.request({
-        path: `/space/${controlledSpaceId}/`,
+        url: `${serverUrl}/space/${controlledSpaceId}/`,
         method: 'POST',
         json: { id: 'cross-space-collection', name: 'Made by webvh' }
       })
@@ -877,7 +877,7 @@ describe('did:webvh Space controller', () => {
       // A DELETE of the log itself is refused, whoever asks...
       const refused = await requestError(
         alice.was.request({
-          path: `/space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
+          url: `${serverUrl}/space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
           method: 'DELETE'
         })
       )
@@ -887,7 +887,7 @@ describe('did:webvh Space controller', () => {
       // may remove the Collection holding the log -- which is the controlled
       // Space's only key material.
       const deleted = await alice.was.request({
-        path: `/space/${logSpace.spaceId}/clientAnnex-1/`,
+        url: `${serverUrl}/space/${logSpace.spaceId}/clientAnnex-1/`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
@@ -896,7 +896,7 @@ describe('did:webvh Space controller', () => {
       // the cross-Space cache entry must go with it.
       const err = await requestError(
         logSpace.was.request({
-          path: `/space/${controlledSpaceId}/`,
+          url: `${serverUrl}/space/${controlledSpaceId}/`,
           method: 'POST',
           json: { id: 'after-log-deletion' }
         })
@@ -908,7 +908,7 @@ describe('did:webvh Space controller', () => {
       // authorization and so the same masked 404.
       const readErr = await requestError(
         logSpace.was.request({
-          path: `/space/${controlledSpaceId}/`,
+          url: `${serverUrl}/space/${controlledSpaceId}/`,
           method: 'GET'
         })
       )
@@ -1043,7 +1043,7 @@ describe('did:webvh Space controller', () => {
       // The retired key still cannot root-invoke.
       const denied = await requestError(
         space.was.request({
-          path: `/space/${space.spaceId}/credentials/doc-1`,
+          url: `${serverUrl}/space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
       )

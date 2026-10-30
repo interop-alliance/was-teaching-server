@@ -77,7 +77,7 @@ describe('Governing history log API (meta/log)', () => {
   async function freshCollection(body: object = {}): Promise<string> {
     const collectionId = `col-${crypto.randomUUID()}`
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: collectionId, ...body }
     })
@@ -202,10 +202,13 @@ describe('Governing history log API (meta/log)', () => {
 
     it('[delegated] a capability on the Collection URL covers the log read', async () => {
       const { collectionId, body } = await governedCollection()
+      // Rooted at the Space: a bare `was.grant({ target })` roots at the
+      // target's own root capability, which this server refuses.
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['GET'],
-        target: collectionUrl(collectionId)
+        target: collectionUrl(collectionId),
+        spaceUrl: `${serverUrl}/space/${spaceId}/`
       })
       const read = await aliceDelegatedApp.was.request({
         url: logUrl(collectionId),
@@ -875,7 +878,7 @@ describe('Governing history log API (meta/log)', () => {
       })
       // Re-created under the same id, the Collection is not governed.
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: collectionId }
       })

@@ -201,12 +201,12 @@ function describeWriteResponses({
       ;({ fastify, serverUrl } = await startTestServer({ backend }))
       ;({ alice, bob } = await zcapClients({ serverUrl }))
       await alice.was.request({
-        path: '/spaces/',
+        url: `${serverUrl}/spaces/`,
         method: 'POST',
         json: { id: spaceId, controller: alice.did }
       })
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Notes' }
       })
@@ -336,7 +336,7 @@ function describeWriteResponses({
     it('a write-once repeat answers 200 with the stored members', async () => {
       const onceId = `once-${crypto.randomUUID()}`
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: onceId, revisions: { immutable: true } }
       })
@@ -417,7 +417,7 @@ function describeWriteResponses({
     it('Create Collection answers with the stored object', async () => {
       const newId = `created-${crypto.randomUUID()}`
       const response = await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: newId, name: 'Fresh', createdBy: 'did:key:zIgnored' }
       })
@@ -433,13 +433,13 @@ function describeWriteResponses({
     it('Create Space answers with the stored object', async () => {
       const newSpaceId = `space-${crypto.randomUUID()}`
       const response = await alice.was.request({
-        path: '/spaces/',
+        url: `${serverUrl}/spaces/`,
         method: 'POST',
         json: { id: newSpaceId, controller: alice.did, name: 'Fresh' }
       })
       assert.equal(response.status, 201)
       const { data: stored } = await alice.was.request({
-        path: `/space/${newSpaceId}/meta`,
+        url: `${serverUrl}/space/${newSpaceId}/meta`,
         method: 'GET'
       })
       assert.deepEqual(response.data, stored)

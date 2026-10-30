@@ -4,6 +4,17 @@
 
 ### Added
 
+- `startTestServer` (the `was-teaching-server/testing` entry point) returns
+  `baseServerUrl` beside `serverUrl`: the listen origin with its trailing slash,
+  the base under which the server serves `service`, `spaces/` and `space/{id}/`,
+  and the value a `@interop/was-client` is now built from
+  (`new WasClient({ baseServerUrl })`). The in-repo suites and the perf scripts
+  build their clients that way, and a new suite asserts the layout the spec's
+  Server Discovery section fixes. `provisionWebvhIdentity` publishes the history
+  log through the owner client's `request({ url })`, the shape
+  `@interop/was-client` 0.100 gives that escape hatch.
+- The conformance suite devDependency is `@interop/pws-conformance-suite`
+  0.35.0, the release ported to `@interop/was-client` 0.100.
 - `pnpm perf:pg` runs the same local load-performance check as `pnpm perf:fs`
   (see 0.42.2's entry) against the Postgres backend instead, so the two are
   directly comparable. A new `docker-compose.yml` defines a local Postgres

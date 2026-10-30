@@ -126,7 +126,7 @@ describe('Provisioning gate', () => {
       // returns the Space Metadata object (200), proving the token gate does not
       // disturb the zcap path for subsequent operations.
       const signed = await alice.was.request({
-        path: `/space/${spaceId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/meta`,
         method: 'GET'
       })
       assert.equal(signed.status, 200)
@@ -154,7 +154,7 @@ describe('Provisioning gate', () => {
       assert.equal(echoed.name, 'Provisioned Space')
 
       const read = await alice.was.request({
-        path: `/space/${spaceId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/meta`,
         method: 'GET'
       })
       assert.equal(read.status, 200)
@@ -270,7 +270,7 @@ describe('Provisioning gate', () => {
       let thrown: any
       try {
         await alice.was.request({
-          path: `/space/${spaceId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
         })
@@ -307,7 +307,7 @@ describe('Provisioning gate', () => {
       })
       assert.equal(created.status, 201)
       const updated = await alice.was.request({
-        path: `/space/${spaceId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/meta`,
         method: 'PUT',
         json: { ...createSpaceBody(spaceId), name: 'Renamed' }
       })
@@ -378,7 +378,7 @@ describe('Provisioning gate', () => {
       let thrown: any
       try {
         await alice.was.request({
-          path: `/space/${spaceId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
         })
@@ -464,7 +464,7 @@ describe('Provisioning gate', () => {
       let thrown: any
       try {
         await alice.was.request({
-          path: `/space/${spaceId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/meta`,
           method: 'PUT',
           json: createSpaceBody(spaceId)
         })
@@ -594,7 +594,7 @@ describe('Provisioning gate', () => {
     await boot()
     const spaceId = `default-put-${crypto.randomUUID()}`
     const response = await alice.was.request({
-      path: `/space/${spaceId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/meta`,
       method: 'PUT',
       json: createSpaceBody(spaceId)
     })

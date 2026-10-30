@@ -38,7 +38,7 @@ describe('Export provenance (wire level)', () => {
 
   async function exportArchive() {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/export`,
+      url: `${serverUrl}/space/${spaceId}/export`,
       method: 'POST'
     })
     assert.equal(response.status, 200)
@@ -76,7 +76,7 @@ describe('Export provenance (wire level)', () => {
     await space.createCollection({ id: 'notes' })
     for (const resourceId of ['one', 'two', 'three']) {
       await alice.was.request({
-        path: `/space/${spaceId}/notes/${resourceId}`,
+        url: `${serverUrl}/space/${spaceId}/notes/${resourceId}`,
         method: 'PUT',
         json: { resourceId }
       })
@@ -116,7 +116,7 @@ describe('Export provenance (wire level)', () => {
     })
     await admin.space('server').collection('id').configure({ force: true })
     const published = await admin.request({
-      path: '/space/server/id/did.jsonl',
+      url: `${serverUrl}/space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(log)], { type: 'text/jsonl' })
@@ -131,7 +131,7 @@ describe('Export provenance (wire level)', () => {
 
     // The snapshot is the log's bytes exactly as the server serves them.
     const served = await admin.request({
-      path: '/space/server/id/did.jsonl',
+      url: `${serverUrl}/space/server/id/did.jsonl`,
       method: 'GET'
     })
     assert.equal(served.status, 200)

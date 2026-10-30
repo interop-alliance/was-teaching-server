@@ -218,6 +218,7 @@ import type {
   CollectionUsage,
   StorageBackend,
   StoredBackendRecord,
+  ListedSpaceMetadata,
   MetadataValidatorParts,
   StoredSpaceMetadata,
   MetadataWriteResult,
@@ -1958,7 +1959,7 @@ export class PostgresBackend implements StorageBackend {
     queryable: Queryable
     spaceId: string
   }): Promise<StoredSpaceMetadata | undefined> {
-    const { rows } = await queryable.query<MetadataRow<SpaceMetadata>>(
+    const { rows } = await queryable.query<MetadataRow<ListedSpaceMetadata>>(
       `SELECT ${METADATA_COLUMNS} FROM spaces WHERE space_id = $1`,
       [spaceId]
     )
@@ -1989,10 +1990,12 @@ export class PostgresBackend implements StorageBackend {
    * `COLLATE "C"`), each in the plain wire shape: the body with its stamp
    * members, and no out-of-band validator parts (a listing carries no
    * per-item `ETag`).
-   * @returns {Promise<SpaceMetadata[]>}
+   * @returns {Promise<ListedSpaceMetadata[]>}
    */
-  async listSpaces(): Promise<SpaceMetadata[]> {
-    const { rows } = await this.#reader().query<MetadataRow<SpaceMetadata>>(
+  async listSpaces(): Promise<ListedSpaceMetadata[]> {
+    const { rows } = await this.#reader().query<
+      MetadataRow<ListedSpaceMetadata>
+    >(
       `SELECT ${METADATA_COLUMNS} FROM spaces
         WHERE metadata IS NOT NULL
         ORDER BY space_id`

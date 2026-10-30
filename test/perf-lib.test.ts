@@ -41,8 +41,17 @@ import {
   runResults,
   seedResourceCount,
   serialWriteLoad,
-  sizeTestId
+  sizeTestId,
+  type RequestingClient
 } from '../scripts/performance/perf-lib.js'
+
+/**
+ * A `RequestingClient` for the load helpers under test: a fixed base server
+ * URL and the given `request` stand-in.
+ */
+function perfClient(request: RequestingClient['request']): RequestingClient {
+  return { baseServerUrl: 'http://perf.example/', request }
+}
 
 describe('positiveInteger', () => {
   it('parses a valid positive integer string', () => {
@@ -301,11 +310,9 @@ describe('deleteLoad', () => {
           }
         }
       ],
-      was: {
-        request: async () => {
-          calls.push('request')
-        }
-      }
+      was: perfClient(async () => {
+        calls.push('request')
+      })
     })
     assert.ok(result.rate > 0, `expected a positive rate, got ${result.rate}`)
     assert.equal(result.failed, 0)
@@ -327,11 +334,9 @@ describe('deleteLoad', () => {
       durationSeconds: 0.02,
       deleteRoundSize: 1,
       pool: [{ path: '/space/s/c', collection: { put: async () => {} } }],
-      was: {
-        request: async () => {
-          throw new Error('simulated failure')
-        }
-      }
+      was: perfClient(async () => {
+        throw new Error('simulated failure')
+      })
     })
     assert.ok(
       result.failed > 0,
@@ -358,11 +363,9 @@ describe('deleteLoad', () => {
       durationSeconds: 0.02,
       deleteRoundSize: 4,
       pool: [member('/a', 'postgres'), member('/b', 'fs')],
-      was: {
-        request: async ({ path }) => {
-          deletes.push(path)
-        }
-      }
+      was: perfClient(async ({ url }) => {
+        deletes.push(new URL(url).pathname)
+      })
     })
     const firstRound = ['/a/del-0-0', '/b/del-0-1', '/a/del-0-2', '/b/del-0-3']
     assert.deepEqual(puts.slice(0, 4), firstRound)
@@ -378,11 +381,9 @@ describe('serialWriteLoad', () => {
       pool: [{ path: '/space/s/c' }],
       warmUpWrites: 2,
       serialWrites: 3,
-      was: {
-        request: async ({ path }) => {
-          paths.push(path)
-        }
-      }
+      was: perfClient(async ({ url }) => {
+        paths.push(new URL(url).pathname)
+      })
     })
     assert.equal(result.failed, 0)
     assert.ok(result.rate > 0, `expected a positive rate, got ${result.rate}`)
@@ -401,14 +402,12 @@ describe('serialWriteLoad', () => {
       pool: [{ path: '/space/s/c' }],
       warmUpWrites: 0,
       serialWrites: 3,
-      was: {
-        request: async () => {
-          timedCalls++
-          if (timedCalls === 2) {
-            throw new Error('simulated failure')
-          }
+      was: perfClient(async () => {
+        timedCalls++
+        if (timedCalls === 2) {
+          throw new Error('simulated failure')
         }
-      }
+      })
     })
     assert.equal(timedCalls, 3, 'expected all 3 writes to be attempted')
     assert.equal(result.failed, 1)
@@ -423,11 +422,9 @@ describe('serialWriteLoad', () => {
       ],
       warmUpWrites: 2,
       serialWrites: 3,
-      was: {
-        request: async ({ path }) => {
-          paths.push(path)
-        }
-      }
+      was: perfClient(async ({ url }) => {
+        paths.push(new URL(url).pathname)
+      })
     })
     assert.deepEqual(paths, [
       '/a/warm-0',

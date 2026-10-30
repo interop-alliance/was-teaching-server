@@ -341,8 +341,9 @@ describe.skipIf(!connectionString)(
       )
       assert.ok(names.some(name => name.includes('/on-fs/r.f1.')))
       assert.equal(
-        names.filter(name => name.endsWith('/on-pg/.collection.meta.on-pg.json'))
-          .length,
+        names.filter(name =>
+          name.endsWith('/on-pg/.collection.meta.on-pg.json')
+        ).length,
         1,
         'the Metadata object travels once'
       )

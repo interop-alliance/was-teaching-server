@@ -51,7 +51,7 @@ describe('Collection generator attribution API', () => {
    */
   async function readDesc(collectionId: string): Promise<any> {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     return response.data
@@ -74,7 +74,7 @@ describe('Collection generator attribution API', () => {
    */
   async function create(json: Record<string, unknown>): Promise<any> {
     return alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json
     })
@@ -88,7 +88,7 @@ describe('Collection generator attribution API', () => {
     json: Record<string, unknown>
   ): Promise<any> {
     return alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, ...json }
     })

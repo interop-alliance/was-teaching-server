@@ -40,7 +40,7 @@ describe('Encryption descriptor API', () => {
   /** Reads a Collection Metadata object over the wire (raw JSON). */
   async function readDesc(collectionId: string): Promise<any> {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     return response.data
@@ -74,7 +74,7 @@ describe('Encryption descriptor API', () => {
   it('persists and echoes the descriptor on create', async () => {
     const collectionId = 'vault'
     const response = await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Vault', encryption: { scheme: 'edv' } }
     })
@@ -88,7 +88,7 @@ describe('Encryption descriptor API', () => {
   it('omits the descriptor for a plaintext collection (no encryption sent)', async () => {
     const collectionId = 'plain'
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Plain' }
     })
@@ -99,7 +99,7 @@ describe('Encryption descriptor API', () => {
     const collectionId = 'forward'
     const descriptor = { scheme: 'edv', recipients: [{ id: 'k1', type: 'X' }] }
     const response = await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, encryption: descriptor }
     })
@@ -113,7 +113,7 @@ describe('Encryption descriptor API', () => {
   it('rejects a descriptor object without a string scheme (400)', async () => {
     const err = await rejection(
       alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: 'bad-noscheme', encryption: { foo: 1 } }
       })
@@ -127,7 +127,7 @@ describe('Encryption descriptor API', () => {
   it('rejects a non-object descriptor (400)', async () => {
     const err = await rejection(
       alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: 'bad-string', encryption: 'edv' }
       })
@@ -138,7 +138,7 @@ describe('Encryption descriptor API', () => {
   it('rejects an unrecognized scheme on create (400 unsupported-encryption-scheme)', async () => {
     const err = await rejection(
       alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: 'bad-scheme', encryption: { scheme: 'aes-gcm-siv' } }
       })
@@ -151,12 +151,12 @@ describe('Encryption descriptor API', () => {
   it('allows declaring a descriptor on an existing plaintext collection (absent -> present)', async () => {
     const collectionId = 'late-declare'
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Late' }
     })
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
@@ -169,12 +169,12 @@ describe('Encryption descriptor API', () => {
   it('allows re-sending the same descriptor (same -> same is a no-op)', async () => {
     const collectionId = 'idempotent'
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
@@ -189,13 +189,13 @@ describe('Encryption descriptor API', () => {
     // stored descriptor cannot be corrupted.
     const collectionId = 'immutable'
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
     const err = await rejection(
       alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: { scheme: 'other' } }
       })
@@ -211,7 +211,7 @@ describe('Encryption descriptor API', () => {
   it('a name-only update omitting encryption is refused (full replacement, 409 encryption-immutable)', async () => {
     const collectionId = 'untouched'
     await alice.was.request({
-      path: `/space/${spaceId}/`,
+      url: `${serverUrl}/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
@@ -221,7 +221,7 @@ describe('Encryption descriptor API', () => {
     // descriptor.
     const err = await rejection(
       alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'Renamed' }
       })
@@ -234,7 +234,7 @@ describe('Encryption descriptor API', () => {
     // The correct pattern under full replacement: resend the stored
     // descriptor alongside the new name.
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: 'Renamed', encryption: { scheme: 'edv' } }
     })
@@ -249,7 +249,7 @@ describe('Encryption descriptor API', () => {
       const collectionId = 'versioned'
       const descriptor = { scheme: 'edv', version: 1 }
       const response = await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: descriptor }
       })
@@ -263,7 +263,7 @@ describe('Encryption descriptor API', () => {
     it('accepts adding an explicit version 1 to a versionless descriptor (absent means 1)', async () => {
       const collectionId = 'version-late'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: { scheme: 'edv' } }
       })
@@ -271,7 +271,7 @@ describe('Encryption descriptor API', () => {
       // `version: 1` on a descriptor that had omitted it -- is an idempotent
       // no-op that MUST be accepted.
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
       })
@@ -285,7 +285,7 @@ describe('Encryption descriptor API', () => {
     it('rejects removing the version once set (409 encryption-immutable, descriptor unchanged)', async () => {
       const collectionId = 'version-locked'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
       })
@@ -294,7 +294,7 @@ describe('Encryption descriptor API', () => {
       // never stores -- the lib transition tests cover that path directly.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'edv' } }
         })
@@ -311,7 +311,7 @@ describe('Encryption descriptor API', () => {
     it('rejects an unrecognized version on create (400 unsupported-encryption-scheme)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/`,
+          url: `${serverUrl}/space/${spaceId}/`,
           method: 'POST',
           json: { id: 'bad-version', encryption: { scheme: 'edv', version: 2 } }
         })
@@ -324,7 +324,7 @@ describe('Encryption descriptor API', () => {
     it('rejects raising to an unrecognized version on update (400, not 409; descriptor unchanged)', async () => {
       const collectionId = 'version-raise'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
       })
@@ -333,7 +333,7 @@ describe('Encryption descriptor API', () => {
       // registry recognizes only `edv` version 1.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'edv', version: 2 } }
         })
@@ -352,7 +352,7 @@ describe('Encryption descriptor API', () => {
       const collectionId = 'epochs-ok'
       const descriptor = twoEpochDescriptor()
       const response = await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: descriptor }
       })
@@ -366,7 +366,7 @@ describe('Encryption descriptor API', () => {
     it('rejects a malformed recipient entry (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/`,
+          url: `${serverUrl}/space/${spaceId}/`,
           method: 'POST',
           json: {
             id: 'epochs-badrecip',
@@ -385,7 +385,7 @@ describe('Encryption descriptor API', () => {
     it('rejects `epochs` without `currentEpoch` (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/`,
+          url: `${serverUrl}/space/${spaceId}/`,
           method: 'POST',
           json: {
             id: 'epochs-nocurrent',
@@ -404,7 +404,7 @@ describe('Encryption descriptor API', () => {
     it('rejects `currentEpoch` without `epochs` (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/`,
+          url: `${serverUrl}/space/${spaceId}/`,
           method: 'POST',
           json: {
             id: 'epochs-noepochs',
@@ -418,7 +418,7 @@ describe('Encryption descriptor API', () => {
     it('rejects a dangling `currentEpoch` (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/`,
+          url: `${serverUrl}/space/${spaceId}/`,
           method: 'POST',
           json: {
             id: 'epochs-dangling',
@@ -439,13 +439,13 @@ describe('Encryption descriptor API', () => {
     it('rejects dropping an epoch on update (400 append-only)', async () => {
       const collectionId = 'epochs-drop'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: {
             id: collectionId,
@@ -468,13 +468,13 @@ describe('Encryption descriptor API', () => {
     it('rejects moving `currentEpoch` back to an older epoch on update (400)', async () => {
       const collectionId = 'epochs-rollback'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: {
             id: collectionId,
@@ -488,7 +488,7 @@ describe('Encryption descriptor API', () => {
     it('allows appending an epoch + repointing `currentEpoch` (204)', async () => {
       const collectionId = 'epochs-append'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
@@ -501,7 +501,7 @@ describe('Encryption descriptor API', () => {
         ]
       }
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: grown }
       })
@@ -512,7 +512,7 @@ describe('Encryption descriptor API', () => {
     it('allows adding a recipient to an existing epoch (204)', async () => {
       const collectionId = 'epochs-addrecip'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
@@ -531,7 +531,7 @@ describe('Encryption descriptor API', () => {
         ]
       }
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: withNewRecipient }
       })
@@ -553,7 +553,7 @@ describe('Encryption descriptor API', () => {
     /** Creates a Collection carrying `hmacDescriptor()`. */
     async function createWithHmac(collectionId: string): Promise<void> {
       const response = await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: hmacDescriptor() }
       })
@@ -586,7 +586,7 @@ describe('Encryption descriptor API', () => {
       it(`rejects hmac with ${label} (400 invalid-request-body)`, async () => {
         const err = await rejection(
           alice.was.request({
-            path: `/space/${spaceId}/`,
+            url: `${serverUrl}/space/${spaceId}/`,
             method: 'POST',
             json: {
               id: `hmac-bad-${label}`,
@@ -610,7 +610,7 @@ describe('Encryption descriptor API', () => {
       changed.hmac.id = 'urn:uuid:blinding-key-2'
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: changed }
         })
@@ -629,7 +629,7 @@ describe('Encryption descriptor API', () => {
       await createWithHmac(collectionId)
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'edv' } }
         })
@@ -652,7 +652,7 @@ describe('Encryption descriptor API', () => {
         recipient('did:key:zApp3#ka')
       ]
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: rewrapped }
       })
@@ -666,12 +666,12 @@ describe('Encryption descriptor API', () => {
     it('allows introducing hmac on a stored descriptor that lacks it (204)', async () => {
       const collectionId = 'hmac-late'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, encryption: { scheme: 'edv' } }
       })
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: hmacDescriptor() }
       })
@@ -689,19 +689,19 @@ describe('Encryption descriptor API', () => {
     const metaOf = async (rid: string) =>
       (
         await alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/${rid}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/${rid}/meta`,
           method: 'GET'
         })
       ).data
 
     it('stamps the declared epoch and round-trips it through /meta, listing, and the changes feed', async () => {
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Epoch Stamp' }
       })
       const put = await alice.was.request({
-        path: resUrl('r1'),
+        url: `${serverUrl}${resUrl('r1')}`,
         method: 'PUT',
         json: { id: 'r1', hello: 'world' },
         headers: { 'key-epoch': 'urn:epoch:1' }
@@ -711,14 +711,14 @@ describe('Encryption descriptor API', () => {
       assert.equal((await metaOf('r1')).epoch, 'urn:epoch:1')
 
       const listing = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/`,
         method: 'GET'
       })
       const item = listing.data.items.find((entry: any) => entry.id === 'r1')
       assert.equal(item.epoch, 'urn:epoch:1')
 
       const changes = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/query`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes' }
       })
@@ -729,14 +729,14 @@ describe('Encryption descriptor API', () => {
     it('PUT /meta with `epoch` sets it; without preserves it', async () => {
       // Supplying `epoch` replaces the stamp.
       await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/r1/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/r1/meta`,
         method: 'PUT',
         json: { custom: {}, epoch: 'urn:epoch:2' }
       })
       assert.equal((await metaOf('r1')).epoch, 'urn:epoch:2')
       // Omitting `epoch` preserves the stored value (unlike `custom`).
       await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/r1/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/r1/meta`,
         method: 'PUT',
         json: { custom: { name: 'x' } }
       })
@@ -745,7 +745,7 @@ describe('Encryption descriptor API', () => {
 
     it('a content rewrite WITHOUT the header clears the stamp', async () => {
       await alice.was.request({
-        path: resUrl('r1'),
+        url: `${serverUrl}${resUrl('r1')}`,
         method: 'PUT',
         json: { id: 'r1', hello: 'again' }
       })
@@ -755,7 +755,7 @@ describe('Encryption descriptor API', () => {
     it('rejects an empty Key-Epoch header (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: resUrl('r-bad'),
+          url: `${serverUrl}${resUrl('r-bad')}`,
           method: 'PUT',
           json: { id: 'r-bad' },
           headers: { 'key-epoch': '' }
@@ -766,13 +766,13 @@ describe('Encryption descriptor API', () => {
 
     it('rejects a non-string / empty `epoch` in a /meta body (400)', async () => {
       await alice.was.request({
-        path: resUrl('r2'),
+        url: `${serverUrl}${resUrl('r2')}`,
         method: 'PUT',
         json: { id: 'r2' }
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/r2/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/r2/meta`,
           method: 'PUT',
           json: { custom: {}, epoch: 123 }
         })
@@ -788,19 +788,19 @@ describe('Encryption descriptor API', () => {
     const metaOf = async (rid: string) =>
       (
         await alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/${rid}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/${rid}/meta`,
           method: 'GET'
         })
       ).data
 
     it('stamps the declared label and round-trips it through /meta, listing, and the changes feed', async () => {
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Writer-Id Stamp' }
       })
       const put = await alice.was.request({
-        path: resUrl('r1'),
+        url: `${serverUrl}${resUrl('r1')}`,
         method: 'PUT',
         json: { id: 'r1', hello: 'world' },
         headers: { 'writer-id': 'writer-1' }
@@ -810,14 +810,14 @@ describe('Encryption descriptor API', () => {
       assert.equal((await metaOf('r1')).writerId, 'writer-1')
 
       const listing = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/`,
         method: 'GET'
       })
       const item = listing.data.items.find((entry: any) => entry.id === 'r1')
       assert.equal(item.writerId, 'writer-1')
 
       const changes = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/query`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes' }
       })
@@ -827,7 +827,7 @@ describe('Encryption descriptor API', () => {
 
     it('a content rewrite WITHOUT the header clears the stamp', async () => {
       await alice.was.request({
-        path: resUrl('r1'),
+        url: `${serverUrl}${resUrl('r1')}`,
         method: 'PUT',
         json: { id: 'r1', hello: 'again' }
       })
@@ -836,7 +836,7 @@ describe('Encryption descriptor API', () => {
 
     it('PUT /meta leaves the writerId untouched, and ignores a `writerId` member in its body', async () => {
       await alice.was.request({
-        path: resUrl('r2'),
+        url: `${serverUrl}${resUrl('r2')}`,
         method: 'PUT',
         json: { id: 'r2' },
         headers: { 'writer-id': 'writer-2' }
@@ -844,14 +844,14 @@ describe('Encryption descriptor API', () => {
       assert.equal((await metaOf('r2')).writerId, 'writer-2')
       // A body `writerId` is ignored: neither set, validated, nor stored.
       await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/r2/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/r2/meta`,
         method: 'PUT',
         json: { custom: {}, writerId: 'writer-other' }
       })
       assert.equal((await metaOf('r2')).writerId, 'writer-2')
       // A metadata write without one leaves the label as well.
       await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/r2/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/r2/meta`,
         method: 'PUT',
         json: { custom: { name: 'x' } }
       })
@@ -860,20 +860,20 @@ describe('Encryption descriptor API', () => {
 
     it('DELETE with a Writer-Id header labels the tombstone; the label rides the changes feed', async () => {
       await alice.was.request({
-        path: resUrl('r-del'),
+        url: `${serverUrl}${resUrl('r-del')}`,
         method: 'PUT',
         json: { id: 'r-del' },
         headers: { 'writer-id': 'writer-live' }
       })
       const del = await alice.was.request({
-        path: resUrl('r-del'),
+        url: `${serverUrl}${resUrl('r-del')}`,
         method: 'DELETE',
         headers: { 'writer-id': 'writer-deleter' }
       })
       assert.equal(del.status, 204)
 
       const changes = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/query`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes' }
       })
@@ -893,7 +893,7 @@ describe('Encryption descriptor API', () => {
     it('rejects an empty Writer-Id header (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: resUrl('r-bad'),
+          url: `${serverUrl}${resUrl('r-bad')}`,
           method: 'PUT',
           json: { id: 'r-bad' },
           headers: { 'writer-id': '' }
@@ -904,13 +904,13 @@ describe('Encryption descriptor API', () => {
 
     it('does not validate a non-string / empty `writerId` in a /meta body', async () => {
       await alice.was.request({
-        path: resUrl('r3'),
+        url: `${serverUrl}${resUrl('r3')}`,
         method: 'PUT',
         json: { id: 'r3' }
       })
       for (const writerId of [123, '']) {
         const response = await alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/r3/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/r3/meta`,
           method: 'PUT',
           json: { custom: {}, writerId }
         })
@@ -924,21 +924,21 @@ describe('Encryption descriptor API', () => {
     it('GET returns an ETag; matching If-Match bumps it; stale If-Match 412s', async () => {
       const collectionId = 'cas-col'
       const created = await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'CAS' }
       })
       assert.equal(created.status, 201)
 
       const got = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'GET'
       })
       const etag = got.headers.get('etag')
       assert.ok(etag, 'GET Collection surfaces an ETag')
 
       const updated = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'CAS updated' },
         headers: { 'if-match': etag! }
@@ -950,7 +950,7 @@ describe('Encryption descriptor API', () => {
       // The original (now stale) validator is rejected -- the lost-update guard.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, name: 'CAS conflict' },
           headers: { 'if-match': etag! }
@@ -963,12 +963,12 @@ describe('Encryption descriptor API', () => {
     it('an unconditional PUT still works (no If-Match)', async () => {
       const collectionId = 'cas-uncond'
       await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Uncond' }
       })
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'Uncond updated' }
       })
@@ -979,14 +979,14 @@ describe('Encryption descriptor API', () => {
     it('two sequential updates: the second reusing the first stale ETag 412s', async () => {
       const collectionId = 'cas-sequential'
       const created = await alice.was.request({
-        path: `/space/${spaceId}/`,
+        url: `${serverUrl}/space/${spaceId}/`,
         method: 'POST',
         json: { id: collectionId, name: 'Seq' }
       })
       const etag0 = created.headers.get('etag')!
       // First update with the create ETag succeeds.
       const first = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'Seq 1' },
         headers: { 'if-match': etag0 }
@@ -995,7 +995,7 @@ describe('Encryption descriptor API', () => {
       // Second update reusing the now-stale etag0 loses.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, name: 'Seq 2' },
           headers: { 'if-match': etag0 }

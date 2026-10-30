@@ -8,7 +8,6 @@ import pino from 'pino'
 import { vi } from 'vitest'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
-import { spacesUrl } from '@interop/was-client/paths'
 import { decodeSecretKeySeed } from '@interop/bnid'
 import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -536,12 +535,11 @@ export function client({ signer }: { signer: ISigner }): ZcapClient {
 
 /**
  * Builds a high-level WAS client wrapping a ZcapClient for the given signer.
- * The `serverUrl` is the suite's base URL. The client takes the Spaces
- * Repository URL and derives the base for Space paths and zcap targets.
  *
  * @param options {object}
  * @param options.signer {ISigner}
- * @param options.serverUrl {string}
+ * @param options.serverUrl {string}   the suite's server URL, with or without
+ *   its trailing slash (the client canonicalizes it)
  * @returns {WasClient}
  */
 export function wasClient({
@@ -552,19 +550,20 @@ export function wasClient({
   serverUrl: string
 }): WasClient {
   return new WasClient({
-    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    baseServerUrl: serverUrl,
     zcapClient: client({ signer })
   })
 }
 
 /**
  * Builds the test identities (Alice, her delegated app, and Bob), each carrying
- * a high-level `WasClient` bound to the suite's `serverUrl`. Suites drive the
+ * a high-level `WasClient` built from the suite's server URL. Suites drive the
  * server through these `was` clients rather than raw `ZcapClient.request()`.
  *
  * @param options {object}
- * @param options.serverUrl {string}   the suite's in-process server URL; also
- *   the zcap invocationTarget base, so it must match the injected app's URL
+ * @param options.serverUrl {string}   the suite's in-process server URL with
+ *   no trailing slash, as `startTestServer` returns `serverUrl`; also the zcap
+ *   invocationTarget base, so it must match the injected app's URL
  * @returns {Promise<object>}
  */
 export async function zcapClients({ serverUrl }: { serverUrl: string }) {

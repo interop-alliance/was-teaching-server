@@ -37,7 +37,8 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
 /**
  * Boots a test server on an OS-assigned ephemeral port and returns the
  * `serverUrl` it is actually reachable at, so parallel Vitest workers can never
- * collide on a port.
+ * collide on a port, and its `baseServerUrl`, the same origin in the canonical
+ * form a client is built from.
  *
  * ZCap `invocationTarget` URLs embed host and port, so `serverUrl` must match
  * the listening port exactly. The port is not known until the server listens,
@@ -51,8 +52,10 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
  * instance is closed before the error is rethrown, so a backend the plugin
  * already owns is closed with it.
  *
- * Callers must build their ZCap clients from the returned `serverUrl`, not from
- * a precomputed one.
+ * Callers must build their ZCap clients from the returned values, not from a
+ * precomputed URL. `baseServerUrl` is `serverUrl` with a trailing slash, the
+ * spec's base server URL and the form `new WasClient({ baseServerUrl })`
+ * takes; `serverUrl` is the form `createApp({ serverUrl })` takes.
  *
  * The returned `faults` records every request and can refuse, drop the
  * response of, or hold a chosen one. Its hooks are added before the protocol
@@ -71,7 +74,7 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
  *   OS-assigned ephemeral port
  * @param [options.logger] {boolean|object}   Fastify logger; defaults to
  *   `false` so per-request log lines stay out of the test output
- * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, port: number, faults: RequestFaults }>}
+ * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, baseServerUrl: string, port: number, faults: RequestFaults }>}
  */
 export async function startTestServer({
   port = 0,
@@ -81,6 +84,7 @@ export async function startTestServer({
 } = {}): Promise<{
   fastify: FastifyInstance
   serverUrl: string
+  baseServerUrl: string
   port: number
   faults: RequestFaults
 }> {
@@ -106,7 +110,13 @@ export async function startTestServer({
     throw err
   }
   const { serverUrl } = fastify
-  return { fastify, serverUrl, port: Number(new URL(serverUrl).port), faults }
+  return {
+    fastify,
+    serverUrl,
+    baseServerUrl: `${serverUrl}/`,
+    port: Number(new URL(serverUrl).port),
+    faults
+  }
 }
 
 /**
@@ -276,7 +286,7 @@ export async function provisionWebvhIdentity<
         delete(): Promise<unknown>
       }
       request(options: {
-        path: string
+        url: string
         method: string
         headers: Record<string, string>
         body: Blob
@@ -358,20 +368,23 @@ export async function provisionWebvhIdentity<
       }
     }
 
-    const logPath = resourcePath({
-      spaceId,
-      collectionId,
-      resourceId: WEBVH_LOG_RESOURCE_ID
+    const logUrl = absoluteUrl({
+      path: resourcePath({
+        spaceId,
+        collectionId,
+        resourceId: WEBVH_LOG_RESOURCE_ID
+      }),
+      serverUrl
     })
     const published = await owner.was.request({
-      path: logPath,
+      url: logUrl,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
     })
     if (published.status !== 201) {
       throw new WebvhIdentityPublishError({
-        url: absoluteUrl({ path: logPath, serverUrl }),
+        url: logUrl,
         status: published.status
       })
     }

@@ -6,6 +6,7 @@
  * Collection is made once per pool member, on that member's backend.
  */
 import type { Collection, JsonObject, WasClient } from '@interop/was-client'
+import { spaceIdOfUrl } from '@interop/was-client/paths'
 
 import {
   backendPool,
@@ -86,7 +87,7 @@ async function seedSpaceViaHttp({
     })
     await fillViaHttp({ collection, ids: itemIds(size) })
     targets.push({
-      path: `/space/${space.id}/${collectionId}`,
+      path: `/space/${spaceIdOfUrl(space.url)}/${collectionId}`,
       backend: member.backend,
       collection
     })
@@ -173,8 +174,8 @@ export async function seedViaHttp({
   console.log(`Filled in ${seedSeconds.toFixed(0)}s. Running tests...\n`)
   return {
     targets: {
-      publicSpaceId: publicSpace.id,
-      privateSpaceId: privateSpace.id,
+      publicSpaceId: spaceIdOfUrl(publicSpace.url),
+      privateSpaceId: spaceIdOfUrl(privateSpace.url),
       pool,
       edgeSpaces
     },

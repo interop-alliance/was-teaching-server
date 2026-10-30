@@ -119,7 +119,7 @@ describe('Spaces', () => {
 
     it('[root] Space linkset advertises the backends-available and quotas relations', async () => {
       const response = await alice.was.request({
-        path: `/space/${alice.space1.id}/linkset`,
+        url: `${serverUrl}/space/${alice.space1.id}/linkset`,
         method: 'GET'
       })
       assert.equal(response.status, 200)

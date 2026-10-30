@@ -558,10 +558,18 @@ export type StoredCollectionTombstone = {
 export type CollectionDeleteOutcome = 'deleted' | 'already-deleted' | 'absent'
 
 /**
- * A stored Space Metadata object as the backends surface it: the wire body
+ * A Space Metadata object's stored body: the wire shape with a definite `id`.
+ * The wire type leaves `id` optional for a single fixed Space, which has no
+ * Space id, and this multi-tenant server stores every Space under one. It is
+ * what `listSpaces` enumerates, since a listing carries no per-item `ETag`.
+ */
+export type ListedSpaceMetadata = SpaceMetadata & { id: string }
+
+/**
+ * A stored Space Metadata object as the backends surface it: the stored body
  * plus the out-of-band validator parts.
  */
-export type StoredSpaceMetadata = SpaceMetadata & MetadataValidatorParts
+export type StoredSpaceMetadata = ListedSpaceMetadata & MetadataValidatorParts
 
 /**
  * What a Space or Collection Metadata write left, read inside the write's
@@ -972,7 +980,7 @@ export interface StorageBackend {
    * caller is authorized to see). Resolves an empty array when nothing is
    * stored yet (must not throw on an absent storage root).
    */
-  listSpaces(): Promise<SpaceMetadata[]>
+  listSpaces(): Promise<ListedSpaceMetadata[]>
   /**
    * Lists a Space's Collections, OPTIONALLY cursor-paginated (spec
    * "Pagination"), on the same keyset machinery as `listCollectionItems`:

@@ -275,29 +275,33 @@ own suites use. It imports no test runner, so it works under Vitest,
 `node:test`, or any other runner. It adds nothing to the plugin's options. It is
 test support, not part of a production composition.
 
-| Export                      | What it is                                                                              |
-| --------------------------- | --------------------------------------------------------------------------------------- |
-| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, serverUrl, port, faults }` |
-| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                |
-| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function    |
-| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                      |
-| `RequestRecord`             | The type of one recorded request                                                        |
-| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir          |
-| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                               |
-| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                   |
-| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                             |
-| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                             |
-| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201             |
+| Export                      | What it is                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, serverUrl, baseServerUrl, port, faults }` |
+| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                               |
+| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function                   |
+| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                                     |
+| `RequestRecord`             | The type of one recorded request                                                                       |
+| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir                         |
+| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                                              |
+| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                                  |
+| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                                            |
+| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                                            |
+| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201                            |
 
 `startTestServer()` takes the `createApp()` options except `serverUrl`, plus an
 optional `port` and `logger`. The logger defaults to `false`. The server listens
 on an OS-assigned port, so parallel test workers do not collide. The returned
-`serverUrl` is `http://localhost:<port>`. The host is `localhost` because
-`@interop/webkms-client` relaxes its loopback checks for that host alone.
+`serverUrl` is `http://localhost:<port>` and `baseServerUrl` is the same origin
+with its trailing slash, `http://localhost:<port>/`: the base under which the
+server serves `service`, `spaces/` and `space/{id}/`, and what a
+`@interop/was-client` is built from (`new WasClient({ baseServerUrl })`). The
+host is `localhost` because `@interop/webkms-client` relaxes its loopback checks
+for that host alone.
 
 ZCap `invocationTarget` URLs embed host and port. The port is not known until
-the server listens, so build every client from the returned `serverUrl`, after
-the boot.
+the server listens, so build every client from the returned values, after the
+boot.
 
 When the boot fails, for example on a port already in use, `startTestServer()`
 closes the Fastify instance before it rethrows. A backend the plugin owns is
@@ -311,25 +315,25 @@ import { afterAll, beforeAll, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
-import { spacesUrl } from '@interop/was-client/paths'
 import { openTempBackend, startTestServer } from 'was-teaching-server/testing'
 
 let fastify: FastifyInstance
-let serverUrl: string
+let baseServerUrl: string
 let did: string
 let was: WasClient
 
 beforeAll(async () => {
   const started = await startTestServer({ backend: await openTempBackend() })
   fastify = started.fastify
-  serverUrl = started.serverUrl
+  baseServerUrl = started.baseServerUrl
 
-  // Clients come after the boot, from the serverUrl it returned. A WasClient
-  // takes the Spaces Repository URL, `<serverUrl>/spaces/`.
+  // Clients come after the boot, from the base server URL it returned: the
+  // origin with its trailing slash, under which the server serves `service`,
+  // `spaces/` and `space/{id}/`.
   const keyPair = await Ed25519VerificationKey.generate()
   did = `did:key:${keyPair.fingerprint()}`
   was = WasClient.fromSigner({
-    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    baseServerUrl,
     signer: keyPair.didKeySigner()
   })
 })
@@ -402,7 +406,7 @@ const ownerKey = await Ed25519VerificationKey.generate()
 const owner = {
   did: `did:key:${ownerKey.fingerprint()}`,
   was: WasClient.fromSigner({
-    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    baseServerUrl: serverUrl,
     signer: ownerKey.didKeySigner()
   })
 }

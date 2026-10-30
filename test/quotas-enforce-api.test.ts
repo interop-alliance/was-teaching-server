@@ -454,7 +454,7 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
 
   it('advertises maxUploadBytes in the quota report constraints', async () => {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/quotas`,
+      url: `${serverUrl}/space/${spaceId}/quotas`,
       method: 'GET'
     })
     assert.equal(response.status, 200)

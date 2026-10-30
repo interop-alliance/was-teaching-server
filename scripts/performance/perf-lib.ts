@@ -11,6 +11,7 @@
  */
 import { join } from 'node:path'
 
+import { absoluteUrl } from '../../src/lib/paths.js'
 import type { StorageBackend } from '../../src/types.js'
 
 /**
@@ -1304,15 +1305,40 @@ export async function load<Target extends { backend?: ServerBackendId }>({
 }
 
 /**
- * A minimal `WasClient`-shaped dependency: just the signed-request escape
- * hatch `deleteLoad` and `serialWriteLoad` need.
+ * A minimal `WasClient`-shaped dependency: the base server URL the client is
+ * built from, and the signed-request escape hatch `deleteLoad` and
+ * `serialWriteLoad` need.
  */
 export interface RequestingClient {
+  readonly baseServerUrl?: string
   request(options: {
-    path: string
+    url: string
     method: string
     json?: object
   }): Promise<unknown>
+}
+
+/**
+ * The absolute URL of a server path (`/space/...`) on the server `was` is
+ * built from.
+ * @param options {object}
+ * @param options.was {RequestingClient}
+ * @param options.path {string}
+ * @returns {string}
+ */
+export function serverPathUrl({
+  was,
+  path
+}: {
+  was: RequestingClient
+  path: string
+}): string {
+  if (was.baseServerUrl === undefined) {
+    throw new Error(
+      `Cannot resolve ${path}: the client was built with no base server URL.`
+    )
+  }
+  return absoluteUrl({ path, serverUrl: was.baseServerUrl })
 }
 
 /**
@@ -1403,8 +1429,9 @@ export async function deleteLoad({
         workers.map(async worker => {
           for (const id of idsOf(worker)) {
             const { path, backend } = targetOf.get(id)!
+            const url = serverPathUrl({ was, path: `${path}/${id}` })
             await tally.time(
-              () => was.request({ path: `${path}/${id}`, method: 'DELETE' }),
+              () => was.request({ url, method: 'DELETE' }),
               backend
             )
           }
@@ -1510,7 +1537,7 @@ export async function serialWriteLoad({
     await retryOnNetworkFault({
       op: () =>
         was.request({
-          path: `${path}/warm-${index}`,
+          url: serverPathUrl({ was, path: `${path}/warm-${index}` }),
           method: 'PUT',
           json: { index }
         })
@@ -1520,13 +1547,9 @@ export async function serialWriteLoad({
   const started = performance.now()
   for (let index = 0; index < serialWrites; index++) {
     const { path, backend } = roundRobin({ pool, index })
+    const url = serverPathUrl({ was, path: `${path}/s-${index}` })
     await tally.time(
-      () =>
-        was.request({
-          path: `${path}/s-${index}`,
-          method: 'PUT',
-          json: { index }
-        }),
+      () => was.request({ url, method: 'PUT', json: { index } }),
       backend
     )
   }

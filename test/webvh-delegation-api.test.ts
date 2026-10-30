@@ -114,7 +114,7 @@ describe('did:webvh delegation and chain depth', () => {
 
     const minted = await mintWebvhDid({ spaceId })
     const published = await alice.was.request({
-      path: `/space/${spaceId}/id/did.jsonl`,
+      url: `${serverUrl}/space/${spaceId}/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(minted.log)], { type: 'text/jsonl' })
@@ -140,7 +140,7 @@ describe('did:webvh delegation and chain depth', () => {
         .collection('credentials')
         .put('doc-1', { hello: 'world' })
       const promoted = await alice.was.request({
-        path: `/space/${account.spaceId}/meta`,
+        url: `${serverUrl}/space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: account.spaceId,

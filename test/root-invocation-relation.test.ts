@@ -166,7 +166,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     }
 
     const published = await alice.was.request({
-      path: `/space/${spaceId}/id/did.jsonl`,
+      url: `${serverUrl}/space/${spaceId}/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
@@ -176,7 +176,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     // Promotion by ordering: created under Alice's `did:key`, handed to the
     // `did:webvh` by a PUT the stored `did:key` still authorizes.
     const promoted = await alice.was.request({
-      path: `/space/${spaceId}/meta`,
+      url: `${serverUrl}/space/${spaceId}/meta`,
       method: 'PUT',
       json: {
         id: spaceId,

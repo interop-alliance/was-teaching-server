@@ -51,7 +51,7 @@ describe('Request Body Integrity (Digest header)', () => {
   it('a correctly signed write (valid Digest) succeeds', async () => {
     // The real client always covers and sends a matching Digest header.
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/happy`,
+      url: `${serverUrl}/space/${spaceId}/${collectionId}/happy`,
       method: 'PUT',
       json: { id: 'happy', name: 'Happy Path' }
     })

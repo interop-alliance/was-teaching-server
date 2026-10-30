@@ -265,6 +265,7 @@ import type {
   ResourceWriteResult,
   CollectionLogResult,
   ImmutableUnder,
+  ListedSpaceMetadata,
   MetadataValidatorParts,
   StoredCollectionLog,
   CollectionMetadataInput,
@@ -2588,7 +2589,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
   }): Promise<StoredSpaceMetadata | undefined> {
     const raw = await this.#readJsonFile<
-      SpaceMetadata & EmbeddedMetadataValidator
+      ListedSpaceMetadata & EmbeddedMetadataValidator
     >(this.#spaceMetadataPath(spaceId))
     return raw && storedMetadataFromFile(raw)
   }
@@ -2647,9 +2648,9 @@ export class FileSystemBackend implements StorageBackend {
    * of the spaces root), sorted by Space id. An absent spaces root (nothing
    * stored yet) resolves an empty list, not an error; a directory without a
    * readable metadata file (e.g. a partially deleted Space) is skipped.
-   * @returns {Promise<SpaceMetadata[]>}
+   * @returns {Promise<ListedSpaceMetadata[]>}
    */
-  async listSpaces(): Promise<SpaceMetadata[]> {
+  async listSpaces(): Promise<ListedSpaceMetadata[]> {
     let rootEntries: fs.Dirent[]
     try {
       rootEntries = await readDirEntries(this.spacesDir)

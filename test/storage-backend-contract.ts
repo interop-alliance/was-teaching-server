@@ -4166,7 +4166,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const entry = [...entries].find(([entryName]) =>
           entryName.endsWith('.collection.meta.merge.json')
         )
-        assert.ok(entry, 'expected an archived .collection.meta.merge.json entry')
+        assert.ok(
+          entry,
+          'expected an archived .collection.meta.merge.json entry'
+        )
         const body = JSON.parse(entry![1].body!.toString('utf8'))
         assert.equal(body._generation, after?.metaGeneration)
         assert.ok(!Object.prototype.hasOwnProperty.call(body, '_local'))

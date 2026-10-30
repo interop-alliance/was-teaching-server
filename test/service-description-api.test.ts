@@ -210,7 +210,7 @@ describe('Service description API', () => {
 
     it('is on an authorized listing (200)', async () => {
       const response = await alice.was.request({
-        path: `/space/${alice.space1.id}/private-notes/`,
+        url: `${serverUrl}/space/${alice.space1.id}/private-notes/`,
         method: 'GET'
       })
       expect(response.status).toBe(200)
@@ -303,7 +303,7 @@ describe('Service description API', () => {
 
     it('the Space linkset carries the service relation', async () => {
       const response = await alice.was.request({
-        path: `/space/${alice.space1.id}/linkset`,
+        url: `${serverUrl}/space/${alice.space1.id}/linkset`,
         method: 'GET'
       })
       expect(response.status).toBe(200)
@@ -312,7 +312,7 @@ describe('Service description API', () => {
 
     it('the Collection linkset carries the service relation', async () => {
       const response = await alice.was.request({
-        path: `/space/${alice.space1.id}/private-notes/linkset`,
+        url: `${serverUrl}/space/${alice.space1.id}/private-notes/linkset`,
         method: 'GET'
       })
       expect(response.status).toBe(200)

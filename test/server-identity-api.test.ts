@@ -82,7 +82,7 @@ describe('Server identity', () => {
 
   async function publishLog(jsonl: string): Promise<Response> {
     return admin.was.request({
-      path: '/space/server/id/did.jsonl',
+      url: `${serverUrl}/space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([jsonl], { type: 'text/jsonl' })

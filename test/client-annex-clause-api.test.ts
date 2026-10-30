@@ -132,7 +132,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     // Promotion by ordering: the Space is created under Alice's `did:key`,
     // populated, and only then handed to the account DID.
     const promoted = await alice.was.request({
-      path: `/space/${account.spaceId}/meta`,
+      url: `${serverUrl}/space/${account.spaceId}/meta`,
       method: 'PUT',
       json: {
         id: account.spaceId,
@@ -384,7 +384,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         ]
       })
       const promoted = await alice.was.request({
-        path: `/space/${other.spaceId}/meta`,
+        url: `${serverUrl}/space/${other.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: other.spaceId,
@@ -450,7 +450,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         ]
       })
       const promoted = await alice.was.request({
-        path: `/space/${other.spaceId}/meta`,
+        url: `${serverUrl}/space/${other.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: other.spaceId,
@@ -516,7 +516,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await otherSpace.collection('notes').configure({ force: true })
       await otherSpace.collection('notes').put('note-1', { other: true })
       const promoted = await alice.was.request({
-        path: `/space/${otherSpaceId}/meta`,
+        url: `${serverUrl}/space/${otherSpaceId}/meta`,
         method: 'PUT',
         json: { id: otherSpaceId, name: 'Other', controller: account.did }
       })
@@ -794,7 +794,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await decoySpace.configure({ name: 'Decoy', controller: alice.did })
       await decoySpace.collection('id').configure({ force: true })
       const promoted = await alice.was.request({
-        path: `/space/${decoySpaceId}/meta`,
+        url: `${serverUrl}/space/${decoySpaceId}/meta`,
         method: 'PUT',
         json: { id: decoySpaceId, name: 'Decoy', controller: account.did }
       })
@@ -828,7 +828,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         collectionId: 'keys'
       })
       const promoted = await alice.was.request({
-        path: `/space/${keysAccount.spaceId}/meta`,
+        url: `${serverUrl}/space/${keysAccount.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: keysAccount.spaceId,
@@ -889,7 +889,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         .configure({ force: true })
 
       const promoted = await alice.was.request({
-        path: `/space/${auxSpaceId}/meta`,
+        url: `${serverUrl}/space/${auxSpaceId}/meta`,
         method: 'PUT',
         json: {
           id: auxSpaceId,
@@ -1087,7 +1087,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     }
     if (controller !== undefined) {
       const promoted = await alice.was.request({
-        path: `/space/${spaceId}/meta`,
+        url: `${serverUrl}/space/${spaceId}/meta`,
         method: 'PUT',
         json: { id: spaceId, name: 'Unlock Space', controller }
       })
@@ -1405,7 +1405,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         ] as any
       })
       const published = await alice.was.request({
-        path: `/space/${retiring.spaceId}/id/did.jsonl`,
+        url: `${serverUrl}/space/${retiring.spaceId}/id/did.jsonl`,
         method: 'PUT',
         headers: { 'content-type': 'text/jsonl' },
         body: new Blob([logToJsonlString(removed.log)], { type: 'text/jsonl' })

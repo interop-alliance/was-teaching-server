@@ -14,7 +14,6 @@ import type {
 } from '@interop/data-integrity-core'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { WasClient } from '@interop/was-client'
-import { spacesUrl } from '@interop/was-client/paths'
 import type { Collection, JsonObject } from '@interop/was-client'
 import {
   createEdvEncryption,
@@ -178,7 +177,7 @@ export async function seedMatrix({
   const keyAgreementKey = generated as IKeyAgreementKey
   const keyResolver: IKeyResolver = async () => recipient
   const was = WasClient.fromSigner({
-    serverUrl: spacesUrl({ baseUrl: serverUrl }),
+    baseServerUrl: serverUrl,
     signer: signerKey.didKeySigner(),
     encryption: createEdvEncryption({
       resolveKeys: async () => ({ keyAgreementKey, keyResolver })

@@ -25,6 +25,7 @@ import {
   matrixPayloads,
   matrixSpaceIds,
   retryOnNetworkFault,
+  serverPathUrl,
   smallFileBytes,
   type EncryptedReadIds,
   type LoadSettings,
@@ -100,7 +101,7 @@ async function readBody({
   was: WasClient
   path: string
 }): Promise<unknown> {
-  const response = await was.request({ path })
+  const response = await was.request({ url: serverPathUrl({ was, path }) })
   if (response.data !== undefined) {
     return response.data
   }
@@ -196,7 +197,12 @@ function plaintextFiles({
       readId,
       chunkCount: 0,
       create: ({ path }) =>
-        was.request({ path, method: 'PUT', headers: octetStream, body })
+        was.request({
+          url: serverPathUrl({ was, path }),
+          method: 'PUT',
+          headers: octetStream,
+          body
+        })
     }
   }
   return {
@@ -204,7 +210,11 @@ function plaintextFiles({
       readId: 'json',
       chunkCount: 0,
       create: ({ path, id }) =>
-        was.request({ path, method: 'PUT', json: credential(id) })
+        was.request({
+          url: serverPathUrl({ was, path }),
+          method: 'PUT',
+          json: credential(id)
+        })
     },
     small: bytesFile('small', smallFileBytes),
     large: bytesFile('large', largeFileBytes)
@@ -234,25 +244,26 @@ function encryptedFile({
     chunkCount: chunks.length,
     create: async ({ path, id }) => {
       const document = { ...envelope, id }
+      const url = serverPathUrl({ was, path })
       if (chunks.length === 0) {
-        await was.request({ path, method: 'PUT', json: document })
+        await was.request({ url, method: 'PUT', json: document })
         return
       }
       await was.request({
-        path,
+        url,
         method: 'PUT',
         headers: { 'if-none-match': '*' },
         json: document
       })
       for (const [index, chunk] of chunks.entries()) {
         await was.request({
-          path: `${path}/chunks/${index}`,
+          url: serverPathUrl({ was, path: `${path}/chunks/${index}` }),
           method: 'PUT',
           headers: octetStream,
           body: chunk
         })
       }
-      await was.request({ path, method: 'PUT', json: document })
+      await was.request({ url, method: 'PUT', json: document })
     }
   }
 }
@@ -351,7 +362,10 @@ export async function runMatrix({
               create: createAt,
               remove: (member, worker, round) =>
                 was.request({
-                  path: pathFor(member, idFor(worker, round)),
+                  url: serverPathUrl({
+                    was,
+                    path: pathFor(member, idFor(worker, round))
+                  }),
                   method: 'DELETE'
                 })
             })

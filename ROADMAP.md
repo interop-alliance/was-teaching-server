@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 235
+nextAvailableId: 236
 
 <!-- roadmap-order:index:start -->
 
@@ -45,6 +45,11 @@ Ready:
   hosted elsewhere
 - WAS-194 [M] (*) `encryption` is declared only when the Collection is created
 - WAS-219 [L] (*) Changing a Collection's `backend.id` once it holds Resources
+
+Waiting on another repo:
+
+- WAS-235 [M] (*) Rename `instance.exportSigningKey` to `exportSigningMethod` on
+  `/service` (after SC-12)
 
 **Features**
 
@@ -113,7 +118,6 @@ Ready:
 Ready:
 
 - WAS-46 [H] (pg) Un-skip the Postgres and flag-gated storage-contract tests
-- WAS-234 [M] `startTestServer` returns the service description URL
 - WAS-47 [M] (*) Cover `start.ts` and the untested config parsers
 - WAS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 - WAS-10 [M] (*) Open the upstream `edv-client` truncation issue
@@ -717,7 +721,8 @@ keeps the member layout open for account DIDs, pending this item.
     a Collection that lacks one is withdrawn)
   - was-client: the `edv` branch of `sync/provisioning.ts`, which declares
     `encryption` on an existing Collection, is removed
-  - was-react: `markCollectionEncrypted` is removed
+  - was-react: `markCollectionEncrypted` is removed (shipped in 0.28.0,
+    2026-10-11)
   - dcw: the sync smoke test is checked for the `edv` default
   - conformance-suite: a case for the late-declaration refusal
 - acceptance:
@@ -740,6 +745,48 @@ gone. WAS-173 shipped the `revisions` half of the rule. This item is the
 `encryption` half. It removes a path was-client and was-react still use as
 fallbacks, so it lands with their removal. The App Connect flow already creates
 its Collections encrypted from birth.
+
+### WAS-235: [M] (*) [after SC-12] Rename `instance.exportSigningKey` to `exportSigningMethod` on `/service`
+
+- status: todo
+- priority: medium
+- backend: *
+- labels: wire-contract, service-description, server-identity
+- discovered-from: portable-web-spaces-spec WASS-7 (2026-10-29)
+- blocked-by: SC-12
+- touches:
+  - was-teaching-server (this repo): `src/serviceDescription.ts` (the
+    `instance` member it composes), `src/lib/serverIdentity.ts` (the field on
+    the signing-key record and the identity log entry it writes),
+    `src/plugin.ts` (the option it threads through), the two server-identity
+    tests, README.md (the `WAS_SERVER_KEY_SEED` row), ARCHITECTURE.md (the
+    service description and server identity paragraphs),
+    `docs/admin-guide.md` (provisioning and rotation steps, the `jq` line),
+    `docs/server-identity-and-provenance.md`, `docs/service-description.md`,
+    CHANGELOG.md
+  - storage-core: SC-12 (the type the member is read from)
+  - portable-web-spaces-spec: resolved 2026-10-29 -- the Instance Disclosure
+    list and the Archive provenance section use the new name
+  - was-conformance-suite: unaffected (nothing in it reads the member)
+- acceptance:
+  - [ ] `/service` carries `instance.exportSigningMethod` with the value
+        `exportSigningKey` carried, and no `exportSigningKey` member
+  - [ ] the identity module's record field and the `serverSigningKey` plugin
+        option use the new name
+  - [ ] the server-identity API and runbook tests assert the new member
+  - [ ] README, ARCHITECTURE.md and the three docs name the member by its new
+        name, including the admin guide's `jq` read and rotation step
+  - [ ] CHANGELOG entry names the rename as a wire change to `/service`
+
+Context: the service description advertises the key the server signs its
+Space archive exports with, under `instance.exportSigningKey`. The value is a
+`did:key`, which identifies a verification method rather than carrying key
+material, so the PWS spec renamed the member to `exportSigningMethod` on
+2026-10-29. This server is the one writer of the member and its docs are the
+operator's guide to provisioning the identity, so the rename reaches the
+service description, the identity module, the tests and every doc that tells an
+administrator to read the value off `/service`. No alias for the old name is
+served.
 
 ### WAS-219: [L] (*) Changing a Collection's `backend.id` once it holds Resources
 
@@ -1000,7 +1047,13 @@ remove it.
     layout version, `src/lib/revisions.ts` (the write-once comparison),
     `src/lib/exportProvenance.ts`, `src/lib/importTar.ts`
   - space-archive: whether the archived sidecar carries the member
-  - conformance-suite: unaffected unless the digest becomes a served member
+  - conformance-suite: unaffected unless the digest becomes a served member; the
+    over-tombstone write-once refusal is a spec case once this lands
+  - portable-web-spaces-spec: WASS-49 shipped the tombstone rule as spec text
+    (2026-10-29): the `revisions.immutable` member of the Collection Metadata
+    data model says a write over a tombstone repeats the deleted content or is
+    refused with `resource-immutable` (409). This server admits it as an
+    ordinary create until this item lands; no spec change
 - acceptance:
   - [ ] Every content write records the digest of the stored representation, the
         bytes a `GET` serves, in the `Digest` header's `mh=` multihash form
@@ -1030,14 +1083,19 @@ Context: no backend stores a digest today. The write-once rule therefore
 compares content type and stored bytes on every repeat create. The filesystem
 backend re-hashes the stored file, and Postgres compares the whole `bytea`. A
 tombstone keeps nothing to compare, so a create over one is admitted as an
-ordinary create. Decided 2026-10-03 by the maintainer: the digest is of the
-stored representation, in multihash form. For a binary body that equals the
-request `Digest`. For a JSON body it does not when the body was sent
-non-compact, so the comparison hashes what the write would store. Export
-provenance digests each Resource at export time and reads it twice. Whether
-export signs the stored digest or keeps hashing the archived bytes is open,
-since a stored value does not detect damaged bytes. The write-time statements of
-WAS-184 need a digest at write time and would read this one.
+ordinary create. That is a known divergence from the spec since 2026-10-29, when
+WASS-49 landed the write-once rule in the core spec with the over-tombstone
+refusal decision 0012 gives; `StorageBackend.writeResource`'s doc comment and
+the filesystem backend's `#answerImmutableRepeat` describe the stopgap and are
+rewritten when the tombstone keeps its digest. Decided 2026-10-03 by the
+maintainer: the digest is of the stored representation, in multihash form. For a
+binary body that equals the request `Digest`. For a JSON body it does not when
+the body was sent non-compact, so the comparison hashes what the write would
+store. Export provenance digests each Resource at export time and reads it
+twice. Whether export signs the stored digest or keeps hashing the archived
+bytes is open, since a stored value does not detect damaged bytes. The
+write-time statements of WAS-184 need a digest at write time and would read this
+one.
 
 ### WAS-5: [L] (*) [after WAS-1] Drive API ToS use-case clearance
 
@@ -1977,31 +2035,6 @@ tests that only run when a backend advertises `hardQuota`/`exactUsage` then run
 against _no_ backend at all, since the filesystem harness sets both flags false
 -- the race-condition tests the flags exist for are dormant by default.
 
-### WAS-234: [M] `startTestServer` returns the service description URL
-
-- status: todo
-- priority: medium
-- labels: tests, testing-counterpart
-- discovered-from: WCL-140 (was-client, 2026-10-28)
-- touches:
-  - was-client: its `test/integration/globalSetup.ts` discovers the service
-    URL through the `service` link on a response from `serverUrl`; it
-    switches to the returned value once this ships
-  - was-react and dcw: their counterpart tests build clients from the value
-- acceptance:
-  - [ ] `startTestServer` returns `serviceUrl` (the absolute service
-        description URL) beside `serverUrl`, and `src/testing.ts` documents
-        that ZCap clients are built from the service URL
-  - [ ] The in-repo tests that build an `@interop/was-client` from
-        `serverUrl` use `serviceUrl` and `spaceAt(space.url)`; the pair rule
-        of LEARNINGS.md applies to the was-client bump
-
-A `WasClient` is now built from the service URL (`{ serviceUrl }`) or the
-Spaces Repository URL, and opens Spaces by the URL the server named in
-`Location`; `was.space(id)` and the base-URL derivation are gone (was-client
-0.100.0, decision 0002 there). The testing counterpart hands back the listen
-URL, which is neither, so every consumer re-derives the service URL on its own.
-
 ### WAS-47: [M] (*) Cover `start.ts` and the untested config parsers
 
 - status: todo
@@ -2117,6 +2150,9 @@ caller-supplied protected-header params"**
     docs/consuming-server-as-library.md ("Testing against the server")
   - freewallet: the replica ceremony's unit tier boots two real servers from
     `/testing` (FW-638, FW-688)
+  - was-client: its live tests for replica pause, resume and capability
+    replacement (WCL-143) boot a server with a provisioned identity from
+    `/testing`
 - acceptance:
   - [ ] `injectPeerFetch` (`test/helpers.ts:1106`) is exported from
         `src/testing.ts`, and the suites import it from there

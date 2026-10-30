@@ -285,7 +285,7 @@ describe('Sync signer', () => {
 
   async function publish(next: DIDLog): Promise<void> {
     const response = await admin.request({
-      path: '/space/server/id/did.jsonl',
+      url: `${serverUrl}/space/server/id/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(next)], { type: 'text/jsonl' })
@@ -326,7 +326,7 @@ describe('Sync signer', () => {
     })
     await space.createCollection({ id: 'notes' })
     await alice.was.request({
-      path: `/space/${spaceId}/notes/one`,
+      url: `${serverUrl}/space/${spaceId}/notes/one`,
       method: 'PUT',
       json: { hello: 'peer' }
     })

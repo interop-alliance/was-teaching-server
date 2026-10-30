@@ -31,20 +31,20 @@ describe('GET Collection equality filter', () => {
     documents: Array<{ id: string } & Record<string, unknown>>
   ): Promise<void> {
     await alice.was.request({
-      path: `/space/${spaceId()}/${collectionId}/meta`,
+      url: `${serverUrl}/space/${spaceId()}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: collectionId, plaintext: { indexes } }
     })
     for (const document of documents) {
       await alice.was.request({
-        path: `/space/${spaceId()}/${collectionId}/${document.id}`,
+        url: `${serverUrl}/space/${spaceId()}/${collectionId}/${document.id}`,
         method: 'PUT',
         json: document
       })
     }
     // PublicCanRead so an anonymous GET (with a filter) is served.
     await alice.was.request({
-      path: `/space/${spaceId()}/${collectionId}/policy`,
+      url: `${serverUrl}/space/${spaceId()}/${collectionId}/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
     })
@@ -258,12 +258,12 @@ describe('GET Collection equality filter', () => {
 
   it('a filter on an encrypted Collection is a 400 (it can never carry plaintext)', async () => {
     await alice.was.request({
-      path: `/space/${spaceId()}/f-encrypted/meta`,
+      url: `${serverUrl}/space/${spaceId()}/f-encrypted/meta`,
       method: 'PUT',
       json: { id: 'f-encrypted', encryption: { scheme: 'edv' } }
     })
     await alice.was.request({
-      path: `/space/${spaceId()}/f-encrypted/policy`,
+      url: `${serverUrl}/space/${spaceId()}/f-encrypted/policy`,
       method: 'PUT',
       json: { type: 'PublicCanRead' }
     })
@@ -301,7 +301,7 @@ describe('GET Collection equality filter', () => {
       ]
     )
     const response = await alice.was.request({
-      path: `/space/${spaceId()}/f-authed/?filter[parentId]=p1`,
+      url: `${serverUrl}/space/${spaceId()}/f-authed/?filter[parentId]=p1`,
       method: 'GET'
     })
     assert.equal(response.status, 200)

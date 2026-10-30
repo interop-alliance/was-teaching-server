@@ -242,7 +242,7 @@ describe('did:webvh on the revocation, consent, and listing paths', () => {
       spacesUrl = new URL('/spaces/', serverUrl).toString()
       account = await provisionWebvhIdentity({ owner: alice, serverUrl })
       const promoted = await alice.was.request({
-        path: `/space/${account.spaceId}/meta`,
+        url: `${serverUrl}/space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: account.spaceId,

@@ -155,7 +155,7 @@ describe('Space-rooted session capabilities', () => {
 
     it('queries the changes feed (POST .../query)', async () => {
       const response = await aliceDelegatedApp.was.request({
-        path: `/space/${spaceId}/${collectionId}/query`,
+        url: `${serverUrl}/space/${spaceId}/${collectionId}/query`,
         method: 'POST',
         json: { profile: 'changes', limit: 10 },
         capability: collectionWriteCap
@@ -182,7 +182,7 @@ describe('Space-rooted session capabilities', () => {
       // capability's target) or server-side; the write must not land.
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          path: `/space/${spaceId}/wallet-activity/doc-3`,
+          url: `${serverUrl}/space/${spaceId}/wallet-activity/doc-3`,
           method: 'PUT',
           json: { escape: true },
           capability: collectionWriteCap
@@ -198,7 +198,7 @@ describe('Space-rooted session capabilities', () => {
     it('cannot PUT the Space Metadata object (no Space takeover)', async () => {
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          path: `/space/${spaceId}/meta`,
+          url: `${serverUrl}/space/${spaceId}/meta`,
           method: 'PUT',
           json: { id: spaceId, controller: aliceDelegatedApp.did },
           capability: collectionWriteCap
@@ -225,7 +225,7 @@ describe('Space-rooted session capabilities', () => {
       })
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          path: `/space/${spaceId}/${collectionId}/doc-4`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/doc-4`,
           method: 'PUT',
           json: { rooted: 'wrong' },
           capability: collectionRootedCap
@@ -261,7 +261,7 @@ describe('Space-rooted session capabilities', () => {
       // capability's target) or server-side; the write must not land.
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          path: `/space/${spaceId}/${collectionId}/doc-5`,
+          url: `${serverUrl}/space/${spaceId}/${collectionId}/doc-5`,
           method: 'PUT',
           json: { crossSpace: true },
           capability: bobSessionCap

@@ -74,7 +74,7 @@ describe('Access-control policy API', () => {
     // Bob signs the request, but he is not the Space controller, so his
     // capability does not verify. The PublicCanRead policy grants the read.
     const response = await bob.was.request({
-      path: publicResourcePath(),
+      url: `${serverUrl}${publicResourcePath()}`,
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -212,7 +212,7 @@ describe('Access-control policy API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          path: '/spaces/',
+          url: `${serverUrl}/spaces/`,
           method: 'POST',
           json: { name: 'bad-controller', controller }
         })
@@ -230,7 +230,7 @@ describe('Access-control policy API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          path: `/space/${alice.space1.id}/public-credentials/policy`,
+          url: `${serverUrl}/space/${alice.space1.id}/public-credentials/policy`,
           method: 'PUT',
           json: { type }
         })
@@ -258,7 +258,7 @@ describe('Access-control policy API', () => {
       let thrown: any
       try {
         await alice.was.request({
-          path: `/space/${alice.space1.id}/`,
+          url: `${serverUrl}/space/${alice.space1.id}/`,
           method: 'POST',
           json: { id: reserved, name: reserved }
         })
