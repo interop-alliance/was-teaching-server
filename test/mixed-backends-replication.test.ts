@@ -27,17 +27,15 @@ import { createApp } from '../src/server.js'
 import type { PeerFetch } from '../src/sync/peerFetch.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
+import { openTempBackend, openTempPostgres, zcapClients } from './helpers.js'
 import {
   injectPeerFetch,
-  openTempBackend,
-  openTempPostgres,
   peerLogFetcherOf,
   provisionServerIdentity,
-  registerReplica,
-  replicaStatus,
   signedInject,
-  zcapClients
-} from './helpers.js'
+  registerReplica,
+  replicaStatus
+} from '../src/testing.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 

@@ -275,19 +275,28 @@ own suites use. It imports no test runner, so it works under Vitest,
 `node:test`, or any other runner. It adds nothing to the plugin's options. It is
 test support, not part of a production composition.
 
-| Export                      | What it is                                                                                  |
-| --------------------------- | ------------------------------------------------------------------------------------------- |
-| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, baseServerUrl, port, faults }` |
-| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                    |
-| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function        |
-| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                          |
-| `RequestRecord`             | The type of one recorded request                                                            |
-| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir              |
-| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                                   |
-| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                       |
-| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                                 |
-| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                                 |
-| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201                 |
+| Export                      | What it is                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, baseServerUrl, port, faults }`    |
+| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                       |
+| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function           |
+| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                             |
+| `RequestRecord`             | The type of one recorded request                                                               |
+| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir                 |
+| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                                      |
+| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                          |
+| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                                    |
+| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                                    |
+| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201                    |
+| `frozenClock`               | A frozen, steppable physical clock for `physicalClock`                                         |
+| `provisionServerIdentity`   | Writes a server identity into a bare backend: the `server` Space and its `did.jsonl` log       |
+| `mintServerDid`             | Mints a server's `did:webvh` history log without writing it; `provisionServerIdentity` uses it |
+| `injectPeerFetch`           | A pull-loop transport that hands each request to the in-process server the URL names           |
+| `peerLogFetcherOf`          | A `peerLogFetcher` that reads a peer's `did:webvh` log from the peer's own storage             |
+| `PeerFetch`                 | The type of the plugin's `peerFetch` option (a type-only export)                               |
+| `bootPeerServer`            | Boots one server of a two-server replication test; returns a `PeerServer`                      |
+| `PeerServer`                | The type `bootPeerServer()` returns                                                            |
+| `signedInject`              | Sends one signed request to a booted `PeerServer` through `fastify.inject`                     |
 
 `startTestServer()` takes the `createApp()` options except `serverUrl`, plus an
 optional `port` and `logger`. The logger defaults to `false`. The server listens
@@ -419,6 +428,106 @@ const account = await provisionWebvhIdentity({
 // account.did resolves on this server. account.clientKeyPair and
 // account.ladderKeyPair are listed in its document.
 ```
+
+### Two servers in one process
+
+A replication test runs a source server and a replica server in one process. The
+replica registers the source and pulls from it, invoking the pull capability as
+its own `did:webvh`, which the source server verifies by fetching the replica's
+history log. A peer's `did:webvh` names a host with no port, which an ephemeral
+test port cannot give, so the two servers never listen. Each is named by an
+`https` URL such as `https://source.example`, every request reaches it through
+`fastify.inject`, and the plugin's two network seams are replaced: `peerFetch`,
+the pull loop's transport, and `peerLogFetcher`, the fetch of a foreign
+`did:webvh` log.
+
+`bootPeerServer()` does the whole boot. It opens a temp backend over a frozen
+clock, writes a server identity whose key is listed under `capabilityInvocation`
+(`provisionServerIdentity`), builds the app with that identity's seed and the
+two seams wired to the other servers in `servers`, and pauses the replication
+timers, so a test runs each pull by hand with
+`fastify.replication.pullNow({ spaceId, replicaId })`. The returned `PeerServer`
+carries the app, the backend, the clock (`clock.now` steps the write stamps),
+and the server's `did` and `didLog`. A server is added to `servers` under its
+URL, which must be a bare origin, since both seams look a server up by the
+origin of the URL they are handed; a second boot at an origin already in the map
+is refused. Both seams read the map on every call, so a server may be booted
+after the others. A boot that fails after its backend opened closes the backend,
+so no temp dir is left behind.
+
+A consumer signs the requests it injects, as a client would. `signedInject()`
+does that: it signs an invocation of the root capability of the Space the path
+is under (or of the `capability` given) with the signer passed, and injects it
+with a `host` header naming the server. `registerReplica()` is the registration
+recipe: it delegates the source Space's root capability to the replica's `did`
+as an ezcap delegation and posts the registration to the replica, and
+`replicaStatus()` reads the registration's status document. The plugin owns each
+server's backend, so `fastify.close()` is the teardown, and it removes the
+server's temp dir.
+
+```ts
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import {
+  bootPeerServer,
+  registerReplica,
+  replicaStatus
+} from 'was-teaching-server/testing'
+import type { PeerServer } from 'was-teaching-server/testing'
+
+// The controller of the Spaces on both servers, and the signer of every
+// request the test sends.
+const keyPair = await Ed25519VerificationKey.generate()
+const controller = `did:key:${keyPair.fingerprint()}`
+const signer = keyPair.didKeySigner()
+
+const servers = new Map<string, PeerServer>()
+const source = await bootPeerServer({
+  serverUrl: 'https://source.example',
+  servers
+})
+const replica = await bootPeerServer({
+  serverUrl: 'https://replica.example',
+  servers
+})
+
+// A Space on each server, under one controller, through the backend.
+for (const server of [source, replica]) {
+  await server.backend.writeSpace({
+    spaceId: 'data',
+    spaceMetadata: { id: 'data', type: ['Space'], controller }
+  })
+}
+
+// The registration: the source Space's root capability delegated to the
+// replica's DID, posted to the replica as `peer`, signed by the controller.
+await registerReplica({
+  to: replica,
+  toSpaceId: 'data',
+  from: source,
+  fromSpaceId: 'data',
+  signer,
+  delegator: { did: controller, signer }
+})
+
+await replica.fastify.replication.pullNow({
+  spaceId: 'data',
+  replicaId: 'peer'
+})
+const status = await replicaStatus({ server: replica, spaceId: 'data', signer })
+
+// Teardown: closing each app closes its backend and removes its temp dir.
+await source.fastify.close()
+await replica.fastify.close()
+```
+
+The pieces are exported on their own for a boot that differs from this one. A
+single listening server (`startTestServer`) gets an identity by calling
+`provisionServerIdentity({ backend, serverUrl, seed })` before the boot and
+passing the same `seed` as `serverKeySeed`; its `serverUrl` is the no-slash
+form, `http://localhost:<port>`, which a pinned `port` makes known in advance.
+`injectPeerFetch(servers)` and `peerLogFetcherOf(servers)` are the two seams,
+each over a map of servers by origin, and `frozenClock()` is the clock
+`physicalClock` takes.
 
 The document always lists one enrolled-client key under all four signing
 relations. `withLadderKey` adds a key under `assertionMethod` and

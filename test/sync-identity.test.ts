@@ -18,7 +18,6 @@ import type { FastifyInstance } from 'fastify'
 import { pino } from 'pino'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
-  createDID,
   logToJsonlString,
   readLogFromString,
   updateDID
@@ -42,13 +41,13 @@ import {
   delegate,
   importArchive,
   openTempBackend,
-  provisionServerIdentity,
   requestError,
   startTestServer,
   wasClient,
   webvhLogSigner,
   zcapClients
 } from './helpers.js'
+import { mintServerDid, provisionServerIdentity } from '../src/testing.js'
 
 const silent = pino({ level: 'silent' })
 
@@ -356,19 +355,10 @@ describe('Sync signer', () => {
 
   it('is refused naming capabilityInvocation while the log lists only assertionMethod', async () => {
     await admin.space('server').collection('id').configure({ force: true })
-    const created = await createDID({
-      address: `${baseServerUrl}space/server/id`,
-      signer: webvhLogSigner({ keyPair: adminKeyPair }),
-      updateKeys: [adminKeyPair.publicKeyMultibase!],
-      vmIdFragment: 'multibase',
-      portable: true,
-      verificationMethods: [
-        {
-          type: 'Multikey',
-          publicKeyMultibase: signingKey.keyPair.publicKeyMultibase,
-          purpose: ['assertionMethod']
-        }
-      ] as any
+    const created = await mintServerDid({
+      serverUrl: baseServerUrl,
+      publicKeyMultibase: signingKey.keyPair.publicKeyMultibase!,
+      admin: adminKeyPair
     })
     serverDid = created.did
     await publish(created.log)

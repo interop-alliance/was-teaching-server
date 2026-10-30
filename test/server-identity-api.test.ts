@@ -17,15 +17,12 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import {
-  createDID,
-  logToJsonlString,
-  updateDID
-} from '@interop/did-method-webvh'
+import { logToJsonlString, updateDID } from '@interop/did-method-webvh'
 import type { DIDLog } from '@interop/did-method-webvh'
 
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { mintServerDid } from '../src/testing.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   createServerSigningKey,
@@ -231,19 +228,10 @@ describe('Server identity', () => {
     })
 
     it('appears on /service as instance.serverDid once the admin publishes a log listing the key under assertionMethod', async () => {
-      const created = await createDID({
-        address: `${baseServerUrl}space/server/id`,
-        signer: admin.logSigner,
-        updateKeys: [admin.keyPair.publicKeyMultibase!],
-        vmIdFragment: 'multibase',
-        portable: true,
-        verificationMethods: [
-          {
-            type: 'Multikey',
-            publicKeyMultibase: serverKeyMultibase,
-            purpose: ['assertionMethod']
-          }
-        ] as any
+      const created = await mintServerDid({
+        serverUrl: baseServerUrl,
+        publicKeyMultibase: serverKeyMultibase,
+        admin: admin.keyPair
       })
       log = created.log
       did = created.did

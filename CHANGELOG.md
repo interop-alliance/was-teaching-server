@@ -25,6 +25,25 @@
 
 ### Added
 
+- The `was-teaching-server/testing` entry point exports the two-server boot the
+  replication suites run in one process: `bootPeerServer` (a server over a temp
+  backend and a frozen clock, with an identity whose key may invoke, its pull
+  loop reaching the other servers through `fastify.inject`, and its timers
+  paused), and the pieces it is built from, `provisionServerIdentity`,
+  `mintServerDid`, `injectPeerFetch`, `peerLogFetcherOf` and `frozenClock`, with
+  the `PeerServer` and `PeerFetch` types, `signedInject`, which signs a request
+  as a client would and injects it into a server that never listens, and the
+  registration recipe over it, `registerReplica` (delegates the pull capability
+  and posts the registration) and `replicaStatus`. `mintServerDid` takes the
+  admin key pair as `admin`, a fresh one when omitted, and a `serverUrl` with or
+  without its trailing slash. `@interop/ezcap`, which the delegation signs with,
+  is a dependency of the package rather than a devDependency. `bootPeerServer`
+  takes a bare-origin `serverUrl` (the key both seams look a server up by),
+  refuses a second boot at one, and closes its backend when the boot fails after
+  opening it. The in-repo suites import them from there, and a test that imports
+  only the entry point boots a source and a replica server, registers, and
+  pulls. docs/consuming-server-as-library.md documents the helpers under "Two
+  servers in one process".
 - **Breaking (testing entry point):** `startTestServer` (the
   `was-teaching-server/testing` entry point) returns `baseServerUrl` in place of
   `serverUrl`: the listen origin with its trailing slash, the base under which

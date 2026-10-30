@@ -11,9 +11,10 @@ import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { createDID, logToJsonlString } from '@interop/did-method-webvh'
+import { logToJsonlString } from '@interop/did-method-webvh'
 import { readSpaceArchive } from '@interop/space-archive'
 
+import { mintServerDid } from '../src/testing.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import {
@@ -21,8 +22,7 @@ import {
   startTestServer,
   verifyProvenanceOffline,
   wasClient,
-  zcapClients,
-  webvhLogSigner
+  zcapClients
 } from './helpers.js'
 
 describe('Export provenance (wire level)', () => {
@@ -100,19 +100,10 @@ describe('Export provenance (wire level)', () => {
 
   it('signs every object and embeds the served log once the admin publishes one', async () => {
     const signingKey = await createServerSigningKey({ seed })
-    const { did, log } = await createDID({
-      address: `${baseServerUrl}space/server/id`,
-      signer: webvhLogSigner({ keyPair: adminKeyPair }),
-      updateKeys: [adminKeyPair.publicKeyMultibase!],
-      vmIdFragment: 'multibase',
-      portable: true,
-      verificationMethods: [
-        {
-          type: 'Multikey',
-          publicKeyMultibase: signingKey.keyPair.publicKeyMultibase,
-          purpose: ['assertionMethod']
-        }
-      ] as any
+    const { did, log } = await mintServerDid({
+      serverUrl: baseServerUrl,
+      publicKeyMultibase: signingKey.keyPair.publicKeyMultibase!,
+      admin: adminKeyPair
     })
     await admin.space('server').collection('id').configure({ force: true })
     const published = await admin.request({

@@ -14,7 +14,6 @@ import type { FastifyInstance } from 'fastify'
 
 import {
   etagGeneration,
-  frozenClock,
   openTempBackend,
   parseEtagSegments,
   responseOf,
@@ -22,6 +21,7 @@ import {
   startTestServer,
   zcapClients
 } from './helpers.js'
+import { frozenClock } from '../src/testing.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
 

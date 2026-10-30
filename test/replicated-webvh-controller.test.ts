@@ -37,13 +37,15 @@ import {
   bareDidKeyOf,
   bindKey,
   delegate,
-  injectPeerFetch,
   openTempBackend,
-  provisionServerIdentity,
-  signedInject,
   webvhLogSigner,
   zcapClients
 } from './helpers.js'
+import {
+  injectPeerFetch,
+  provisionServerIdentity,
+  signedInject
+} from '../src/testing.js'
 
 /**
  * One of the two servers.

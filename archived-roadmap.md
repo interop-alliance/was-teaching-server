@@ -6857,3 +6857,39 @@ the archive strings are opaque to the reader (the manifest is descriptive and
 entries are classified by path), so this item does not wait on it. Archives
 exported before the bump keep the old host; the importer does not read the
 values, so they import unchanged.
+
+### WAS-228: [M] (*) Export the two-server test helpers from the `/testing` entry
+
+- status: done (2026-10-29)
+- priority: medium
+- backend: *
+- labels: tests, replication, testing-entry
+- discovered-from: freewallet FW-688 (2026-10-26)
+- touches:
+  - was-teaching-server: `src/testing.ts`, `test/helpers.ts`,
+    docs/consuming-server-as-library.md ("Testing against the server")
+  - freewallet: the replica ceremony's unit tier boots two real servers from
+    `/testing` (FW-638, FW-688; both filed there, waiting on this entry's
+    publish)
+  - was-client: its live tests for replica pause, resume and capability
+    replacement (WCL-143) boot a server with a provisioned identity from
+    `/testing` (filed there, waiting on this entry's publish)
+- acceptance:
+  - [x] `injectPeerFetch` (`test/helpers.ts:1106`) is exported from
+        `src/testing.ts`, and the suites import it from there
+  - [x] Whatever else a two-server boot needs from outside the package is
+        exported beside it: a server identity whose key may invoke
+        (`provisionServerIdentity`, `test/helpers.ts:844`) and the log fetcher
+        (`peerLogFetcherOf`, `:1154`), or one boot helper in the shape of
+        `bootPeerServer` (`:1179`) -- both: the pieces and `bootPeerServer`,
+        with `mintServerDid` and `frozenClock` beside them
+  - [x] A test that imports only from the `/testing` entry boots a source and a
+        replica server, registers, and pulls
+  - [x] docs/consuming-server-as-library.md documents the helpers
+
+Context. The wallet's replica ceremony is tested against two real servers in one
+process rather than a second fake server. The server already takes `peerFetch`
+and `peerLogFetcher` as plugin options (`src/plugin.ts:255-272`), but the
+transport that routes one server's pulls to another through `fastify.inject`
+lives in the test helpers, outside the published entry. `injectPeerFetch` routes
+GET only, which is all a pull sends.

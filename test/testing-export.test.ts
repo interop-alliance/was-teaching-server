@@ -15,13 +15,20 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { FastifyInstance } from 'fastify'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
+import { ZcapClient } from '@interop/ezcap'
 
-import { provisionServerIdentity, zcapClients } from './helpers.js'
+import { zcapClients } from './helpers.js'
 import {
+  bootPeerServer,
   openTempBackend,
+  provisionServerIdentity,
   provisionWebvhIdentity,
+  signedInject,
   startTestServer
 } from '../src/testing.js'
+import type { PeerServer } from '../src/testing.js'
 
 // Run in a child process, outside Vitest: records every module the entry
 // point's import graph resolves and prints the ones that are a test runner.
@@ -173,6 +180,131 @@ describe('testing export', () => {
       assert.deepEqual(listing.items, [])
     } finally {
       await fastify.close()
+    }
+  })
+
+  it('boots two servers that replicate a Space, with nothing from the suite helpers', async () => {
+    // Everything server-side comes from the `/testing` entry; the client side
+    // is what a consumer brings: a key pair, an ezcap client to delegate with,
+    // and the invocation signer `signedInject` signs with.
+    const servers = new Map<string, PeerServer>()
+    const source = await bootPeerServer({
+      serverUrl: 'https://source.example',
+      servers
+    })
+    const replica = await bootPeerServer({
+      serverUrl: 'https://replica.example',
+      servers
+    })
+    try {
+      const keyPair = await Ed25519VerificationKey.generate()
+      const controller = `did:key:${keyPair.fingerprint()}`
+      const signer = keyPair.didKeySigner()
+      for (const server of [source, replica]) {
+        await server.backend.writeSpace({
+          spaceId: 'data',
+          spaceMetadata: {
+            id: 'data',
+            type: ['Space'],
+            controller: controller as any
+          }
+        })
+      }
+
+      await source.backend.writeCollection({
+        spaceId: 'data',
+        collectionId: 'items',
+        collectionMetadata: { id: 'items', type: ['Collection'] }
+      })
+      const written = await signedInject({
+        server: source,
+        signer,
+        path: '/space/data/items/one',
+        method: 'PUT',
+        contentType: 'application/json',
+        json: { hello: 'replica' }
+      })
+      assert.equal(written.statusCode, 201, written.payload)
+
+      const fromSpace = `${source.serverUrl}/space/data/`
+      const capability = await new ZcapClient({
+        SuiteClass: EddsaJcs2022,
+        invocationSigner: signer,
+        delegationSigner: signer
+      }).delegate({
+        capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+        invocationTarget: fromSpace,
+        controller: replica.did,
+        allowedActions: ['GET'],
+        expires: new Date(Date.now() + 60 * 60 * 1000)
+      })
+      const registered = await signedInject({
+        server: replica,
+        signer,
+        path: '/space/data/replicas',
+        method: 'POST',
+        contentType: 'application/json',
+        json: {
+          id: 'peer',
+          fromSpace,
+          toSpace: `${replica.serverUrl}/space/data/`,
+          capability,
+          role: 'source'
+        }
+      })
+      assert.equal(registered.statusCode, 201, registered.payload)
+
+      await replica.fastify.replication.pullNow({
+        spaceId: 'data',
+        replicaId: 'peer'
+      })
+
+      const pulled = await signedInject({
+        server: replica,
+        signer,
+        path: '/space/data/items/one'
+      })
+      assert.equal(pulled.statusCode, 200, pulled.payload)
+      assert.deepEqual(pulled.json(), { hello: 'replica' })
+    } finally {
+      await source.fastify.close()
+      await replica.fastify.close()
+    }
+  })
+
+  it('closes the backend when a peer boot fails after opening it', async () => {
+    const prefix = `was-testing-export-peer-${process.pid}-`
+    const servers = new Map<string, PeerServer>()
+    // Its own origin, so the boot gets past the serverUrl check and opens a
+    // backend, but not a URL the plugin accepts.
+    await assert.rejects(
+      bootPeerServer({ serverUrl: 'ws://source.example', servers, prefix })
+    )
+    const left = (await readdir(tmpdir())).filter(name =>
+      name.startsWith(prefix)
+    )
+    assert.deepEqual(left, [])
+    assert.equal(servers.size, 0)
+  })
+
+  it('refuses a peer serverUrl that is not a bare origin, and a second boot at one', async () => {
+    const servers = new Map<string, PeerServer>()
+    await assert.rejects(
+      bootPeerServer({ serverUrl: 'https://source.example/', servers }),
+      /bare origin/
+    )
+    const source = await bootPeerServer({
+      serverUrl: 'https://source.example',
+      servers
+    })
+    try {
+      await assert.rejects(
+        bootPeerServer({ serverUrl: 'https://source.example', servers }),
+        /already booted/
+      )
+      assert.equal(servers.get('https://source.example'), source)
+    } finally {
+      await source.fastify.close()
     }
   })
 

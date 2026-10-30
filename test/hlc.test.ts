@@ -22,7 +22,7 @@ import type { HlcTimestamp } from '../src/lib/hlc.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { STORE_FILE_NAME } from '../src/backends/filesystemStore.js'
 import type { WriteStamp } from '../src/types.js'
-import { frozenClock } from './helpers.js'
+import { frozenClock } from '../src/testing.js'
 
 const ORIGIN = 'zTestOrigin'
 

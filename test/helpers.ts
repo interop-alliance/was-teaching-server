@@ -2,7 +2,6 @@ import assert from 'node:assert'
 import { createHash, randomBytes } from 'node:crypto'
 import { access } from 'node:fs/promises'
 import { Readable } from 'node:stream'
-import type { FastifyInstance, LightMyRequestResponse } from 'fastify'
 import pg from 'pg'
 import pino from 'pino'
 import { vi } from 'vitest'
@@ -12,13 +11,7 @@ import { decodeSecretKeySeed } from '@interop/bnid'
 import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import type { ISigner } from '@interop/data-integrity-core'
-import {
-  createDID,
-  logToJsonlString,
-  readLogFromString,
-  resolveDIDFromLog
-} from '@interop/did-method-webvh'
-import type { DIDLog } from '@interop/did-method-webvh'
+import { readLogFromString, resolveDIDFromLog } from '@interop/did-method-webvh'
 import { DataIntegrityProof } from '@interop/data-integrity-proof'
 import { createVerifyCryptosuite } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
@@ -29,19 +22,14 @@ import {
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
 import { PostgresBackend } from '../src/backends/postgres.js'
-import { createApp } from '../src/server.js'
 import type { PostgresBackendOptions } from '../src/backends/postgres.js'
 import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
 import { prepareImportPlan } from '../src/lib/importPlan.js'
 import { installImportRevocations } from '../src/lib/importRevocations.js'
 import type { ImportRevocationScope } from '../src/lib/importRevocations.js'
-import { createServerSigningKey } from '../src/lib/serverIdentity.js'
-import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
-import type { PeerFetch } from '../src/sync/peerFetch.js'
-import { openTempBackend } from '../src/testing.js'
-import type { TempFileSystemBackend } from '../src/testing.js'
-import { webvhLogSigner } from '../src/testing.js'
+import type { PeerServer } from '../src/testing.js'
+import { rootCapabilityId } from '../src/zcap.js'
 import type {
   FeedDocument,
   IDID,
@@ -85,7 +73,7 @@ export function rootZcap({
 }): IRootZcap {
   return {
     '@context': 'https://w3id.org/zcap/v1',
-    id: `urn:zcap:root:${encodeURIComponent(target)}`,
+    id: rootCapabilityId(target),
     invocationTarget: target,
     controller
   }
@@ -397,25 +385,6 @@ export async function openTempPostgres({
 }
 
 /**
- * A frozen, steppable physical clock for a backend's hybrid logical clock
- * (`physicalClock` on `openTempBackend()` / `startTestServer()`). `now` is the
- * epoch milliseconds it reads; set it to step the clock, backwards included.
- *
- * @param [start] {number}   the initial reading; defaults to a fixed instant
- * @returns {{ now: number, read: () => number }}
- */
-export function frozenClock(start = Date.UTC(2026, 9, 1)): {
-  now: number
-  read: () => number
-} {
-  const clock = {
-    now: start,
-    read: () => clock.now
-  }
-  return clock
-}
-
-/**
  * Alice's did:key verification method id (matches the seed in `fixtures`).
  */
 export const ALICE_KEY_ID =
@@ -462,7 +431,7 @@ export function rootInvocation({
   target: string
   action?: string
 }): string {
-  return `zcap id="urn:zcap:root:${encodeURIComponent(target)}",action="${action}"`
+  return `zcap id="${rootCapabilityId(target)}",action="${action}"`
 }
 
 /**
@@ -561,9 +530,10 @@ export function wasClient({
  * server through these `was` clients rather than raw `ZcapClient.request()`.
  *
  * @param options {object}
- * @param options.baseServerUrl {string}   the suite's in-process server URL with
- *   no trailing slash, as `startTestServer` returns `baseServerUrl`; also the zcap
- *   invocationTarget base, so it must match the injected app's URL
+ * @param options.baseServerUrl {string}   the suite's in-process server URL, as
+ *   `startTestServer` returns `baseServerUrl` (the client canonicalizes the
+ *   trailing slash); also the zcap invocationTarget base, so it must name the
+ *   injected app's origin
  * @returns {Promise<object>}
  */
 export async function zcapClients({
@@ -791,106 +761,6 @@ export async function provisionProviderContainers({
 }
 
 /**
- * Mints the history log of a server's `did:webvh`, anchored at
- * `{serverUrl}/space/server/id`, under a fresh admin update key. The
- * document lists one Multikey, the server's signing key, under `purpose`.
- * Nothing is written anywhere.
- *
- * @param options {object}
- * @param options.serverUrl {string}   the host the DID is minted for
- * @param options.publicKeyMultibase {string}   the signing key's public key
- * @param [options.purpose] {string[]}   the relationships the key is listed
- *   under
- * @param [options.witness] {object}   the log's `witness` parameter
- * @returns {Promise<{ did: string, log: DIDLog, admin: Ed25519VerificationKey }>}
- */
-export async function mintServerDid({
-  serverUrl,
-  publicKeyMultibase,
-  purpose = ['assertionMethod'],
-  witness
-}: {
-  serverUrl: string
-  publicKeyMultibase: string
-  purpose?: string[]
-  witness?: { threshold: number; witnesses: { id: string }[] }
-}): Promise<{ did: string; log: DIDLog; admin: Ed25519VerificationKey }> {
-  const admin = await Ed25519VerificationKey.generate()
-  const { did, log } = await createDID({
-    address: `${serverUrl}/space/server/id`,
-    signer: webvhLogSigner({ keyPair: admin }),
-    updateKeys: [admin.publicKeyMultibase!],
-    vmIdFragment: 'multibase',
-    portable: true,
-    verificationMethods: [
-      { type: 'Multikey', publicKeyMultibase, purpose }
-    ] as any,
-    ...(witness !== undefined && { witness })
-  })
-  return { did, log, admin }
-}
-
-/**
- * Gives a bare backend a server identity, the way an admin would through the
- * front door: the `server` Space under an admin `did:key`, its `id`
- * Collection, and a `did.jsonl` history log whose document lists the
- * seed-derived export-signing key under `purpose` (by default
- * `assertionMethod` only), named by its full `publicKeyMultibase`. Written
- * through the backend API, so no server needs to run.
- *
- * @param options {object}
- * @param options.backend {StorageBackend}
- * @param options.serverUrl {string}   the host the DID is minted for
- * @param options.seed {Uint8Array}   the export-signing key's 32-byte seed
- * @param [options.purpose] {string[]}   the relationships the key is listed
- *   under
- * @returns {Promise<{ signingKey: ServerSigningKey, did: string, didLog: string }>}
- */
-export async function provisionServerIdentity({
-  backend,
-  serverUrl,
-  seed,
-  purpose = ['assertionMethod']
-}: {
-  backend: StorageBackend
-  serverUrl: string
-  seed: Uint8Array
-  purpose?: string[]
-}): Promise<{ signingKey: ServerSigningKey; did: string; didLog: string }> {
-  const signingKey = await createServerSigningKey({ seed })
-  const { did, log, admin } = await mintServerDid({
-    serverUrl,
-    publicKeyMultibase: signingKey.keyPair.publicKeyMultibase!,
-    purpose
-  })
-  const didLog = logToJsonlString(log)
-  await backend.writeSpace({
-    spaceId: 'server',
-    spaceMetadata: {
-      id: 'server',
-      type: ['AuxiliarySpace', 'ServerInstanceSpace', 'Space'],
-      controller: `did:key:${admin.publicKeyMultibase}` as IDID
-    }
-  })
-  await backend.writeCollection({
-    spaceId: 'server',
-    collectionId: 'id',
-    collectionMetadata: { id: 'id', type: ['Collection'], name: 'id' }
-  })
-  await backend.writeResource({
-    spaceId: 'server',
-    collectionId: 'id',
-    resourceId: 'did.jsonl',
-    input: {
-      kind: 'binary',
-      contentType: 'text/jsonl',
-      stream: Readable.from([Buffer.from(didLog)])
-    }
-  })
-  return { signingKey, did, didLog }
-}
-
-/**
  * Verifies an archive's provenance offline, the way an importer would: the
  * embedded `did.jsonl` snapshot is verified with `resolveDIDFromLog` (SCID,
  * hash chain, update keys), then every statement's `eddsa-jcs-2022` proof is
@@ -1099,44 +969,6 @@ export function bindKey(
 }
 
 /**
- * The pull loops' transport for servers booted in one process that never
- * listen: the request is handed to the app the URL's origin names, through
- * `fastify.inject`. `servers` is read on every request, so a server may be
- * added after the transport is built.
- *
- * @param servers {Map<string, { fastify: FastifyInstance }>}   the apps, by
- *   server URL
- * @returns {PeerFetch}
- */
-export function injectPeerFetch(
-  servers: Map<string, { fastify: FastifyInstance }>
-): PeerFetch {
-  return async ({ url, headers }) => {
-    const target = new URL(url)
-    const server = servers.get(target.origin)
-    if (server === undefined) {
-      throw new Error(`No test server at ${target.origin}.`)
-    }
-    const response = await server.fastify.inject({
-      method: 'GET',
-      url: `${target.pathname}${target.search}`,
-      headers: { ...headers, host: target.host }
-    })
-    return {
-      status: response.statusCode,
-      headers: {
-        get: (name: string) => {
-          const value = response.headers[name.toLowerCase()]
-          return value === undefined ? null : String(value)
-        }
-      },
-      body: new Blob([new Uint8Array(response.rawPayload)]).stream(),
-      release: () => {}
-    }
-  }
-}
-
-/**
  * A binary `ResourceInput` over one in-memory body.
  * @param bytes {Buffer | string}
  * @param [options] {object}
@@ -1173,19 +1005,6 @@ export async function pathExists(target: string): Promise<boolean> {
     }
     throw err
   }
-}
-
-/**
- * One of the servers a replication suite boots in one process: its app, its
- * filesystem backend, the clock its write stamps read, and its own DID.
- */
-export interface PeerServer {
-  serverUrl: string
-  fastify: FastifyInstance
-  backend: TempFileSystemBackend
-  clock: ReturnType<typeof frozenClock>
-  did: string
-  didLog: string
 }
 
 /**
@@ -1233,248 +1052,6 @@ export async function pullOnce({
   replicaId?: string
 }): Promise<void> {
   await server.fastify.replication.pullNow({ spaceId, replicaId })
-}
-
-/**
- * The `peerLogFetcher` of a server booted beside its peers: a peer's
- * `did:webvh` log is read from the peer's own storage. `servers` is read on
- * every fetch, so a server may be added after the fetcher is built.
- * @param servers {Map<string, { didLog: string }>}   the servers, by URL
- * @returns {(options: { url: string }) => Promise<Buffer>}
- */
-export function peerLogFetcherOf(
-  servers: Map<string, { didLog: string }>
-): (options: { url: string }) => Promise<Buffer> {
-  return async ({ url }) => {
-    const peer = servers.get(new URL(url).origin)
-    if (peer === undefined) {
-      throw new Error(`No test server at ${url}.`)
-    }
-    return Buffer.from(peer.didLog)
-  }
-}
-
-/**
- * Boots one server of a replication suite over its own temp data dir, with
- * an identity whose key may invoke, so it can pull, and its timers paused so
- * every pull is run by hand. The server never listens: its pull loop reaches
- * its peers through `peerFetch`, and it is added to `servers` under its URL.
- * @param options {object}
- * @param options.serverUrl {string}
- * @param options.start {number}   the clock's start, epoch milliseconds
- * @param options.prefix {string}   the temp dir prefix
- * @param options.peerFetch {PeerFetch}   the transport the pull loop uses
- * @param options.servers {Map<string, PeerServer>}   the suite's servers
- * @returns {Promise<PeerServer>}
- */
-export async function bootPeerServer({
-  serverUrl,
-  start,
-  prefix,
-  peerFetch,
-  servers
-}: {
-  serverUrl: string
-  start: number
-  prefix: string
-  peerFetch: PeerFetch
-  servers: Map<string, PeerServer>
-}): Promise<PeerServer> {
-  const clock = frozenClock(start)
-  const backend = await openTempBackend({ prefix, physicalClock: clock.read })
-  const seed = randomBytes(32)
-  const { did, didLog } = await provisionServerIdentity({
-    backend,
-    serverUrl,
-    seed,
-    purpose: ['assertionMethod', 'capabilityInvocation']
-  })
-  const fastify = createApp({
-    serverUrl,
-    backend,
-    logger: false,
-    serverKeySeed: seed,
-    peerFetch,
-    peerLogFetcher: peerLogFetcherOf(servers)
-  })
-  await fastify.ready()
-  fastify.replication.pause()
-  const server = { serverUrl, fastify, backend, clock, did, didLog }
-  servers.set(serverUrl, server)
-  return server
-}
-
-/**
- * Sends one signed request to a server that never listens, through
- * `fastify.inject`, signed as a client would sign it.
- *
- * @param options {object}
- * @param options.server {{ fastify: FastifyInstance, serverUrl: string }}
- * @param options.path {string}   the server-relative path, under a Space
- * @param options.signer {any}   the invocation signer
- * @param [options.method] {string}   defaults to `GET`
- * @param [options.capability] {any}   defaults to the root capability of the
- *   Space the path is under
- * @param [options.json] {object}   a JSON body
- * @param [options.body] {Uint8Array}   a binary body
- * @param [options.contentType] {string}
- * @returns {Promise<import('fastify').LightMyRequestResponse>}
- */
-export async function signedInject({
-  server,
-  path,
-  signer,
-  method = 'GET',
-  capability,
-  json,
-  body,
-  contentType,
-  headers: extraHeaders = {}
-}: {
-  server: { fastify: FastifyInstance; serverUrl: string }
-  path: string
-  signer: any
-  method?: string
-  capability?: any
-  json?: object
-  body?: Uint8Array
-  contentType?: string
-  /** headers sent outside the signature, such as `if-match` */
-  headers?: Record<string, string>
-}): Promise<LightMyRequestResponse> {
-  const url = new URL(path, server.serverUrl).toString()
-  const spaceUrl = new URL(
-    `/space/${path.split('/')[2]}/`,
-    server.serverUrl
-  ).toString()
-  const headers = await signCapabilityInvocation({
-    url,
-    method,
-    headers: {
-      date: new Date().toUTCString(),
-      ...(contentType !== undefined && { 'content-type': contentType })
-    },
-    ...(json !== undefined && { json }),
-    ...(body !== undefined && { body }),
-    capability: capability ?? `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
-    capabilityAction: method,
-    invocationSigner: signer
-  })
-  let payload: string | Buffer | undefined
-  if (json !== undefined) {
-    payload = JSON.stringify(json)
-  } else if (body !== undefined) {
-    payload = Buffer.from(body)
-  }
-  return server.fastify.inject({
-    method: method as any,
-    url: path,
-    headers: {
-      ...(headers as Record<string, string>),
-      ...extraHeaders,
-      host: new URL(server.serverUrl).host
-    },
-    ...(payload !== undefined && { payload })
-  })
-}
-
-/**
- * Registers `from`'s Space as a source of `to`'s: delegates a pull capability
- * on the source Space to `to`'s DID, signed by `delegator`, and posts the
- * registration to `to` under `signer`, the local Space's controller.
- * Resolves the registration response, whatever its status.
- *
- * @param options {object}
- * @param options.to {{ fastify: FastifyInstance, serverUrl: string, did: string }}
- *   the server that pulls
- * @param options.toSpaceId {string}
- * @param options.from {{ serverUrl: string }}   the source server
- * @param options.fromSpaceId {string}
- * @param options.signer {any}   the local Space's controller key, which
- *   signs the registration
- * @param options.delegator {{ did: string, signer: any }}   the source
- *   Space's controller
- * @param [options.replicaId] {string}   defaults to `peer`
- * @param [options.allowedActions] {string[]}   of the pull capability;
- *   defaults to `['GET']`
- * @param [options.overrides] {object}   members laid over the registration
- *   body
- * @returns {Promise<import('fastify').LightMyRequestResponse>}
- */
-export async function registerReplica({
-  to,
-  toSpaceId,
-  from,
-  fromSpaceId,
-  signer,
-  delegator,
-  replicaId = 'peer',
-  allowedActions = ['GET'],
-  overrides = {}
-}: {
-  to: { fastify: FastifyInstance; serverUrl: string; did: string }
-  toSpaceId: string
-  from: { serverUrl: string }
-  fromSpaceId: string
-  signer: any
-  delegator: { did: string; signer: any }
-  replicaId?: string
-  allowedActions?: string[]
-  overrides?: Record<string, unknown>
-}): Promise<LightMyRequestResponse> {
-  const fromSpace = `${from.serverUrl}/space/${fromSpaceId}/`
-  const capability = await delegate({
-    signer: delegator.signer,
-    capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
-    invocationTarget: fromSpace,
-    controller: to.did,
-    allowedActions
-  })
-  return signedInject({
-    server: to,
-    signer,
-    path: `/space/${toSpaceId}/replicas`,
-    method: 'POST',
-    json: {
-      id: replicaId,
-      fromSpace,
-      toSpace: `${to.serverUrl}/space/${toSpaceId}/`,
-      capability,
-      role: 'source',
-      ...overrides
-    }
-  })
-}
-
-/**
- * Reads a registration's status on `server`, signed by `signer`, and
- * resolves the status document.
- *
- * @param options {object}
- * @param options.server {{ fastify: FastifyInstance, serverUrl: string }}
- * @param options.spaceId {string}
- * @param options.signer {any}
- * @param [options.replicaId] {string}   defaults to `peer`
- * @returns {Promise<any>}
- */
-export async function replicaStatus({
-  server,
-  spaceId,
-  signer,
-  replicaId = 'peer'
-}: {
-  server: { fastify: FastifyInstance; serverUrl: string }
-  spaceId: string
-  signer: any
-  replicaId?: string
-}): Promise<any> {
-  const response = await signedInject({
-    server,
-    signer,
-    path: `/space/${spaceId}/replicas/${replicaId}/status`
-  })
-  assert.equal(response.statusCode, 200, response.payload)
-  return response.json()
 }
 
 /**
@@ -1534,7 +1111,7 @@ export function replicaRegistration({
     capability: {
       '@context': ['https://w3id.org/zcap/v1'],
       id: REPLICA_CAPABILITY_ID,
-      parentCapability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+      parentCapability: rootCapabilityId(fromSpace),
       controller: 'did:webvh:scid:was.example:space:server:id',
       invocationTarget: fromSpace,
       allowedAction: ['GET', 'HEAD'],

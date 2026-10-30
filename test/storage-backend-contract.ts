@@ -39,18 +39,20 @@ import {
   assertEtagAdvanced,
   bareDidKeyOf,
   delegate,
-  frozenClock,
   importArchive,
-  mintServerDid,
   parseEtagSegments,
   binaryInput,
-  provisionServerIdentity,
   REPLICA_CAPABILITY_ID,
   replicaRegistration,
   resourceDocuments,
   verifyProvenanceOffline,
   watchWitnessFetches
 } from './helpers.js'
+import {
+  frozenClock,
+  mintServerDid,
+  provisionServerIdentity
+} from '../src/testing.js'
 import {
   CollectionNotFoundError,
   PreconditionFailedError,

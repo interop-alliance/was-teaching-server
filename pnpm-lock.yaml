@@ -41,6 +41,9 @@ importers:
       '@interop/ed25519-verification-key':
         specifier: ^8.2.2
         version: 8.2.2
+      '@interop/ezcap':
+        specifier: ^7.5.4
+        version: 7.5.4
       '@interop/http-digest-header':
         specifier: ^3.2.0
         version: 3.2.0
@@ -123,15 +126,12 @@ importers:
       '@interop/did-cli':
         specifier: ^0.17.0
         version: 0.17.0(@interop/jsonld-signatures@11.9.0)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
-      '@interop/ezcap':
-        specifier: ^7.5.4
-        version: 7.5.4
       '@interop/pws-conformance-suite':
         specifier: ^0.35.0
-        version: 0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.100.1(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
+        version: 0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.101.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/was-client':
-        specifier: ^0.100.1
-        version: 0.100.1(@interop/jsonld-signatures@11.9.0)
+        specifier: ^0.101.0
+        version: 0.101.0(@interop/jsonld-signatures@11.9.0)
       '@interop/webkms-client':
         specifier: ^15.0.3
         version: 15.0.3
@@ -767,8 +767,8 @@ packages:
     resolution: {integrity: sha512-B3Z/9xxOMYzH0aS9PAtyqQRds1IDmL8WCVQUysJS9Xa5uvVMDbxIxbCWRdBe3S3dxzysgqpBYx7YQD6GJGUZ7w==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.100.1':
-    resolution: {integrity: sha512-xwzVVrsD/SuWciJXzNtCV3Lnq3vVby/YdleDOxACGRy999GQmgXTtTuDpu8ir/RC3CSRynS6Z6jSZZ8of7M0vQ==}
+  '@interop/was-client@0.101.0':
+    resolution: {integrity: sha512-aRnWQJ1V5eqump+39w9ZaLna5GFDELNqKmT3+V0umfpxq5ffkcBageCS7AGVZSQTny/uAfzTTKbYtctEOJ2eMA==}
     engines: {node: '>=24.0'}
 
   '@interop/was-client@0.80.0':
@@ -3537,7 +3537,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/pws-conformance-suite@0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.100.1(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
+  '@interop/pws-conformance-suite@0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.101.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.9.0
@@ -3546,7 +3546,7 @@ snapshots:
       '@interop/ezcap': 7.5.4
       '@interop/http-digest-header': 3.2.0
       '@interop/http-signature-zcap-invoke': 6.3.0
-      '@interop/was-client': 0.100.1(@interop/jsonld-signatures@11.9.0)
+      '@interop/was-client': 0.101.0(@interop/jsonld-signatures@11.9.0)
       '@interop/x25519-key-agreement-key': 5.4.3
       assert: 2.1.0
       uuid: 14.0.3
@@ -3701,7 +3701,7 @@ snapshots:
       - '@interop/jsonld-signatures'
       - react-native-get-random-values
 
-  '@interop/was-client@0.100.1(@interop/jsonld-signatures@11.9.0)':
+  '@interop/was-client@0.101.0(@interop/jsonld-signatures@11.9.0)':
     dependencies:
       '@interop/capability-agent': 0.2.2
       '@interop/data-integrity-core': 8.9.0

@@ -24,7 +24,8 @@ import { MIGRATIONS } from '../src/backends/postgresSchema.js'
 import { StoreVersionError } from '../src/errors.js'
 import { compareStamps, readingOfStamp } from '../src/lib/hlc.js'
 import { etagOf, formatEtag } from '../src/lib/etag.js'
-import { frozenClock, openTempPostgres, postgresAdminQuery } from './helpers.js'
+import { openTempPostgres, postgresAdminQuery } from './helpers.js'
+import { frozenClock } from '../src/testing.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 

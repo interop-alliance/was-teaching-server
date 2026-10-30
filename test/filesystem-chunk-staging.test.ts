@@ -14,11 +14,10 @@ import { chunkDirName } from '@interop/space-archive'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { feedCounterFileName } from '../src/backends/filesystemStore.js'
 import { QuotaExceededError } from '../src/errors.js'
-import { openTempBackend } from '../src/testing.js'
+import { frozenClock, openTempBackend } from '../src/testing.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   binaryInput as sharedBinaryInput,
-  frozenClock,
   pathExists,
   replicaRegistration
 } from './helpers.js'

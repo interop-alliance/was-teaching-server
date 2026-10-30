@@ -28,20 +28,22 @@ import {
 } from '../src/config.default.js'
 import type { PeerFetch, PeerResponse } from '../src/sync/peerFetch.js'
 import {
-  bootPeerServer,
   importArchive,
-  injectPeerFetch,
   parseEtagSegments,
   createPeerSpace,
   pathExists,
-  type PeerServer,
   pullOnce,
-  registerReplica,
-  replicaStatus,
-  signedInject,
   verifyProvenanceOffline,
   zcapClients
 } from './helpers.js'
+import {
+  type PeerServer,
+  bootPeerServer,
+  injectPeerFetch,
+  signedInject,
+  registerReplica,
+  replicaStatus
+} from '../src/testing.js'
 
 /**
  * One request a pull loop made, as the scripted transport saw it. `status`

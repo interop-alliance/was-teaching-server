@@ -18,26 +18,16 @@ import { ProblemTypes } from '@interop/storage-core'
 
 import type { IDID } from '../src/types.js'
 
+import { delegate, createPeerSpace, pullOnce, zcapClients } from './helpers.js'
 import {
-  bootPeerServer,
-  delegate,
-  createPeerSpace,
-  injectPeerFetch,
   type PeerServer,
-  pullOnce,
-  registerReplica,
-  replicaStatus,
+  bootPeerServer,
   signedInject,
-  zcapClients
-} from './helpers.js'
+  registerReplica,
+  replicaStatus
+} from '../src/testing.js'
 
 const servers = new Map<string, PeerServer>()
-
-/**
- * The transport both pull loops use: the request is handed to the app the
- * URL's origin names.
- */
-const peerFetch = injectPeerFetch(servers)
 
 /**
  * Boots one server with an identity whose key may invoke, so it can pull.
@@ -49,7 +39,6 @@ async function boot(options: {
   return bootPeerServer({
     ...options,
     prefix: 'was-replication-',
-    peerFetch,
     servers
   })
 }

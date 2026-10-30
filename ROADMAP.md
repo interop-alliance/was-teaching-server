@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 241
+nextAvailableId: 242
 
 <!-- roadmap-order:index:start -->
 
@@ -127,7 +127,6 @@ Ready:
 - WAS-47 [M] (*) Cover `start.ts` and the untested config parsers
 - WAS-9 [M] (*) Open the upstream `minimal-cipher` AEAD-gap issue
 - WAS-10 [M] (*) Open the upstream `edv-client` truncation issue
-- WAS-228 [M] (*) Export the two-server test helpers from the `/testing` entry
 - WAS-103 [L] (*) Make `spacePath` / `collectionPath` return the canonical
   container URL by default
 - WAS-168 [L] (*) `SERVER_URL` move runbook for the server DID log (portable
@@ -167,6 +166,10 @@ Ready:
 - WAS-167 [L] (*) Further uses of the server identity (write receipts, epoch
   attestation, delegatee, signed manifest)
 - WAS-185 [L] (*) Several server processes over one store (HLC and origin id)
+
+Waiting on another repo:
+
+- WAS-241 [L] (*) Serve a tail of a Collection's history log (after WASS-63)
 
 <!-- roadmap-order:index:end -->
 
@@ -1287,9 +1290,8 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
     `src/sync/` entry)
   - wallet-attached-storage-spec: resolved 2026-10-29 -- decision 0013 is
     amended and the replication companion (`replication/spec.md`, "The
-    controller check") states the branch, with no binding of the local
-    did:key to the capability; WASS-58's touches gain the `fromSpace`
-    comparison
+    controller check") states the branch, with no binding of the local did:key
+    to the capability; WASS-58's touches gain the `fromSpace` comparison
   - freewallet: the replica registration ceremony (FW-638, FW-688) creates and
     registers under the bootstrap did:key
   - was-conformance-suite: PWSCS-23's registration-check cases
@@ -1350,12 +1352,11 @@ condition. One residue stays open, left to this item by the design: any reader
 of the wallet's directory can register the recorded capability under its own
 did:key in a tear between the wallet's mint and its POST, and then win
 `replicaMappingConflict`. Binding the local did:key to a K recorded with the
-capability would close it. Settled 2026-10-29 in the companion text: no
-binding. The residue is accepted and recorded in the companion's security
-considerations ("The bootstrap key"); the first acceptance box above stands as
-written. Related: WAS-207 (a log that
-declares witnesses still cannot replicate), WAS-210 (one function for where a
-did:webvh resolves from).
+capability would close it. Settled 2026-10-29 in the companion text: no binding.
+The residue is accepted and recorded in the companion's security considerations
+("The bootstrap key"); the first acceptance box above stands as written.
+Related: WAS-207 (a log that declares witnesses still cannot replicate), WAS-210
+(one function for where a did:webvh resolves from).
 
 ---
 
@@ -1523,13 +1524,13 @@ WAS-209 (a ladder-signed delegation on a replica, under the clause).
 - labels: wire-contract, service-description, server-identity, replication
 - discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
 - touches:
-  - was-teaching-server (this repo): `src/serviceDescription.ts` (the
-    `instance` member it composes and the core entry beside `originId`; the
-    `REPLICATION_IDENTIFIER` entry's members), `src/config.default.ts` (the
-    "no `url` until the text is published" comment), the two server-identity
-    tests, `docs/service-description.md`, `docs/server-identity-and-provenance.md`,
-    `docs/replication.md` (what a wallet reads to find the DID to delegate
-    to), ARCHITECTURE.md (the service description paragraph), CHANGELOG.md
+  - was-teaching-server (this repo): `src/serviceDescription.ts` (the `instance`
+    member it composes and the core entry beside `originId`; the
+    `REPLICATION_IDENTIFIER` entry's members), `src/config.default.ts` (the "no
+    `url` until the text is published" comment), the two server-identity tests,
+    `docs/service-description.md`, `docs/server-identity-and-provenance.md`,
+    `docs/replication.md` (what a wallet reads to find the DID to delegate to),
+    ARCHITECTURE.md (the service description paragraph), CHANGELOG.md
   - storage-core: the `ServiceDescription` type (the core entry gains
     `serverDid`; `instance` loses it)
   - freewallet / wallet-core: whatever reads the replica server's DID off
@@ -1537,15 +1538,15 @@ WAS-209 (a ladder-signed delegation on a replica, under the clause).
   - was-conformance-suite: a service-description case, if one asserts the
     member's placement
   - portable-web-spaces-spec: resolved 2026-10-29 -- the core version entry
-    defines `serverDid` beside `originId`, and the Instance Disclosure list
-    does not carry it
+    defines `serverDid` beside `originId`, and the Instance Disclosure list does
+    not carry it
 - acceptance:
   - [ ] `/service` carries `serverDid` on the `https://w3id.org/pws` entry,
         beside `originId`, and `instance` no longer carries it
   - [ ] The `https://w3id.org/pws/replication` entry carries `url`
         (`https://w3c-ccg.github.io/portable-web-spaces-spec/replication/`)
-  - [ ] `assertPeerServes` still reads `originId` and the replication entry
-        and nothing else; no registration check reads `instance`
+  - [ ] `assertPeerServes` still reads `originId` and the replication entry and
+        nothing else; no registration check reads `instance`
   - [ ] The server-identity tests assert the new placement; docs and
         ARCHITECTURE.md name it
   - [ ] CHANGELOG entry names the move as a wire change to `/service`
@@ -1584,9 +1585,9 @@ moves or is renamed).
         controller-log Collection always selected), is refused with
         `replica-refused` (409), with the pointer `#/collections/<i>` or
         `#/fromSpace` as the cross-Space refusal gives today
-  - [ ] A `PUT` that creates a registration runs the same check; a `PUT`
-        against a stored record is unaffected, since `collections` and
-        `fromSpace` cannot change by `PUT`
+  - [ ] A `PUT` that creates a registration runs the same check; a `PUT` against
+        a stored record is unaffected, since `collections` and `fromSpace`
+        cannot change by `PUT`
   - [ ] Two-server test: the second overlapping registration on one Space is
         refused, and a second registration selecting disjoint Collections is
         admitted
@@ -1622,10 +1623,10 @@ with the write today; that stays as it is (WAS-206's note).
     cross-host `did:webvh` being fetched by a source server
 - acceptance:
   - [ ] Decision recorded in `decisions/`: either the fetch is narrowed to a
-        `did:webvh` whose path is `space:server:id` (the replica-server case
-        the companion bounds), or the wider fetch (any path, the wallets' own
-        agent DIDs included) is kept and the companion or core text is widened
-        to state its bounds as a rule of its own
+        `did:webvh` whose path is `space:server:id` (the replica-server case the
+        companion bounds), or the wider fetch (any path, the wallets' own agent
+        DIDs included) is kept and the companion or core text is widened to
+        state its bounds as a rule of its own
   - [ ] The server implements the decision; `mayFetch` and its header say which
   - [ ] The outbound-fetch tests cover the refused path shape, or the admitted
         one, as decided
@@ -1636,11 +1637,10 @@ cross-host `did:webvh` log only for a delegated capability's `controller` whose
 path is `space:server:id`, and says any other foreign DID stays refused. The
 server's `mayFetch` admits any `did:webvh` on a non-local host, any path, with
 the same chain condition and network bounds, because wallets' own agent DIDs use
-it too (`peerWebvh.ts` header). One of the two has to give: the text is
-narrower than the server, and the wider fetch is a feature the server relies on
-outside replication. The network bounds (https, default port, no redirect,
-address-range refusal, rate limit, concurrency, cache) match the text either
-way.
+it too (`peerWebvh.ts` header). One of the two has to give: the text is narrower
+than the server, and the wider fetch is a feature the server relies on outside
+replication. The network bounds (https, default port, no redirect, address-range
+refusal, rate limit, concurrency, cache) match the text either way.
 
 ---
 
@@ -2275,42 +2275,6 @@ caller-supplied protected-header params"**
 
 ---
 
-### WAS-228: [M] (*) Export the two-server test helpers from the `/testing` entry
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: tests, replication, testing-entry
-- discovered-from: freewallet FW-688 (2026-10-26)
-- touches:
-  - was-teaching-server: `src/testing.ts`, `test/helpers.ts`,
-    docs/consuming-server-as-library.md ("Testing against the server")
-  - freewallet: the replica ceremony's unit tier boots two real servers from
-    `/testing` (FW-638, FW-688)
-  - was-client: its live tests for replica pause, resume and capability
-    replacement (WCL-143) boot a server with a provisioned identity from
-    `/testing`
-- acceptance:
-  - [ ] `injectPeerFetch` (`test/helpers.ts:1106`) is exported from
-        `src/testing.ts`, and the suites import it from there
-  - [ ] Whatever else a two-server boot needs from outside the package is
-        exported beside it: a server identity whose key may invoke
-        (`provisionServerIdentity`, `test/helpers.ts:844`) and the log fetcher
-        (`peerLogFetcherOf`, `:1154`), or one boot helper in the shape of
-        `bootPeerServer` (`:1179`)
-  - [ ] A test that imports only from the `/testing` entry boots a source and a
-        replica server, registers, and pulls
-  - [ ] docs/consuming-server-as-library.md documents the helpers
-
-Context. The wallet's replica ceremony is tested against two real servers in one
-process rather than a second fake server. The server already takes `peerFetch`
-and `peerLogFetcher` as plugin options (`src/plugin.ts:255-272`), but the
-transport that routes one server's pulls to another through `fastify.inject`
-lives in the test helpers, outside the published entry. `injectPeerFetch` routes
-GET only, which is all a pull sends.
-
----
-
 ### WAS-103: [L] (*) Make `spacePath` / `collectionPath` return the canonical container URL by default
 
 - status: todo
@@ -2809,6 +2773,24 @@ grants on the replica; this item enforces it.
 
 Every `draft` item: no actionable done-state yet. A draft states why it is
 parked and gains acceptance criteria when promoted to `todo`.
+
+### WAS-241: [L] (*) [after WASS-63] Serve a tail of a Collection's history log
+
+- status: draft (spec-blocked)
+- priority: low
+- backend: *
+- labels: history-log, performance, spec-blocked
+- discovered-from: was-client WCL-119 (2026-10-29)
+- blocked-by: WASS-63
+- acceptance: none yet -- the request form (a `Range`, or a query parameter
+  naming the `versionId` after which to serve) is the spec's to decide
+
+Context: a client holding a verified head of a governing history log verifies
+only the entries added since, but `GET meta/log` serves the whole JSON Lines
+body, which grows with every rotation and recipient change times the roster
+size. Once the spec defines a tail read, the handler serves the entries after a
+named `versionId` (with the Collection's log validator, so the client's append
+compare-and-swap still holds) and the whole log when none is named.
 
 ### WAS-11: [L] (*) Space-level `/query`
 
