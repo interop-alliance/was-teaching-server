@@ -6,7 +6,7 @@
  * key after a seed change, rotating the log's update key, restoring the
  * log after a data wipe, and enabling replication by listing the key under
  * `capabilityInvocation` during a seed rotation. Each step checks
- * `instance.serverDid` on `/service`.
+ * `serverDid` on the core `https://w3id.org/pws` entry of `/service`.
  */
 import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import assert from 'node:assert'
@@ -105,7 +105,9 @@ describe(
       const response = await fetch(`${baseServerUrl}service`)
       assert.equal(response.status, 200)
       const document = (await response.json()) as any
-      return document.instance
+      const [core] = document.specs['https://w3id.org/pws']
+      assert.equal('serverDid' in document.instance, false)
+      return { ...document.instance, serverDid: core.serverDid }
     }
 
     async function boot({ dir }: { dir: string }): Promise<void> {

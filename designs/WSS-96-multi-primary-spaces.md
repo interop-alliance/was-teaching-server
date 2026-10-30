@@ -184,7 +184,7 @@ Changed in this repo:
 Outside this repo, recorded as `touches` on the roadmap items: storage-core's
 record types, `ReplicaStallReason` and `ServiceDescription`; was-client's
 `parseEtag` and acks; wallet-core's push and remint paths and its single-host
-account invariants; was-sync's persisted RxDB schema and `statesEqual`;
+account invariants; pws-sync's persisted RxDB schema and `statesEqual`;
 was-react; dcw's schema; `@interop/space-archive`'s codec and fixtures;
 `@interop/wallet-backup`'s archive survey; the conformance suite's exact-shape
 asserts; the Encrypted Collections profile's `version` members and `state`
@@ -372,7 +372,7 @@ position too. Every document carries a required `kind` from a closed set
 `generation` and its `etag`; a `resource` document also carries the `meta` stamp
 once metadata was written, and the non-Resource kinds carry the record's
 absolute URL as `id`. A consumer skips a `kind` it does not know. A tombstone is
-marked `deleted: true`, the one name for a tombstone on every object; was-sync
+marked `deleted: true`, the one name for a tombstone on every object; pws-sync
 maps it to RxDB's `_deleted` at its boundary.
 
 The feed stays per Collection, so the checkpoint and the stall unit are per

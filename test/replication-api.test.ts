@@ -215,7 +215,12 @@ describe('Replication between two servers', () => {
       const service = await replica.fastify.inject({ url: '/service' })
       assert.deepStrictEqual(
         service.json().specs['https://w3id.org/pws/replication'],
-        [{ version: '0.1' }]
+        [
+          {
+            version: '0.1',
+            url: 'https://w3c-ccg.github.io/portable-web-spaces-spec/replication/'
+          }
+        ]
       )
     })
 

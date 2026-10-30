@@ -207,12 +207,13 @@ easier to recover from with a backup.
 
 **Scope.** The server has an identity of its own, separate from every Space
 controller: a `did:webvh` DID whose document lists the key the server will sign
-export archives with. Both are published on `GET /service` under `instance`
-(`exportSigningMethod`, `serverDid`). Once the identity is provisioned, every
-Space export carries signed provenance (see Signed exports below). Until then
-exports are unsigned. The same key signs the server's invocations when it
-replicates a Space from a peer, once the log allows it (see Enabling replication
-below).
+export archives with. Both are published on `GET /service`:
+`exportSigningMethod` under `instance`, and `serverDid` on the core
+`https://w3id.org/pws` entry beside `originId`. Once the identity is
+provisioned, every Space export carries signed provenance (see Signed exports
+below). Until then exports are unsigned. The same key signs the server's
+invocations when it replicates a Space from a peer, once the log allows it (see
+Enabling replication below).
 
 **Three secrets, two holders.** The server holds one secret, the seed its
 signing key is derived from (`WAS_SERVER_KEY_SEED`). The administrator holds the
@@ -343,7 +344,7 @@ wallet handles `admin` (the admin `did:key`), `server` (the `server` Space) and
 8. Confirm, then back up the wallet directory:
 
    ```bash
-   curl -s {SERVER_URL}/service | jq -r .instance.serverDid
+   curl -s {SERVER_URL}/service | jq -r '.specs["https://w3id.org/pws"][0].serverDid'
    ```
 
    This prints the `did:webvh`.

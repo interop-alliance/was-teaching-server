@@ -47,9 +47,17 @@ import {
   isUrlSafeSegment,
   spaceIdOfSpaceUrl
 } from '../lib/validateId.js'
-import { verifyWebvhLog } from '../lib/webvhController.js'
+import {
+  resolveWebvhController,
+  verifyWebvhLog
+} from '../lib/webvhController.js'
+import type { WebvhResolverContext } from '../lib/webvhController.js'
 import { replicaMappingConflict } from '../lib/webvhLogLocation.js'
-import { rootCapabilityId } from '../zcap.js'
+import {
+  rootCapabilityId,
+  throwIfServerFault,
+  verifyOneLinkDelegation
+} from '../zcap.js'
 import { selectedCollectionIds } from './collectionSelection.js'
 import type {
   CollectionMetadata,
@@ -201,9 +209,7 @@ export function parseReplicaRegistration({
       '#/capability/invocationTarget'
     )
   }
-  const proofs = [pull.proof].flat()
-  const chainRoot = proofs[0]?.capabilityChain?.[0]
-  if (chainRoot !== rootCapabilityId(fromSpace as string)) {
+  if (capabilityChainOf(pull)[0] !== rootCapabilityId(fromSpace as string)) {
     return refuse(
       "The capability's chain must start at the peer Space's root capability.",
       '#/capability/proof/capabilityChain'
@@ -260,9 +266,11 @@ export function storedProjectionOfCollection(
  *   the version this server speaks and an `originId` that is not this
  *   server's.
  * - The peer Space, read through the capability, has the local Space's
- *   `type` set, and either the local Space's `controller` or a `did:webvh`
- *   hosted in the peer Space whose current document lists the local
- *   `did:key` controller under `capabilityInvocation`.
+ *   `type` set, and a controller the local one matches: the same DID, a
+ *   `did:webvh` hosted in the peer Space whose current document lists the
+ *   local `did:key` under `capabilityInvocation`, or a `did:webvh` this
+ *   server resolves whose document admits the pull capability's one-link
+ *   delegation (the bootstrap branch, {@link assertControllerBranch}).
  * - Each Collection the registration pulls that both sides hold agrees on
  *   the immutable members (`encryption`, `revisions.resolution`,
  *   `revisions.immutable`).
@@ -353,7 +361,12 @@ export async function assertReplicaAcceptable({
   })
   try {
     const { pullsChunks } = await assertPeerServes({ peer, record, storage })
-    await assertPeerSpaceMatches({ peer, record, spaceMetadata, serverUrl })
+    await assertPeerSpaceMatches({
+      peer,
+      record,
+      spaceMetadata,
+      webvh: { storage, serverBackends, serverUrl }
+    })
     await assertImmutableMembersMatch({ peer, record, spaceId, storage })
     return { pullsChunks }
   } catch (err) {
@@ -434,24 +447,25 @@ async function assertPeerServes({
 /**
  * The peer Space, read through the pull capability, must have the local
  * Space's `type` set and a controller the local Space's controller matches
- * (see {@link assertLocalControllerIsPeerKey}).
+ * (see {@link assertControllerBranch}).
  * @param options {object}
  * @param options.peer {PeerClient}
  * @param options.record {ReplicaRegistration}
  * @param options.spaceMetadata {StoredSpaceMetadata}   the local object
- * @param options.serverUrl {string}   this server's base URL
+ * @param options.webvh {WebvhResolverContext}   the control plane, its set
+ *   and this server's base URL, for the controller check
  * @returns {Promise<void>}
  */
 async function assertPeerSpaceMatches({
   peer,
   record,
   spaceMetadata,
-  serverUrl
+  webvh
 }: {
   peer: PeerClient
   record: ReplicaRegistration
   spaceMetadata: StoredSpaceMetadata
-  serverUrl: string
+  webvh: WebvhResolverContext
 }): Promise<void> {
   const peerSpaceId = spaceIdOfSpaceUrl(record.fromSpace)!
   const { json } = await peer.readJson({
@@ -462,10 +476,10 @@ async function assertPeerSpaceMatches({
     expect: [200]
   })
   if (json.controller !== spaceMetadata.controller) {
-    await assertLocalControllerIsPeerKey({
+    await assertControllerBranch({
       peer,
       record,
-      serverUrl,
+      webvh,
       peerController: json.controller,
       localController: spaceMetadata.controller
     })
@@ -481,70 +495,159 @@ async function assertPeerSpaceMatches({
 }
 
 /**
- * The second branch of the controller check, for a peer Space whose
- * controller differs from the local Space's. A wallet promotes its Space to
- * a `did:webvh` before the Space gains a replica, so the peer controller is
- * that DID while a new local Space is still under a `did:key`. The local
- * Space cannot be promoted first, since the DID resolves here only through
- * the registration. The registration is admitted when the local `did:key` is
- * a current key of the peer controller's document, listed under
- * `capabilityInvocation`, the relationship a controller invokes under. A
- * holder of a pull capability whose own key the document does not list still
- * cannot register another user's Space as a source.
+ * The first proof's capability chain, `[]` when the capability has none.
+ * @param capability {IDelegatedZcap}
+ * @returns {Array<string | IDelegatedZcap>}
+ */
+function capabilityChainOf(
+  capability: IDelegatedZcap
+): Array<string | IDelegatedZcap> {
+  return [capability.proof].flat()[0]?.capabilityChain ?? []
+}
+
+/**
+ * Refuses the registration on the controller check.
+ * @param detail {string}   why, after the sentence every such refusal opens
+ *   with
+ * @param [pointer] {string}   the JSON pointer of the offending member
+ * @throws {ReplicaRefusedError}
+ */
+function refuseController(detail: string, pointer?: string): never {
+  throw new ReplicaRefusedError({
+    detail: `The peer Space has another controller than this Space. ${detail}`,
+    ...(pointer !== undefined && { pointer })
+  })
+}
+
+/**
+ * The controller check for a peer Space whose controller differs from the
+ * local Space's. A wallet promotes its Space to a `did:webvh` before the
+ * Space gains a replica, so the peer controller is that DID while a new
+ * local Space is still under a `did:key`. The local Space cannot be promoted
+ * first, since the DID resolves here only through a registration. The local
+ * controller must be a `did:key`, and the peer controller a `did:webvh` this
+ * server resolves one of two ways: hosted in the peer Space itself, its log
+ * read through the pull capability ({@link readHostedControllerDocument}),
+ * or hosted elsewhere, from the local copy another registration maps
+ * ({@link assertMappedControllerResolves}). The second covers an auxiliary
+ * Space whose controller's log lives in the account Space.
  *
- * The DID must be hosted in the peer Space itself, where the registration
- * will make it resolvable here, and the registration must pull its log's
- * Collection, else the copy the promotion needs would never arrive. The log
- * is read through the pull capability and verified offline with no witness
- * proofs, as a replicated copy is. Nothing is fetched by DID.
+ * With the document resolved, the registration is admitted in one of two
+ * branches:
+ *
+ * - The listed-key branch: the DID is hosted in the peer Space and the
+ *   document lists the local `did:key` under `capabilityInvocation`, the
+ *   relationship a controller invokes under. A key listed under
+ *   `capabilityDelegation` alone, a ladder method, does not pass.
+ * - The bootstrap branch ({@link assertBootstrapDelegation}): the pull
+ *   capability's chain is exactly `[root, capability]` and its delegation
+ *   proof verifies under a method the document lists under
+ *   `capabilityDelegation`. The local `did:key` need not appear in the
+ *   document: a wallet derives one to create and register the replica Space
+ *   and promotes the Space to the DID after the first pull.
+ *
+ * Nothing is fetched by DID.
  *
  * @param options {object}
  * @param options.peer {PeerClient}
  * @param options.record {ReplicaRegistration}
- * @param options.serverUrl {string}   this server's base URL
+ * @param options.webvh {WebvhResolverContext}   the control plane, its set
+ *   and this server's base URL
  * @param options.peerController {unknown}   the peer Space's `controller`
  * @param options.localController {string}   the local Space's `controller`
  * @returns {Promise<void>}
  * @throws {ReplicaRefusedError}
  */
-async function assertLocalControllerIsPeerKey({
+async function assertControllerBranch({
   peer,
   record,
-  serverUrl,
+  webvh,
   peerController,
   localController
 }: {
   peer: PeerClient
   record: ReplicaRegistration
-  serverUrl: string
+  webvh: WebvhResolverContext
   peerController: unknown
   localController: string
 }): Promise<void> {
-  const refuse = (detail: string, pointer?: string): never => {
-    throw new ReplicaRefusedError({
-      detail: `The peer Space has another controller than this Space. ${detail}`,
-      ...(pointer !== undefined && { pointer })
-    })
-  }
-  const hosted = parsePeerHostedWebvh(peerController, { serverUrl })
-  if (
-    !isValidController(localController) ||
-    hosted === undefined ||
-    hosted.fromSpace !== record.fromSpace
-  ) {
-    return refuse(
+  const hosted = parsePeerHostedWebvh(peerController, {
+    serverUrl: webvh.serverUrl
+  })
+  if (!isValidController(localController) || hosted === undefined) {
+    return refuseController(
       'A Space replicates between Spaces of one controller, or onto a ' +
-        "Space under a did:key the peer Space's did:webvh controller lists."
+        'Space under a did:key from a Space whose did:webvh controller this ' +
+        'server can resolve.'
     )
   }
-  const selected = selectedCollectionIds({ record, localController })
-  if (selected !== undefined && !selected.has(hosted.collectionId)) {
-    return refuse(
-      `The registration does not pull Collection "${hosted.collectionId}", ` +
-        "which holds the peer controller's history log.",
-      '#/collections'
-    )
+  const did = peerController as string
+  let resolution = webvh
+  if (hosted.fromSpace === record.fromSpace) {
+    // The registration must pull the log's Collection, else the copy the
+    // promotion needs would never arrive.
+    const selected = selectedCollectionIds({ record, localController })
+    if (selected !== undefined && !selected.has(hosted.collectionId)) {
+      return refuseController(
+        `The registration does not pull Collection "${hosted.collectionId}", ` +
+          "which holds the peer controller's history log.",
+        '#/collections'
+      )
+    }
+    const doc = await readHostedControllerDocument({
+      peer,
+      record,
+      did,
+      hosted
+    })
+    const publicKeyMultibase = localController.slice('did:key:'.length)
+    const { listedUnder } = keyRelationships({ doc, publicKeyMultibase })
+    if (listedUnder.includes('capabilityInvocation')) {
+      return
+    }
+    // No stored copy holds the log yet, so the bootstrap verifier resolves
+    // the DID through the document just verified. Both resolutions serve the
+    // one document; the verifier that asks for a key checks that the
+    // document lists it.
+    resolution = {
+      ...webvh,
+      peer: {
+        did,
+        resolver: { resolve: async () => doc, resolveKey: async () => doc }
+      }
+    }
+  } else {
+    // A mapped copy admits the bootstrap branch alone.
+    await assertMappedControllerResolves({ webvh, did })
   }
+  await assertBootstrapDelegation({ record, did, webvh: resolution })
+}
+
+/**
+ * The current document of a `did:webvh` hosted in the peer Space, read
+ * through the pull capability and verified offline with no witness proofs,
+ * as a replicated copy is.
+ *
+ * @param options {object}
+ * @param options.peer {PeerClient}
+ * @param options.record {ReplicaRegistration}
+ * @param options.did {string}   the peer controller
+ * @param options.hosted {object}   where the peer Space hosts its log
+ * @param options.hosted.spaceId {string}
+ * @param options.hosted.collectionId {string}
+ * @returns {Promise<DIDDoc>}
+ */
+async function readHostedControllerDocument({
+  peer,
+  record,
+  did,
+  hosted
+}: {
+  peer: PeerClient
+  record: ReplicaRegistration
+  did: string
+  hosted: { spaceId: string; collectionId: string }
+}): Promise<DIDDoc> {
   const { body } = await peer.read({
     url: peerUrlOf({
       path: resourcePath({
@@ -556,29 +659,104 @@ async function assertLocalControllerIsPeerKey({
     }),
     expect: [200]
   })
-  let doc: DIDDoc
   try {
     const log = readLogFromString(body.toString('utf8'))
-    const verified = await verifyWebvhLog({
-      did: peerController as string,
-      log
-    })
+    const verified = await verifyWebvhLog({ did, log })
     if (verified.deactivated) {
       throw new Error('the DID has been deactivated.')
     }
-    doc = verified.doc
+    return verified.doc
   } catch (err) {
-    return refuse(
+    return refuseController(
       "The peer controller's history log does not verify: " +
         (err as Error).message
     )
   }
-  const publicKeyMultibase = localController.slice('did:key:'.length)
-  const { listedUnder } = keyRelationships({ doc, publicKeyMultibase })
-  if (!listedUnder.includes('capabilityInvocation')) {
-    return refuse(
-      "The peer controller's document does not list this Space's " +
-        'controller under "capabilityInvocation".'
+}
+
+/**
+ * A `did:webvh` hosted in another Space of the peer host must resolve from
+ * the local copy of its log that exactly one other registration on this
+ * server maps (`lib/webvhLogLocation.ts`), through the same verify and
+ * cache path every invocation uses, which the bootstrap verifier then takes
+ * too.
+ *
+ * @param options {object}
+ * @param options.webvh {WebvhResolverContext}
+ * @param options.did {string}   the peer controller
+ * @returns {Promise<void>}
+ */
+async function assertMappedControllerResolves({
+  webvh,
+  did
+}: {
+  webvh: WebvhResolverContext
+  did: string
+}): Promise<void> {
+  try {
+    await resolveWebvhController({ ...webvh, did })
+  } catch (err) {
+    // A storage fault under the log read is not the registration's doing
+    // and keeps its 5xx.
+    throwIfServerFault({ error: err })
+    return refuseController(
+      'The peer controller is hosted in another Space than the peer Space, ' +
+        'and resolves from no copy a registration on this server keeps: ' +
+        (err as Error).message
+    )
+  }
+}
+
+/**
+ * The bootstrap branch: the pull capability's chain is exactly
+ * `[root, capability]`, and the one link's delegation proof verifies under
+ * a method the peer controller's document lists under
+ * `capabilityDelegation`. A re-delegated grant fails the one-link condition,
+ * and a capability the peer refuses never reaches here, since the peer Space
+ * is read through it first. The document comes through `webvh`: from
+ * storage when this server maps the DID to a copy, else from the peer grant
+ * the caller set over the document read through the pull capability.
+ *
+ * @param options {object}
+ * @param options.record {ReplicaRegistration}
+ * @param options.did {string}   the peer controller
+ * @param options.webvh {WebvhResolverContext}
+ * @returns {Promise<void>}
+ */
+async function assertBootstrapDelegation({
+  record,
+  did,
+  webvh
+}: {
+  record: ReplicaRegistration
+  did: string
+  webvh: WebvhResolverContext
+}): Promise<void> {
+  const { capability } = record
+  if (
+    capability.parentCapability !== rootCapabilityId(record.fromSpace) ||
+    capabilityChainOf(capability).length !== 1
+  ) {
+    return refuseController(
+      'A Space under a did:key registers only under a capability delegated ' +
+        "straight from the peer Space's root capability, unless the peer " +
+        'controller is hosted in the peer Space and its document lists the ' +
+        'did:key under "capabilityInvocation"; a re-delegated one is refused.',
+      '#/capability/proof/capabilityChain'
+    )
+  }
+  const failure = await verifyOneLinkDelegation({
+    capability,
+    rootTarget: record.fromSpace,
+    rootController: did,
+    webvh
+  })
+  if (failure !== undefined) {
+    return refuseController(
+      "The capability's delegation proof does not verify under a method " +
+        "the peer controller's document lists under " +
+        `"capabilityDelegation": ${failure.message}`,
+      '#/capability/proof'
     )
   }
 }

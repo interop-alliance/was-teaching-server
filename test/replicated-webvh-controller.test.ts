@@ -136,6 +136,7 @@ function clientMethod(keyPair: Ed25519VerificationKey) {
 describe('A did:webvh controller resolved from a replicated log', () => {
   let origin: Server, mirror: Server
   let alice: { did: string; signer: any }
+  let bob: { did: string; signer: any }
   let genesisKey: Ed25519VerificationKey
   let account: {
     did: string
@@ -162,13 +163,14 @@ describe('A did:webvh controller resolved from a replicated log', () => {
   async function createSpace(
     server: Server,
     spaceId: string,
-    controller = alice.did
+    controller = alice.did,
+    type = ['Space']
   ): Promise<void> {
     await server.backend.writeSpace({
       spaceId,
       spaceMetadata: {
         id: spaceId,
-        type: ['Space'],
+        type,
         controller: controller as IDID
       }
     })
@@ -244,23 +246,26 @@ describe('A did:webvh controller resolved from a replicated log', () => {
   /**
    * A registration body naming the origin's Space `fromSpaceId` as a source
    * of the mirror's Space `toSpaceId`. `delegator` signs the pull capability
-   * from the peer Space's root, so it is that Space's controller key.
+   * from the peer Space's root, so it is that Space's controller key, unless
+   * a ready `capability` is given.
    */
   async function registration({
     toSpaceId,
     fromSpaceId,
     replicaId = 'origin',
     collections,
-    delegator = alice.signer
+    delegator = alice.signer,
+    capability
   }: {
     toSpaceId: string
     fromSpaceId: string
     replicaId?: string
     collections?: string[]
     delegator?: any
+    capability?: any
   }) {
     const fromSpace = `${origin.serverUrl}/space/${fromSpaceId}/`
-    const capability = await delegate({
+    capability ??= await delegate({
       signer: delegator,
       capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
       invocationTarget: fromSpace,
@@ -357,7 +362,7 @@ describe('A did:webvh controller resolved from a replicated log', () => {
   }
 
   beforeAll(async () => {
-    ;({ alice } = await zcapClients({
+    ;({ alice, bob } = await zcapClients({
       baseServerUrl: 'https://unused.example'
     }))
     origin = await boot('https://origin.example')
@@ -543,16 +548,18 @@ describe('A did:webvh controller resolved from a replicated log', () => {
     async function postPromotedRegistration({
       toSpaceId,
       signer,
-      collections
+      collections,
+      delegator = promoted.key.signer()
     }: {
       toSpaceId: string
       signer: any
       collections?: string[]
+      delegator?: any
     }) {
       return postRegistration({
         toSpaceId,
         fromSpaceId: 'promoted',
-        delegator: promoted.key.signer(),
+        delegator,
         signer,
         collections
       })
@@ -576,27 +583,69 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       assert.equal(onOrigin.statusCode, 204, onOrigin.payload)
     })
 
-    it('refuses a stranger holding the pull capability', async () => {
-      // Alice's did:key is not in the account document.
+    it('refuses a re-delegated pull capability under a did:key the document does not list', async () => {
+      // Alice's did:key is not in the account document, so the registration
+      // takes the bootstrap branch, whose chain is one link.
       await createSpace(mirror, 'stranger-copy')
-      const refused = await postPromotedRegistration({
+      const fromSpace = `${origin.serverUrl}/space/promoted/`
+      const toBob = await delegate({
+        signer: promoted.key.signer(),
+        capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+        invocationTarget: fromSpace,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const capability = await delegate({
+        signer: bob.signer,
+        capability: toBob,
+        invocationTarget: fromSpace,
+        controller: mirror.did,
+        allowedActions: ['GET'],
+        expires: new Date(Date.now() + 30 * 60 * 1000)
+      })
+      const refused = await postRegistration({
         toSpaceId: 'stranger-copy',
+        fromSpaceId: 'promoted',
+        capability,
         signer: alice.signer
       })
       assert.equal(refused.statusCode, 409, refused.payload)
       assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
-      assert.match(refused.json().errors[0].detail, /capabilityInvocation/)
+      assert.equal(
+        refused.json().errors[0].pointer,
+        '#/capability/proof/capabilityChain'
+      )
     })
 
-    it('refuses a key the document lists under capabilityDelegation alone', async () => {
-      const bare = bareDidKeyOf(delegationOnly)
-      await createSpace(mirror, 'delegation-only-copy', bare.did)
+    it('refuses a pull capability the origin does not admit', async () => {
+      // The delegating key is not in the account document, so the origin
+      // refuses the read of the Space, before any controller branch is tried.
+      const unlisted = bindKey(
+        await Ed25519VerificationKey.generate(),
+        promoted.did
+      )
       const refused = await postPromotedRegistration({
-        toSpaceId: 'delegation-only-copy',
-        signer: bare.signer
+        toSpaceId: 'stranger-copy',
+        signer: alice.signer,
+        delegator: unlisted.signer()
       })
       assert.equal(refused.statusCode, 409, refused.payload)
-      assert.match(refused.json().errors[0].detail, /capabilityInvocation/)
+      assert.match(refused.json().errors[0].detail, /could not be read/)
+    })
+
+    it('refuses a one-link pull capability a capabilityDelegation-only method signs', async () => {
+      // The bootstrap branch itself admits the proof, since the method is
+      // listed under capabilityDelegation. What refuses the registration is
+      // the origin's client-annex clause, at the read of the Space.
+      const ladder = bindKey(delegationOnly, promoted.did)
+      const refused = await postPromotedRegistration({
+        toSpaceId: 'stranger-copy',
+        signer: alice.signer,
+        delegator: ladder.signer()
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /could not be read/)
     })
 
     it('refuses a registration that does not pull the log Collection', async () => {
@@ -638,6 +687,162 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       assert.equal(read.statusCode, 200, read.payload)
       assert.equal(read.json().controller, promoted.did)
       // The log was read through the pull capability, never fetched by DID.
+      assert.equal(networkResolutions.length, before)
+    })
+  })
+
+  describe('the bootstrap branch', () => {
+    /**
+     * A second account, promoted on the origin, with the client-annex
+     * auxiliary Space the account document would name. The auxiliary Space
+     * is controlled by the account DID, whose log lives in the account Space.
+     */
+    let acct2: Awaited<ReturnType<typeof mintOnOrigin>>
+    const auxiliaryType = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
+    /**
+     * The bootstrap `did:key` of each replica Space: derived for the
+     * purpose, listed in no document.
+     */
+    let accountBootstrap: { did: string; signer: any }
+    let annexBootstrap: { did: string; signer: any }
+    let before: number
+
+    /**
+     * Sends Register Replica for the origin's Space `fromSpaceId`, with the
+     * pull capability the account's key delegates, under the bootstrap key
+     * `signer`.
+     */
+    async function postBootstrapRegistration({
+      toSpaceId,
+      fromSpaceId,
+      signer
+    }: {
+      toSpaceId: string
+      fromSpaceId: string
+      signer: any
+    }) {
+      return postRegistration({
+        toSpaceId,
+        fromSpaceId,
+        delegator: acct2.key.signer(),
+        signer
+      })
+    }
+
+    beforeAll(async () => {
+      before = networkResolutions.length
+      await createSpace(origin, 'acct2')
+      await createCollection(origin, 'acct2', 'id')
+      acct2 = await mintOnOrigin('acct2')
+      const onOrigin = await promote('acct2', acct2.did, { server: origin })
+      assert.equal(onOrigin.statusCode, 204, onOrigin.payload)
+      await createSpace(origin, 'acct2-annex', acct2.did, auxiliaryType)
+      const clients = await call({
+        server: origin,
+        path: '/space/acct2-annex/',
+        method: 'POST',
+        json: { id: 'clients', name: 'clients' },
+        signer: acct2.key.signer()
+      })
+      assert.equal(clients.statusCode, 201, clients.payload)
+
+      accountBootstrap = bareDidKeyOf(await Ed25519VerificationKey.generate())
+      annexBootstrap = bareDidKeyOf(await Ed25519VerificationKey.generate())
+      await createSpace(mirror, 'acct2-copy', accountBootstrap.did)
+      await createSpace(
+        mirror,
+        'acct2-annex-copy',
+        annexBootstrap.did,
+        auxiliaryType
+      )
+    })
+
+    it('refuses the auxiliary Space while no registration maps its controller', async () => {
+      const refused = await postBootstrapRegistration({
+        toSpaceId: 'acct2-annex-copy',
+        fromSpaceId: 'acct2-annex',
+        signer: annexBootstrap.signer
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /resolves from no copy/)
+    })
+
+    it('admits a did:key the document does not list, under a one-link capability', async () => {
+      const created = await postBootstrapRegistration({
+        toSpaceId: 'acct2-copy',
+        fromSpaceId: 'acct2',
+        signer: accountBootstrap.signer
+      })
+      assert.equal(created.statusCode, 201, created.payload)
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'acct2-copy',
+        replicaId: 'origin'
+      })
+      const copy = await call({
+        server: mirror,
+        path: '/space/acct2-copy/id/did.jsonl',
+        signer: accountBootstrap.signer
+      })
+      assert.equal(copy.statusCode, 200, copy.payload)
+    })
+
+    it('admits the auxiliary Space, resolving its controller through the account replica', async () => {
+      const created = await postBootstrapRegistration({
+        toSpaceId: 'acct2-annex-copy',
+        fromSpaceId: 'acct2-annex',
+        signer: annexBootstrap.signer
+      })
+      assert.equal(created.statusCode, 201, created.payload)
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'acct2-annex-copy',
+        replicaId: 'origin'
+      })
+      const copy = await call({
+        server: mirror,
+        path: '/space/acct2-annex-copy/clients/meta',
+        signer: annexBootstrap.signer
+      })
+      assert.equal(copy.statusCode, 200, copy.payload)
+    })
+
+    it('promotes the auxiliary replica Space to the account DID', async () => {
+      const promoted = await promote('acct2-annex-copy', acct2.did, {
+        signer: annexBootstrap.signer
+      })
+      assert.equal(promoted.statusCode, 204, promoted.payload)
+      const read = await readAs('acct2-annex-copy', acct2.key)
+      assert.equal(read.statusCode, 200, read.payload)
+      assert.equal(read.json().controller, acct2.did)
+      // The bootstrap key controls nothing afterwards.
+      const stale = await call({
+        server: mirror,
+        path: '/space/acct2-annex-copy/meta',
+        signer: annexBootstrap.signer
+      })
+      assert.equal(stale.statusCode, 404, stale.payload)
+    })
+
+    it('refuses to remove the account registration the auxiliary Space resolves through', async () => {
+      const refused = await call({
+        server: mirror,
+        path: '/space/acct2-copy/replicas/origin',
+        method: 'DELETE',
+        signer: accountBootstrap.signer
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /acct2-annex-copy/)
+    })
+
+    it('promotes the account replica Space after its first pull', async () => {
+      const promoted = await promote('acct2-copy', acct2.did, {
+        signer: accountBootstrap.signer
+      })
+      assert.equal(promoted.statusCode, 204, promoted.payload)
+      const read = await readAs('acct2-copy', acct2.key)
+      assert.equal(read.statusCode, 200, read.payload)
+      // Every document came through the pull capability or a stored copy.
       assert.equal(networkResolutions.length, before)
     })
   })

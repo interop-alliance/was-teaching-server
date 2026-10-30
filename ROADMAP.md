@@ -78,13 +78,9 @@ Ready:
 
 - WSS-96 [M] (*) Multi-primary Spaces (replicated write identity and conflict
   model)
-- WSS-224 [M] (*) Admit a replica Space under a bootstrap did:key, and resolve
-  the auxiliary Space's controller across Spaces
 - WSS-225 [M] (*) Client-annex clause: a ladder-signed replica pull gated on the
   annex document's replica pointer
 - WSS-226 [M] (*) Open the replicas route to a root-chained delegated invocation
-- WSS-238 [M] (*) `serverDid` moves to the core `specs` entry, and the
-  replication entry carries `url`
 - WSS-239 [M] (*) Refuse a second registration of one source Space sharing a
   Collection on the same local Space
 - WSS-240 [M] (*) The foreign `did:webvh` fetch and the companion's
@@ -548,8 +544,8 @@ behaved this way, but wire-observable and uncovered by any test.
 - discovered-from: WSS-172 review (2026-10-03)
 - touches:
   - portable-web-spaces-spec: Update Resource Metadata, the `epoch` member
-  - web-spaces-server: both backends' `/meta` write path, the WSS-96 design
-    doc section 5.3
+  - web-spaces-server: both backends' `/meta` write path, the WSS-96 design doc
+    section 5.3
 - acceptance:
   - [ ] Decide which record `epoch` belongs to when a `/meta` write sets it: the
         content record (so the write mints a content stamp or refuses the
@@ -1108,11 +1104,11 @@ doc; the other items are its sub-items in dependency order.
   - storage-core: `ChangeDocument`, the Resource and Metadata models (stamp
     members), `CollectionMetadata.revisions`. Shipped in 0.32.0 through 0.35.0;
     the publishes are pending and the server consumes them by `link:`
-  - web-spaces-server: every item in `blocked-by`; ARCHITECTURE.md's
-    validator, hard-delete, resolver, and container-rule sections. Shipped:
-    WSS-171 to WSS-177, WSS-182, WSS-183 archived by 2026-10-04, and
-    ARCHITECTURE.md records the stamp and validator rules, Collection
-    tombstones, the resolver clause and the `src/sync/` facet
+  - web-spaces-server: every item in `blocked-by`; ARCHITECTURE.md's validator,
+    hard-delete, resolver, and container-rule sections. Shipped: WSS-171 to
+    WSS-177, WSS-182, WSS-183 archived by 2026-10-04, and ARCHITECTURE.md
+    records the stamp and validator rules, Collection tombstones, the resolver
+    clause and the `src/sync/` facet
   - was-client: `Collection.changes()` document type; the `replicas` member on
     the Space Metadata object. Filed: WCL-122 (change document, 0.89.0 pending
     publish), WCL-123 (stamped policies), WCL-127 (`replicas` member)
@@ -1226,91 +1222,6 @@ that would be needed if per-Collection write serialization were ever relaxed;
 blob and chunk replication (WSS-14); server-signed checkpoints (WSS-36), which
 interact with per-source checkpoints; a read-only replica switch (WSS-179);
 `keep-conflicts` and stale-`If-Match`-as-sibling.
-
----
-
-### WSS-224: [M] (*) Admit a replica Space under a bootstrap did:key, and resolve the auxiliary Space's controller across Spaces
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: replication, registration, webvh, zcap
-- discovered-from: freewallet FW-688 (2026-10-26)
-- touches:
-  - web-spaces-server: `src/sync/registration.ts`
-    (`assertLocalControllerIsPeerKey`, `assertPeerSpaceMatches`,
-    `parseReplicaRegistration`), `src/lib/webvhLogLocation.ts` (the cross-Space
-    lookup), docs/replication.md ("Registration checks"), ARCHITECTURE.md (the
-    `src/sync/` entry)
-  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is amended
-    and the replication companion (`replication/spec.md`, "The controller
-    check") states the branch, with no binding of the local did:key to the
-    capability; WASS-58's touches gain the `fromSpace` comparison
-  - freewallet: the replica registration ceremony (FW-638, FW-688) creates and
-    registers under the bootstrap did:key
-  - was-conformance-suite: PWSCS-23's registration-check cases
-- acceptance:
-  - [ ] A registration onto a local Space whose controller is a did:key is
-        admitted when the source Space's controller is a did:webvh this server
-        can resolve, the pull capability's chain is `[root, capability]` (one
-        delegated link), and that link's delegation proof is signed by a method
-        the resolved document lists under `capabilityDelegation`. The local
-        did:key need not appear in the document
-  - [ ] The did:webvh resolves either as today (hosted in `fromSpace`, its log
-        read through the pull capability and verified offline) or from a local
-        copy another registration on this server already maps
-        (`locateWebvhLog`). The second form admits the auxiliary Space, whose
-        controller's log lives in the account Space and reaches this server
-        through the account replica's registration
-  - [ ] A re-delegated two-link chain is refused, and so is a ladder-signed
-        capability the source server refuses (the registration's read of the
-        source Space fails first)
-  - [ ] Update Space promotes the auxiliary replica Space to the account
-        did:webvh resolved through the account replica's mapping, and the Delete
-        Replica guard (`controllerUnmappedByRemoval`) refuses removing the
-        account replica's registration while the auxiliary replica Space is
-        controlled by that DID
-  - [ ] The `invocationTarget` comparison against `fromSpace`
-        (`registration.ts:187`) is named in WASS-58's touches, so it also
-        accepts the `*` subtree form once that marker ships. No dependency on
-        WASS-58
-  - [ ] docs/replication.md and ARCHITECTURE.md state the branch, and a
-        two-server test (in the style of
-        `test/replicated-webvh-controller.test.ts`) covers each box above
-
-Context. A wallet copies its account onto a second server by creating a Space
-there, delegating a read-only pull capability to that server's `serverDid`, and
-registering the source Space. The replica server creates a Space only under a
-did:key. Today the controller check admits a local did:key only when the source
-controller's document lists it under `capabilityInvocation`
-(`assertLocalControllerIsPeerKey`, `registration.ts:498-572`, the branch WSS-205
-added; the listing check is at `:566`). An account anchored in a standing
-credential's ladder has no such key, so it cannot register a replica. The wallet
-uses a bootstrap did:key K derived from a seed on its directory entry for the
-replica server. K creates the replica Space, registers it, promotes it to the
-account did:webvh after the first pull, and controls nothing afterwards.
-
-The branch also has to cover the client-annex auxiliary Space. Its controller is
-the account did:webvh, whose log is in the account Space, so today's requirement
-that the log be hosted in `fromSpace` itself
-(`hosted.fromSpace !== record.fromSpace`, `registration.ts:521`) refuses it.
-This is the cross-Space case of WSS-96's open question 5. WSS-206's mapping rule
-(`replicaMappingConflict`) is unchanged.
-
-The squat analysis, from the design. The replica server cannot read the wallet's
-replica pointer (it lives in the annex, which is not copied yet), so the gate
-sits at the source server: the registration reads the source Space through the
-capability, and the source refuses a ladder-signed pull with no pointer
-(WSS-225). A third party holding a re-delegated grant fails the one-link
-condition. One residue stays open, left to this item by the design: any reader
-of the wallet's directory can register the recorded capability under its own
-did:key in a tear between the wallet's mint and its POST, and then win
-`replicaMappingConflict`. Binding the local did:key to a K recorded with the
-capability would close it. Settled 2026-10-29 in the companion text: no binding.
-The residue is accepted and recorded in the companion's security considerations
-("The bootstrap key"); the first acceptance box above stands as written.
-Related: WSS-207 (a log that declares witnesses still cannot replicate), WSS-210
-(one function for where a did:webvh resolves from).
 
 ---
 
@@ -1467,52 +1378,6 @@ have that source's tombstones applied to the copy. It is shape-gated, like
 predicates 1 to 5. WSS-225 and this item both edit `clientAnnexClause.ts` and
 the clause's predicate count; whichever lands second updates the count. Related:
 WSS-209 (a ladder-signed delegation on a replica, under the clause).
-
----
-
-### WSS-238: [M] (*) `serverDid` moves to the core `specs` entry, and the replication entry carries `url`
-
-- status: todo
-- priority: medium
-- backend: *
-- labels: wire-contract, service-description, server-identity, replication
-- discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
-- touches:
-  - web-spaces-server (this repo): `src/serviceDescription.ts` (the `instance`
-    member it composes and the core entry beside `originId`; the
-    `REPLICATION_IDENTIFIER` entry's members), `src/config.default.ts` (the "no
-    `url` until the text is published" comment), the two server-identity tests,
-    `docs/service-description.md`, `docs/server-identity-and-provenance.md`,
-    `docs/replication.md` (what a wallet reads to find the DID to delegate to),
-    ARCHITECTURE.md (the service description paragraph), CHANGELOG.md
-  - storage-core: the `ServiceDescription` type (the core entry gains
-    `serverDid`; `instance` loses it)
-  - freewallet / wallet-core: whatever reads the replica server's DID off
-    `/service` before delegating the pull capability (FW-638, FW-688)
-  - was-conformance-suite: a service-description case, if one asserts the
-    member's placement
-  - portable-web-spaces-spec: resolved 2026-10-29 -- the core version entry
-    defines `serverDid` beside `originId`, and the Instance Disclosure list does
-    not carry it
-- acceptance:
-  - [ ] `/service` carries `serverDid` on the `https://w3id.org/pws` entry,
-        beside `originId`, and `instance` no longer carries it
-  - [ ] The `https://w3id.org/pws/replication` entry carries `url`
-        (`https://w3c-ccg.github.io/portable-web-spaces-spec/replication/`)
-  - [ ] `assertPeerServes` still reads `originId` and the replication entry and
-        nothing else; no registration check reads `instance`
-  - [ ] The server-identity tests assert the new placement; docs and
-        ARCHITECTURE.md name it
-  - [ ] CHANGELOG entry names the move as a wire change to `/service`
-
-Context: the replication companion decided 2026-10-29 where the server's DID is
-advertised. Core's Instance Disclosure says `instance` is optional operator
-disclosure a client may not gate on, and a wallet gates on the DID: it is the
-`controller` it delegates the pull capability to, and a server without one
-cannot hold a replica. So the member sits on the core entry, as `originId` does
-and for the same reason. The companion text now exists, so the replication
-entry's `url` can be served. Related: WSS-235 (the other `instance` member that
-moves or is renamed).
 
 ---
 

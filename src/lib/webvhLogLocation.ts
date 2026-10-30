@@ -14,8 +14,9 @@
  * A local Space named `S` could belong to anyone on this server, so mapping
  * `H`'s DIDs onto it would let a stranger squat another user's DID by
  * creating that Space id here. A registration passes the checks in
- * `sync/registration.ts`, among them that the peer Space has the local
- * Space's controller, so only the peer Space's controller can make one.
+ * `sync/registration.ts`, among them the controller check, so only the peer
+ * Space's controller, a key its document lists, or a holder of a pull
+ * capability that document admits can make one.
  *
  * When more than one local Space registers the same peer Space and pulls
  * Collection `C`, the DID has no location here and resolves from neither

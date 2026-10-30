@@ -1,5 +1,25 @@
 # History
 
+## 0.46.0 - TBD
+
+### Changed
+
+- Breaking wire change to `/service`. `serverDid` moves from `instance` to the
+  core `https://w3id.org/pws` entry, beside `originId`. There is no alias under
+  `instance`. The `https://w3id.org/pws/replication` entry now carries `url`.
+  Requires `@interop/storage-core` 0.44.0.
+- Register Replica's controller check gains a bootstrap branch. A local Space
+  under a `did:key` the source controller's `did:webvh` document does not list
+  is admitted when the pull capability is a one-link delegation from the source
+  Space's root whose delegation proof a method listed under
+  `capabilityDelegation` signs. A re-delegated capability is refused. The source
+  controller's document is resolved from the log read through the capability
+  when the DID is hosted in the source Space, and otherwise from the copy
+  another registration on this server maps, so an auxiliary Space controlled by
+  the account DID registers through the account replica's mapping, is promoted
+  to that DID through it, and the account registration cannot be removed while
+  it is.
+
 ## 0.45.0 - 2026-10-30
 
 ### Added

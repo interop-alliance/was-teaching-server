@@ -454,10 +454,16 @@ export const REPLICATION_IDENTIFIER = 'https://w3id.org/pws/replication'
  * a new version. The `PUT` at a registration URL, which pauses and resumes
  * the loop and replaces the pull capability in place, is part of `0.1`: it
  * changes what a controller may do to its own registration, not what the
- * loop accepts from a peer. The entry carries no `url` until the text is
- * published.
+ * loop accepts from a peer.
  */
 export const REPLICATION_VERSION = '0.1'
+
+/**
+ * Where the replication specification text at `REPLICATION_VERSION` is
+ * published, the `url` member of its service-description entry.
+ */
+export const REPLICATION_URL =
+  'https://w3c-ccg.github.io/portable-web-spaces-spec/replication/'
 
 /**
  * The Portable Wallet Profile's persistent identifier, the key of its entry in

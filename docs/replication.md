@@ -21,11 +21,11 @@ Otherwise `loadSyncSigner` returns a refusal with a reason: no advertised
 `serverDid`, or the key not listed under `capabilityInvocation`. A storage fault
 met while reading the log is thrown as its 5xx and is not a refusal.
 
-A controller delegates the pull capability to `serverDid`, so a peer verifies
-the invocation against the server's log. There is no second key and no
-`/service` member. Listing the relationship is the switch that enables
-replication. Every read a pull loop makes of a peer Space is signed with it
-(`sync/peerClient.ts`).
+A controller delegates the pull capability to `serverDid`, which a wallet reads
+from the core `https://w3id.org/pws` entry of `/service`. A peer verifies the
+invocation against the server's log. There is no second key and no `/service`
+member. Listing the relationship is the switch that enables replication. Every
+read a pull loop makes of a peer Space is signed with it (`sync/peerClient.ts`).
 
 ## Registrations
 
@@ -155,23 +155,44 @@ registration. It is not a member of the wire record the controller sends and
 reads back. A registration made against a server without the entry pulls no
 chunks.
 
-The controller match has two branches. The two controllers are equal, or the
+The controller match has three branches. The two controllers are equal; or the
 peer controller is a `did:webvh` hosted in the peer Space whose current document
-lists the local Space's `did:key` controller under `capabilityInvocation`. The
-second branch is the common order: a wallet promotes its Space to its
-`did:webvh` before the Space gains a replica, and a new local Space is created
-under one of the account's enrolled client keys. The local Space cannot be
-promoted first, since the DID resolves here only through the registration.
+lists the local Space's `did:key` controller under `capabilityInvocation` (the
+listed-key branch); or the local Space's controller is a `did:key` and the pull
+capability is a one-link delegation from the peer Space's root whose delegation
+proof a method the peer controller's document lists under `capabilityDelegation`
+signs (the bootstrap branch). The second and third are the common order: a
+wallet promotes its Space to its `did:webvh` before the Space gains a replica,
+and a new local Space is created under a `did:key`. The local Space cannot be
+promoted first, since the DID resolves here only through a registration.
 
-For that branch the check reads the peer's `did.jsonl` through the pull
-capability, verifies it offline, as a replicated copy is, and requires the
-registration to pull the log's Collection, so the copy the promotion needs
-arrives with the first pull. The DID is never fetched by itself. Once the first
-pull lands, Update Space moves the local Space to the DID, and the controllers
-are equal from then on. Without the controller check, a holder of any readable
-pull capability could register another user's Space as a source and read the
-copy through root invocations. A key the document lists under
-`capabilityDelegation` alone, a ladder method, does not pass.
+The listed-key branch admits a local Space created under one of the account's
+enrolled client keys. The bootstrap branch admits one created under a `did:key`
+the wallet derives for the purpose, as an account with no enrolled client must,
+since a ladder method is listed under `capabilityDelegation` alone. The local
+`did:key` need not appear in the document, and nothing binds it to the
+capability: a pull capability that leaks lets its holder register a copy under a
+key of their choosing, readable until the controller revokes the capability at
+the source. A re-delegated grant fails the one-link condition, and a capability
+the source refuses fails the registration at its read of the peer Space, before
+any branch is tried, which is what gates a ladder-signed pull on the
+client-annex replica pointer the source checks.
+
+The peer controller's document is resolved one of two ways, and never fetched by
+DID. A DID hosted in the peer Space itself has its `did.jsonl` read through the
+pull capability and verified offline, as a replicated copy is, and the
+registration must pull the log's Collection, so the copy the promotion needs
+arrives with the first pull. A DID hosted in another Space of the peer host
+resolves from the local copy that exactly one other registration on this server
+maps (see [Where a replicated log lives](#where-a-replicated-log-lives)), which
+is how the client-annex auxiliary Space registers: its controller is the account
+`did:webvh`, whose log lives in the account Space and reaches this server
+through the account replica's registration. Only the bootstrap branch reads a
+mapped copy; the listed-key branch takes the hosted DID alone. Once the first
+pull lands, Update Space moves the local Space to the DID, resolved through the
+same mapping, and the controllers are equal from then on. Without the controller
+check, a holder of any readable pull capability could register another user's
+Space as a source and read the copy through root invocations.
 
 One check reads no peer. A registration is refused when another local Space
 already replicates the same peer Space with a Collection in common, since a
@@ -234,11 +255,12 @@ fast-forward path as a native one (see
 
 The mapping goes through the registration because a local Space named S could
 belong to anyone on this server. A registration passes the controller check in
-`sync/registration.ts`, so only the peer Space's controller, or a current
-invocation key of its `did:webvh` document, can make one. When two or more local
-Spaces map one DID, it has no location and does not resolve from storage. An
-older copy could list a retired key, and the head record is lost on restart, so
-picking either copy would let the older one win.
+`sync/registration.ts`, so only the peer Space's controller, a current
+invocation key of its `did:webvh` document, or a holder of a one-link pull
+capability that controller's document admits, can make one. When two or more
+local Spaces map one DID, it has no location and does not resolve from storage.
+An older copy could list a retired key, and the head record is lost on restart,
+so picking either copy would let the older one win.
 
 The registrations are read through an index of every stored registration, cached
 per backend for `REPLICA_INDEX_CACHE_TTL`. Storing or removing a registration

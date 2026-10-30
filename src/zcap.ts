@@ -1746,6 +1746,70 @@ export async function verifyRevocationChain({
 }
 
 /**
+ * Verifies a delegated capability whose chain is exactly `[root, capability]`:
+ * the root capability of `rootTarget`, controlled by `rootController`, and
+ * one delegated link. The link's delegation proof must verify under the
+ * `CapabilityDelegation` purpose, which also requires the proof's
+ * verification method to be one `rootController`'s resolved document lists
+ * under `capabilityDelegation`. A `did:webvh` root controller resolves
+ * through `webvh`: from storage when this server holds its log, else through
+ * the grant the context carries. The replica registration's bootstrap branch
+ * verifies the pull capability this way.
+ *
+ * A server fault met under the document loader (a storage error under a
+ * `did:webvh` log read) is thrown, as it is not the capability's doing. Any
+ * other failure is returned, for the caller to word its refusal with.
+ *
+ * @param options {object}
+ * @param options.capability {object}   the delegated capability
+ * @param options.rootTarget {string}   the root capability's invocation
+ *   target, the only target the chain may root in
+ * @param options.rootController {string}   the root capability's controller
+ * @param options.webvh {WebvhResolverContext}   storage + serverUrl for the
+ *   local `did:webvh` resolver, with a peer grant for a controller whose log
+ *   this server does not store
+ * @returns {Promise<Error | undefined>}   why the chain does not verify, or
+ *   `undefined` when it does
+ */
+export async function verifyOneLinkDelegation({
+  capability,
+  rootTarget,
+  rootController,
+  webvh
+}: {
+  capability: object
+  rootTarget: string
+  rootController: string
+  webvh: WebvhResolverContext
+}): Promise<Error | undefined> {
+  // `expectedRootCapability` alone pins the root the chain may have.
+  const documentLoader = rootCapabilityLoader({
+    controllerFor: () => rootController as IDID,
+    webvh
+  })
+  let error: unknown
+  try {
+    const result = await verifyDelegationChain({
+      capability,
+      documentLoader,
+      expectedRootCapability: [rootCapabilityId(rootTarget)],
+      allowTargetAttenuation: false,
+      maxChainLength: 2
+    })
+    if (result.verified) {
+      return undefined
+    }
+    error = result.error
+  } catch (err) {
+    error = err
+  }
+  throwIfServerFault({ error })
+  return error instanceof Error
+    ? error
+    : new Error('The delegation proof does not verify.')
+}
+
+/**
  * Verifies the capability invocation on a revocation submission under the
  * dual-root rule: the invocation may root in the scope -- the keystore or the
  * Space -- (whose controller may revoke anything delegated from it, delegates

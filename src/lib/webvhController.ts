@@ -113,12 +113,17 @@ export interface WebvhResolverContext {
   serverBackends: ServerBackends
   serverUrl: string
   /**
-   * A foreign `did:webvh` this one verification may resolve over the
-   * network, and the resolver that fetches it. Set only by the capability
-   * verifier, after it verified the delegation chain that names `did` as its
-   * invoker. Absent, every foreign `did:webvh` with no stored log is refused.
+   * A foreign `did:webvh` this one verification may resolve without a
+   * stored log, and the resolver that serves it. The capability verifier
+   * sets the network resolver, after it verified the delegation chain that
+   * names `did` as its invoker; the replica registration check sets one over
+   * the document it verified from a log read through the pull capability.
+   * Absent, every foreign `did:webvh` with no stored log is refused.
    */
-  peer?: { did: string; resolver: PeerWebvhResolver }
+  peer?: {
+    did: string
+    resolver: Pick<PeerWebvhResolver, 'resolve' | 'resolveKey'>
+  }
 }
 
 /**

@@ -3,25 +3,26 @@
  * document naming the specification versions this server speaks, its Spaces
  * Repository URL, and the optional sections it implements. It lists six
  * entries: the core specification, whose entry also carries the store's origin
- * id (`lib/originId.ts`); the zCap authorization profile, whose entry
- * carries the signature algorithms and delegation cryptosuites this server
- * verifies; the Encrypted Collections profile, whose entry claims the chunk
- * endpoints and names the two optional affordances of that profile this server
- * serves; the client annex profile, whose entry claims the client-annex
- * delegation clause and carries `version` alone; the replication
- * specification, whose entry claims the `replicas` registration, the pull
- * loop and the apply path, and carries `version` alone too; and the Portable
- * Wallet Profile, whose entry is the claim that the core and Encrypted
- * Collections entries carry every token a wallet needs. It is served
- * unauthenticated at `/service`, and every response the server sends links to
- * it with a `Link: <...>; rel="service"` header, which is how a client finds
- * it from any URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
+ * id (`lib/originId.ts`) and the server's own DID; the zCap authorization
+ * profile, whose entry carries the signature algorithms and delegation
+ * cryptosuites this server verifies; the Encrypted Collections profile, whose
+ * entry claims the chunk endpoints and names the two optional affordances of
+ * that profile this server serves; the client annex profile, whose entry
+ * claims the client-annex delegation clause and carries `version` alone; the
+ * replication specification, whose entry claims the `replicas` registration,
+ * the pull loop and the apply path; and the Portable Wallet Profile, whose
+ * entry is the claim that the core and Encrypted Collections entries carry
+ * every token a wallet needs. It is served unauthenticated at `/service`, and
+ * every response the server sends links to it with a
+ * `Link: <...>; rel="service"` header, which is how a client finds it from any
+ * URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
  * configuration the plugin was registered with, the active backend's
  * `originId`, and one storage read: whether the server's own history log lists
- * its export-signing key (`lib/serverIdentity.ts`), which decides the
- * `instance` member's `serverDid`. The origin id sits on the core entry rather
- * than on `instance` because a replication peer may gate on it, and the spec
- * forbids a client gating on `instance`.
+ * its export-signing key (`lib/serverIdentity.ts`), which decides the core
+ * entry's `serverDid`. The origin id and the server DID sit on the core entry
+ * rather than on `instance` because a client may gate on them (a replication
+ * peer on the origin id, a controller delegating a pull capability on the
+ * DID), and the spec forbids a client gating on `instance`.
  */
 import { createHash } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
@@ -37,6 +38,7 @@ import {
   ENCRYPTED_COLLECTIONS_VERSION,
   PACKAGE_INSTANCE,
   REPLICATION_IDENTIFIER,
+  REPLICATION_URL,
   REPLICATION_VERSION,
   SERVER_VERSION,
   SERVICE_DESCRIPTION_MAX_AGE,
@@ -185,8 +187,9 @@ export function serviceDescriptionUrl(serverUrl: string): string {
  * @param options.originId {string}   the store's origin id, carried on the
  *   core specification's entry
  * @param options.discloseVersion {boolean}   include `instance.version`
- * @param [options.identity] {object}   the instance's identity members
- *   (`exportSigningMethod`, `serverDid`); absent members are left out
+ * @param [options.identity] {object}   the server's identity members:
+ *   `exportSigningMethod` goes under `instance`, `serverDid` on the core
+ *   specification's entry; absent members are left out
  * @returns {ServiceDescription}
  */
 export function buildServiceDescription({
@@ -198,10 +201,7 @@ export function buildServiceDescription({
   serverUrl: string
   originId: string
   discloseVersion: boolean
-  identity?: Pick<
-    NonNullable<ServiceDescription['instance']>,
-    'exportSigningMethod' | 'serverDid'
-  >
+  identity?: { exportSigningMethod?: string; serverDid?: string }
 }): ServiceDescription {
   return {
     url: serviceDescriptionUrl(serverUrl),
@@ -211,7 +211,13 @@ export function buildServiceDescription({
           version: SPEC_VERSION,
           spaces: absoluteUrl({ path: spacesPath(), serverUrl }),
           features: [...SERVICE_FEATURES],
-          originId
+          originId,
+          // A controller delegates the pull capability to the server DID, so
+          // a client gates on it. It sits here, beside `originId`, rather
+          // than under `instance`.
+          ...(identity.serverDid !== undefined && {
+            serverDid: identity.serverDid
+          })
         } satisfies PwsVersionEntry
       ],
       [AUTHZ_PROFILE_IDENTIFIER]: [
@@ -240,7 +246,8 @@ export function buildServiceDescription({
       // registration check reads it, beside `originId` on the core entry.
       [REPLICATION_IDENTIFIER]: [
         {
-          version: REPLICATION_VERSION
+          version: REPLICATION_VERSION,
+          url: REPLICATION_URL
         } satisfies ServiceDescriptionVersionEntry
       ],
       // A conformance claim over the core and Encrypted Collections entries,
@@ -260,9 +267,6 @@ export function buildServiceDescription({
       homepage: PACKAGE_INSTANCE.homepage,
       ...(identity.exportSigningMethod !== undefined && {
         exportSigningMethod: identity.exportSigningMethod
-      }),
-      ...(identity.serverDid !== undefined && {
-        serverDid: identity.serverDid
       })
     }
   }

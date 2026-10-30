@@ -110,7 +110,14 @@ describe('Service description API', () => {
             }
           ],
           'https://w3id.org/pws/client-annex': [{ version: '0.1' }],
-          'https://w3id.org/pws/replication': [{ version: '0.1' }],
+          'https://w3id.org/pws/replication': [
+            {
+              version: '0.1',
+              url:
+                'https://w3c-ccg.github.io/portable-web-spaces-spec/' +
+                'replication/'
+            }
+          ],
           'https://w3id.org/pws/wallet-profile': [
             {
               version: '0.1',

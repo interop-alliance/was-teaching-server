@@ -2,7 +2,7 @@
  * Server identity tests (Vitest): the `server` Space provisioned at boot
  * under the admin DID, the export-signing key derived from the seed and
  * advertised on `/service` as `instance.exportSigningMethod`, and the
- * `instance.serverDid` member that
+ * `serverDid` member on the core `https://w3id.org/pws` entry that
  * appears only once the admin's history log at `server/id/did.jsonl` lists
  * that key under `assertionMethod`, optionally beside `capabilityInvocation`
  * and under no other relationship. Also the boot-time checks on a
@@ -74,7 +74,12 @@ describe('Server identity', () => {
     const response = await fetch(`${baseServerUrl}service`)
     assert.equal(response.status, 200)
     const document = (await response.json()) as any
-    return { etag: response.headers.get('etag'), entry: document.instance }
+    const [core] = document.specs['https://w3id.org/pws']
+    return {
+      etag: response.headers.get('etag'),
+      core,
+      instance: document.instance
+    }
   }
 
   async function publishLog(jsonl: string): Promise<Response> {
@@ -210,9 +215,9 @@ describe('Server identity', () => {
     })
 
     it('is advertised on /service before any log exists, with no `did`', async () => {
-      const { entry } = await serviceEntry()
-      assert.equal(entry.exportSigningMethod, exportSigningMethod)
-      assert.equal(entry.serverDid, undefined)
+      const { core, instance } = await serviceEntry()
+      assert.equal(instance.exportSigningMethod, exportSigningMethod)
+      assert.equal(core.serverDid, undefined)
     })
   })
 
@@ -227,7 +232,7 @@ describe('Server identity', () => {
         .configure({ force: true })
     })
 
-    it('appears on /service as instance.serverDid once the admin publishes a log listing the key under assertionMethod', async () => {
+    it('appears on /service as the core entry serverDid once the admin publishes a log listing the key under assertionMethod', async () => {
       const created = await mintServerDid({
         serverUrl: baseServerUrl,
         publicKeyMultibase: serverKeyMultibase,
@@ -240,9 +245,10 @@ describe('Server identity', () => {
       const published = await publishLog(logToJsonlString(log))
       assert.equal(published.status, 201)
 
-      const { entry, etag } = await serviceEntry()
-      assert.equal(entry.serverDid, did)
-      assert.equal(entry.exportSigningMethod, exportSigningMethod)
+      const { core, instance, etag } = await serviceEntry()
+      assert.equal(core.serverDid, did)
+      assert.equal('serverDid' in instance, false)
+      assert.equal(instance.exportSigningMethod, exportSigningMethod)
       assert.notEqual(etag, etagBefore)
     })
 
@@ -263,8 +269,8 @@ describe('Server identity', () => {
       assert.equal(published.status, 200)
       log = updated.log
 
-      const { entry } = await serviceEntry()
-      assert.equal(entry.serverDid, did)
+      const { core } = await serviceEntry()
+      assert.equal(core.serverDid, did)
     })
 
     it('is withdrawn when a log entry lists the key under a refused relationship too', async () => {
@@ -288,9 +294,9 @@ describe('Server identity', () => {
       assert.equal(published.status, 200)
       log = updated.log
 
-      const { entry } = await serviceEntry()
-      assert.equal(entry.serverDid, undefined)
-      assert.equal(entry.exportSigningMethod, exportSigningMethod)
+      const { core, instance } = await serviceEntry()
+      assert.equal(core.serverDid, undefined)
+      assert.equal(instance.exportSigningMethod, exportSigningMethod)
     })
 
     it('returns once a later entry drops the refused relationship', async () => {
@@ -310,8 +316,8 @@ describe('Server identity', () => {
       assert.equal(published.status, 200)
       log = updated.log
 
-      const { entry } = await serviceEntry()
-      assert.equal(entry.serverDid, did)
+      const { core } = await serviceEntry()
+      assert.equal(core.serverDid, did)
     })
 
     it('is withdrawn when the key is rotated out of the document', async () => {
@@ -332,8 +338,8 @@ describe('Server identity', () => {
       assert.equal(published.status, 200)
       log = updated.log
 
-      const { entry } = await serviceEntry()
-      assert.equal(entry.serverDid, undefined)
+      const { core } = await serviceEntry()
+      assert.equal(core.serverDid, undefined)
     })
   })
 })
@@ -473,6 +479,8 @@ describe('Server identity without a seed', () => {
     const document = (await response.json()) as any
     assert.equal('exportSigningMethod' in document.instance, false)
     assert.equal('serverDid' in document.instance, false)
+    const [core] = document.specs['https://w3id.org/pws']
+    assert.equal('serverDid' in core, false)
   })
 
   it('does not provision the `server` Space, and still reserves the id', async () => {

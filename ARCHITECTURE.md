@@ -152,10 +152,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   and the Portable Wallet Profile). Listing an entry is a conformance claim; the
   wallet profile entry claims that the core and Encrypted Collections entries
   carry every token a wallet needs, `encryption` among them. The core entry
-  carries `originId`; the `instance` member carries `exportSigningMethod` and
-  `serverDid`. A root-level `onSend` hook appends
-  `Link: <.../service>; rel="service"` to every response. See
-  [docs/service-description.md](docs/service-description.md).
+  carries `originId` and `serverDid`; the `instance` member carries
+  `exportSigningMethod`. The replication entry carries `url`. A root-level
+  `onSend` hook appends `Link: <.../service>; rel="service"` to every response.
+  See [docs/service-description.md](docs/service-description.md).
 - **`src/lib/serverIdentity.ts`**, **`src/lib/provenanceStatement.ts`**,
   **`src/lib/exportProvenance.ts`**, **`src/lib/importProvenance.ts`** -- the
   server's own identity and export provenance. The server derives an
@@ -180,27 +180,36 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   **`src/lib/webvhLogLocation.ts`** -- the replication facet. A replica
   registration (`POST /space/:spaceId/replicas`, controller-only) is one source
   peer of a Space, with the pull capability the controller delegated to this
-  server's DID. `PUT` at its URL pauses and resumes the loop and replaces the
-  pull capability in place, and nothing else of the registration changes. Both
-  backends store a registration through one write, `writeReplica`, whose
-  decision (`src/lib/replicaRecord.ts`) is made under the lock from the
-  registration read there. One pull loop per registration reads the peer's Space
-  and each selected Collection's `changes` feed, and stores what it reads
-  through the backend's `apply*` methods only, under the peer's stamp and
-  generation. No request route can supply a write stamp. The chunk pull adds
-  `beginChunkStaging`, `stageChunk`, `listStagedChunks` and `reclaimStaging` to
-  that family, and a `chunks` option to `applyResource`. A chunked Resource's
-  set is staged, a few chunks at a time, then swapped in with its parent in one
-  critical section, so its parent takes a feed position only once the set is
-  whole. The quota pre-check of a set is the backend's, made when the run is
-  opened. The container objects, logs and policies are applied on the control
-  plane; a Collection's Resources go to the server backend its `backend.id`
-  selects, the id meaning here what it means on the peer, after the loop checks
-  the registration on the control plane. A `backend.id` this deployment does not
-  configure stalls the Collection. A replicated `did:webvh` resolves from the
-  local copy of its log when exactly one registration maps it there. See
-  [docs/replication.md](docs/replication.md) and
-  [decision 0004](decisions/0004-stamps-are-minted-only-by-this-server.md).
+  server's DID. The controller check (`sync/registration.ts`) admits it in one
+  of three branches: the source controller equals the local one; the source
+  controller is a `did:webvh` hosted in the source Space whose document lists
+  the local `did:key` under `capabilityInvocation`; or, the bootstrap branch,
+  the local controller is a `did:key` the document need not list and the
+  capability is a one-link delegation from the source's root whose proof a
+  `capabilityDelegation` method of that document signs. The document comes from
+  the log read through the capability when the DID is hosted in the source
+  Space, else from the copy another registration here maps, which is how an
+  auxiliary Space controlled by the account DID registers. `PUT` at its URL
+  pauses and resumes the loop and replaces the pull capability in place, and
+  nothing else of the registration changes. Both backends store a registration
+  through one write, `writeReplica`, whose decision (`src/lib/replicaRecord.ts`)
+  is made under the lock from the registration read there. One pull loop per
+  registration reads the peer's Space and each selected Collection's `changes`
+  feed, and stores what it reads through the backend's `apply*` methods only,
+  under the peer's stamp and generation. No request route can supply a write
+  stamp. The chunk pull adds `beginChunkStaging`, `stageChunk`,
+  `listStagedChunks` and `reclaimStaging` to that family, and a `chunks` option
+  to `applyResource`. A chunked Resource's set is staged, a few chunks at a
+  time, then swapped in with its parent in one critical section, so its parent
+  takes a feed position only once the set is whole. The quota pre-check of a set
+  is the backend's, made when the run is opened. The container objects, logs and
+  policies are applied on the control plane; a Collection's Resources go to the
+  server backend its `backend.id` selects, the id meaning here what it means on
+  the peer, after the loop checks the registration on the control plane. A
+  `backend.id` this deployment does not configure stalls the Collection. A
+  replicated `did:webvh` resolves from the local copy of its log when exactly
+  one registration maps it there. See [docs/replication.md](docs/replication.md)
+  and [decision 0004](decisions/0004-stamps-are-minted-only-by-this-server.md).
 - **`src/lib/importTar.ts`**, **`src/lib/importPlan.ts`**,
   **`src/lib/importRevocations.ts`** and each backend's `exportSpace` /
   `importSpace` -- Export and Import Space. The archive codec lives in
@@ -346,10 +355,11 @@ Containment: **SpacesRepository > Space > Collection > Resource**.
 - **Server identity** -- the server's `did:webvh`
   (`did:webvh:{scid}:{host}:space:server:id`) together with the export-signing
   key derived from `WAS_SERVER_KEY_SEED`. The key is advertised on `/service` as
-  `exportSigningMethod`, its `did:key`; the DID as `serverDid` once the log
-  lists the key under `assertionMethod`, and under `capabilityInvocation` at
-  most. The same key signs export provenance, only while the DID is advertised,
-  and, once listed under `capabilityInvocation`, sync invocations, as the method
+  `exportSigningMethod` under `instance`, its `did:key`; the DID as `serverDid`
+  on the core `specs` entry once the log lists the key under `assertionMethod`,
+  and under `capabilityInvocation` at most. The same key signs export
+  provenance, only while the DID is advertised, and, once listed under
+  `capabilityInvocation`, sync invocations, as the method
   `{serverDid}#{publicKeyMultibase}`. Distinct from the admin identity, which
   holds the log's update key. Avoid: server DID key, server controller.
 - **Origin id** -- the store-level id that is the origin half of a write's

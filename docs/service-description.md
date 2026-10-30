@@ -28,10 +28,15 @@ version it does not recognize, keeps the descriptor set-once, and checks its
 key-epoch and `hmac` members.
 
 It also carries `originId`, the active backend's origin id, which a replication
-peer reads when it registers (see [replication.md](replication.md)). It sits on
-the core entry rather than on `instance` because a peer may gate on it, and the
-spec forbids a client gating on `instance`. The archive's `service.json` carries
-it too.
+peer reads when it registers (see [replication.md](replication.md)).
+
+Once the server has an identity, the core entry also carries `serverDid`, the
+server's own self-hosted `did:webvh`. A controller delegates the replication
+pull capability to that DID, so a client gates on it. Both members sit on the
+core entry rather than on `instance` because the spec forbids a client gating on
+`instance`. `serverDid` is present only under the rule in
+[The instance member](#the-instance-member). The archive's `service.json`
+carries both.
 
 A Backend descriptor advertises no tokens of its own. Conditional writes, the
 `epoch` stamp, and the `writerId` writer-attribution label are baseline
@@ -80,7 +85,8 @@ The fifth entry, under `https://w3id.org/pws/replication`, is the replication
 specification (version `0.1`). Listing it is this server's claim that it serves
 the `replicas` registration sub-resource, the pull loop and the apply path (see
 [replication.md](replication.md)). A registration reads the peer's entry and
-refuses a peer that lists none at this version. It carries `version` alone too.
+refuses a peer that lists none at this version. It carries `version` and `url`,
+which is `https://w3c-ccg.github.io/portable-web-spaces-spec/replication/`.
 
 ## The wallet profile entry
 
@@ -101,23 +107,25 @@ The entry carries `version` and `url` only. The profile admits no other member,
 ## The instance member
 
 The document's `instance` member is the operator's disclosure of the deployed
-software. It also carries the instance's identity when the server has one (see
+software. It also carries the export-signing method when the server has an
+identity (see
 [server-identity-and-provenance.md](server-identity-and-provenance.md)).
 
 - `exportSigningMethod` is the verification method the server will sign export
   archives with, as a `did:key`. It is present whenever `WAS_SERVER_KEY_SEED` is
   set.
-- `serverDid` is the server's own self-hosted `did:webvh`. It is present only
-  once the resolved current document of the log at `server/id/did.jsonl` lists
-  that key under `assertionMethod`, and under `capabilityInvocation` at most.
 
-They sit on `instance` rather than on a `specs` entry because they describe this
-deployment, not a specification it implements.
+`exportSigningMethod` sits on `instance` rather than on a `specs` entry because
+it describes this deployment, not a specification it implements.
 
-`serverDid` is read per request, since the admin writes that log after boot. The
-served body and its `ETag` are recomputed when it changes. The outcome is
-memoized per backend on the log Resource's `ETag`, so a request costs one
-metadata read while the log stands still.
+`serverDid` is not on `instance`. It sits on the core entry (see
+[The core entry](#the-core-entry)). It is present only once the resolved current
+document of the log at `server/id/did.jsonl` lists that key under
+`assertionMethod`, and under `capabilityInvocation` at most. It is read per
+request, since the admin writes that log after boot. The served body and its
+`ETag` are recomputed when it changes. The outcome is memoized per backend on
+the log Resource's `ETag`, so a request costs one metadata read while the log
+stands still.
 
 ## The service Link header
 

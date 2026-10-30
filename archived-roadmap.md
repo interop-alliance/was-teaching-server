@@ -123,8 +123,8 @@ historical record.
 - priority: medium
 - labels: http-api, data-model, encryption
 - touches:
-  - portable-web-spaces-spec -- normative text tracked as WASS-9 in that
-    repo's `_spec/ROADMAP.md` (done, moved to archive)
+  - portable-web-spaces-spec -- normative text tracked as WASS-9 in that repo's
+    `_spec/ROADMAP.md` (done, moved to archive)
   - was-teaching-server -- routes, both backends, `metaVersion` validators,
     server tests + conformance-suite coverage (done; suite tests published in
     `@interop/was-conformance-suite` 0.5.0)
@@ -847,8 +847,8 @@ object body".
   - storage-core: unaffected; its `CollectionEncryption` type already declares
     `hmac` with the required shape, so the server's shape check narrows against
     that type rather than adding a local one
-  - portable-web-spaces-spec: the rules are shipped text (WASS-20,
-    2026-08-20): `#blinding-key-member` and `#key-epoch-server-validation`
+  - portable-web-spaces-spec: the rules are shipped text (WASS-20, 2026-08-20):
+    `#blinding-key-member` and `#key-epoch-server-validation`
   - was-conformance-suite: `encryption-descriptor-api` gains the hmac cases
     listed in the acceptance below (suite-side items are tracked here, not in a
     separate roadmap)
@@ -996,11 +996,11 @@ suite from a fake server onto a live in-process instance.
     `/space/{space_id}/{collection_id}/meta/log` beside the Collection `/meta`
     route (`CollectionRequest.getMeta` / `putMeta`), the problem-type registry
     in storage-core (one new entry)
-  - portable-web-spaces-spec: WASS-27 is the normative half, written
-    generically (a governing-log sub-resource and server-derived members, the
-    `encryption` descriptor as the first governed member); the wire values were
-    settled 2026-09-07: path `.../meta/log`, declaration by guarded create, one
-    new problem type `encryption-history-log-governed` (409), features flag
+  - portable-web-spaces-spec: WASS-27 is the normative half, written generically
+    (a governing-log sub-resource and server-derived members, the `encryption`
+    descriptor as the first governed member); the wire values were settled
+    2026-09-07: path `.../meta/log`, declaration by guarded create, one new
+    problem type `encryption-history-log-governed` (409), features flag
     `governed-history-logs`. Spec text landed and was committed 2026-09-07
     (e4907d4): the "Collection Governing History Log" section and its two
     operations, plus the registry, features, and cross-reference clauses.
@@ -1136,8 +1136,8 @@ session, verified from genesis) is unaffected by this item; WSS-54 / WSS-86
     tombstone sidecar rewrite), the Resource `/meta` write path,
     `src/lib/etag.ts`, the Postgres schema (a `meta_generation` column on
     resources), CHANGELOG
-  - portable-web-spaces-spec (waived 2026-09-07, tracked separately as
-    WASS-28): WASS-28 records the lifecycle rule this item enforces
+  - portable-web-spaces-spec (waived 2026-09-07, tracked separately as WASS-28):
+    WASS-28 records the lifecycle rule this item enforces
   - was-sync (shipped 2026-09-07): WS-13 pins the resurrection path's `/meta`
     write against this server
 - acceptance:
@@ -1189,9 +1189,9 @@ leaves both the spec text and the sync driver as they are.
 - priority: low
 - labels: conditional-writes, spec
 - touches:
-  - portable-web-spaces-spec: WASS-31 (shipped 2026-09-07:
-    `If-None-Match: *` and its 412 on Update Collection; the Space validator,
-    the Read Space `ETag`, and both preconditions on Update Space)
+  - portable-web-spaces-spec: WASS-31 (shipped 2026-09-07: `If-None-Match: *`
+    and its 412 on Update Collection; the Space validator, the Read Space
+    `ETag`, and both preconditions on Update Space)
   - was-conformance-suite: `conditional-requests-api` "Descriptions" group (four
     cases, drafted 2026-09-07 for 0.13.0; publish pending)
   - was-client: WCL-32 (the `ensureSpace` / `ensureSpaceAndCollection` create
@@ -1404,8 +1404,8 @@ Id) Resource, and it no longer lists `reserved-id` or an existing-id
 - labels: was-v0.5, spec-gap, wire-contract
 - discovered-from: WSS-97
 - touches:
-  - portable-web-spaces-spec: "Update (or Create by Id) Collection" lists
-    the qualifications to full replacement; `backend` needs to join `plaintext`
+  - portable-web-spaces-spec: "Update (or Create by Id) Collection" lists the
+    qualifications to full replacement; `backend` needs to join `plaintext`
     there, or the server's deviation needs removing
   - was-teaching-server: `src/requests/collectionInput.ts`
   - was-conformance-suite: shipped -- suite 0.16.0, consumed 2026-09-12, as the
@@ -1840,15 +1840,15 @@ paginated case's fixed-width ids were unaffected but switched for consistency.
 - priority: high
 - labels: security, zcap, authorization
 - touches:
-  - portable-web-spaces-spec: WASS-2 in that repo's ROADMAP.md defines the
-    rule (Delete Space, Update Space Metadata, Delete Collection, Update
-    Collection Metadata become direct-root-invocation only, and Collection
-    creation, a `POST` to the Space URL under v0.5, classifies as exact-target
-    delegable); this item is the enforcement half and follows the spec text,
-    including the Space DELETE exception and the delegated collection PUT
-    exception below, both of which WASS-2's text must state before this item
-    enforces them. WASS-2's targets were restated for the v0.5 layout (WASS-29):
-    the two description writes are `PUT`s of the `meta` sub-resource, and every
+  - portable-web-spaces-spec: WASS-2 in that repo's ROADMAP.md defines the rule
+    (Delete Space, Update Space Metadata, Delete Collection, Update Collection
+    Metadata become direct-root-invocation only, and Collection creation, a
+    `POST` to the Space URL under v0.5, classifies as exact-target delegable);
+    this item is the enforcement half and follows the spec text, including the
+    Space DELETE exception and the delegated collection PUT exception below,
+    both of which WASS-2's text must state before this item enforces them.
+    WASS-2's targets were restated for the v0.5 layout (WASS-29): the two
+    description writes are `PUT`s of the `meta` sub-resource, and every
     container URL carries a trailing slash
   - was-teaching-server: `src/requests/SpaceRequest.ts` (`putMeta`, `delete`,
     `post`), `src/requests/CollectionRequest.ts` (`putMeta`, `delete`),
@@ -1921,15 +1921,14 @@ paginated case's fixed-width ids were unaffected but switched for consistency.
   - [x] Server `test/` coverage for each refused and permitted case, plus the
         conformance assertions above
 
-Split out of portable-web-spaces-spec WASS-2 (2026-08-20), which keeps the
-spec half. Today all four container unsafe handlers run capability-only
-verification (`fetchSpaceAndVerify` / `handleZcapVerify`) that accepts a
-delegated chain attenuating from the Space root, so a Space-scoped grant
-carrying `DELETE` can delete the Space or any Collection in it. Collection
-creation is `POST /space/{id}/` (`SpaceRequest.post`); this item's original text
-routed it through a reserved `collections` endpoint, which WASS-29 retired, so
-WASS-2 now classifies the `POST` at the Space URL as exact-target delegable
-instead.
+Split out of portable-web-spaces-spec WASS-2 (2026-08-20), which keeps the spec
+half. Today all four container unsafe handlers run capability-only verification
+(`fetchSpaceAndVerify` / `handleZcapVerify`) that accepts a delegated chain
+attenuating from the Space root, so a Space-scoped grant carrying `DELETE` can
+delete the Space or any Collection in it. Collection creation is
+`POST /space/{id}/` (`SpaceRequest.post`); this item's original text routed it
+through a reserved `collections` endpoint, which WASS-29 retired, so WASS-2 now
+classifies the `POST` at the Space URL as exact-target delegable instead.
 
 Sequencing against WSS-59, revised 2026-09-13: independent, and this item goes
 first. The original ordering rested on the `collections` create route, which
@@ -2026,10 +2025,10 @@ is WSS-107.
   - freewallet: `src/session/unlockMethods.ts` (`unlockEntryReaderFor`) and
     `src/session/accountSettings.ts`'s copy of the same reader -- waived
     2026-09-13 (maintainer): the readers follow WC-231 in their own repo
-  - portable-web-spaces-spec and app-connect-spec decision 0003: to be
-    assessed if the clause gains a predicate, since predicate 3's shape is
-    restated there -- waived 2026-09-13 (maintainer): the dated amendment adding
-    the fourth admitted form is handled by the user
+  - portable-web-spaces-spec and app-connect-spec decision 0003: to be assessed
+    if the clause gains a predicate, since predicate 3's shape is restated there
+    -- waived 2026-09-13 (maintainer): the dated amendment adding the fourth
+    admitted form is handled by the user
 - acceptance:
   - [x] A decision, signed off before any code, between (a) the clause admits a
         ladder-signed read of one Resource in an unlock Space, with its exact
@@ -2095,8 +2094,8 @@ handled by the user.
     writes this rule refused -- WR-47 closed 2026-09-14 (done, no code change:
     the writes pass as written)
   - wallet-core: unaffected (the index declarations stay app-side)
-  - portable-web-spaces-spec: unaffected (the spec has no such rule, and
-    none is added)
+  - portable-web-spaces-spec: unaffected (the spec has no such rule, and none is
+    added)
   - was-conformance-suite: `container-rule-api`'s Collection-URL grant case
     flipped from a refusal to an admission (0.18.0, TBD)
 - acceptance:
@@ -2144,8 +2143,8 @@ declaration.
 - priority: high
 - labels: was-v0.5, discovery, conformance, tests
 - touches:
-  - portable-web-spaces-spec: the Service Description section, drafted on
-    branch `service-description` (decision
+  - portable-web-spaces-spec: the Service Description section, drafted on branch
+    `service-description` (decision
     `_spec/decisions/0006-service-description.md`); the checks' `specRefs`
     anchor into it. Unaffected: the anchors already exist on that branch, no
     spec change needed
@@ -2276,10 +2275,10 @@ discovered-from: WSS-60.
 - labels: service-description, authorization, spec-alignment, breaking,
   wire-contract
 - touches:
-  - portable-web-spaces-spec: WASS-44. SHIPPED (2026-09-16): the zCap
-    profile is the companion spec `PWS-AUTHZ`
-    (`https://w3c-ccg.github.io/portable-web-spaces-spec/authz-profile/`)
-    with persistent identifier `https://w3id.org/pws/authz-profile` and version
+  - portable-web-spaces-spec: WASS-44. SHIPPED (2026-09-16): the zCap profile is
+    the companion spec `PWS-AUTHZ`
+    (`https://w3c-ccg.github.io/portable-web-spaces-spec/authz-profile/`) with
+    persistent identifier `https://w3id.org/pws/authz-profile` and version
     `0.1`; core requires a server to list every authorization profile it
     implements under the profile's identifier in `specs`, and the profile's
     entry (not core's) carries `signatureAlgorithms` and `zcapCryptosuites`.
@@ -2743,9 +2742,9 @@ are wallet-core's `SpaceCapabilityVerb` widening and freewallet FW-530.
 - touches:
   - storage-core: `SpaceMetadata.backends` and `ImportStats.spaceMetadata`
     (SC-8; needs a publish before this server can be published)
-  - portable-web-spaces-spec: the Space Metadata Data Model's `backends`
-    member, the user-writable / server-derived split, and the import bullet's
-    restore rule (landed 2026-09-20)
+  - portable-web-spaces-spec: the Space Metadata Data Model's `backends` member,
+    the user-writable / server-derived split, and the import bullet's restore
+    rule (landed 2026-09-20)
   - space-archive: the checked-in fixture archive's Space Metadata entry carries
     `backends`, so the counterpart test still pins byte-identical exports
 - acceptance:
@@ -2815,8 +2814,8 @@ it today. The `url` is added when the profile text is published.
     `blob:` URL document or in an unsandboxed `srcdoc` or `about:blank` iframe,
     and its own CSP should allow scripts by nonce or hash rather than
     `script-src 'self'`
-  - portable-web-spaces-spec -- whether Security Considerations says
-    anything about hosted HTML on a wallet's origin is a spec decision
+  - portable-web-spaces-spec -- whether Security Considerations says anything
+    about hosted HTML on a wallet's origin is a spec decision
   - unaffected: was-conformance-suite (deployment hardening, not a protocol
     requirement, unless the spec text above adds one)
 - acceptance:
@@ -3030,8 +3029,8 @@ attempts with 503 and `Retry-After: 1`, as Update Space does.
     `src/lib/governedLog.ts` (the fast-forward rule to reuse),
     `src/lib/webvhController.ts` (`resolveVerifiedDocument`, `reviseEntry`)
   - ARCHITECTURE.md's self-hosted `did:webvh` section
-  - unaffected: portable-web-spaces-spec (the rule is wallet-specific, so
-    the authz profile does not state it; the reasoning is recorded in
+  - unaffected: portable-web-spaces-spec (the rule is wallet-specific, so the
+    authz profile does not state it; the reasoning is recorded in
     portable-wallet-profile-spec's Security considerations, "A history log only
     grows at its host")
 - acceptance:
@@ -3411,8 +3410,8 @@ with the consent triage). Tests in `test/webvh-verification-paths-api.test.ts`.
   - storage-core: `ResourceMetadata`, `ResourceSummary`, and `ChangeDocument`
     already carry `writerId` (landed there ahead of this item, unpublished as
     0.22.0; this repo consumes it via a `link:` dependency until published)
-  - unaffected: portable-web-spaces-spec (the `#writer-attribution` section,
-    the Resource Metadata `writerId` property, the `Writer-Id` header, and the
+  - unaffected: portable-web-spaces-spec (the `#writer-attribution` section, the
+    Resource Metadata `writerId` property, the `Writer-Id` header, and the
     changes-feed/tombstone text were already specified; this item is the
     reference-server implementation of existing spec text, not a spec change)
   - unaffected: wallet-core (the consuming client-side change is tracked in that
@@ -3570,8 +3569,8 @@ not written for.
   - space-archive: the envelope entry in the archive layout and the embedded DID
     log snapshot; the reader side verifies, so the wallets that read a backup
     see the outcome
-  - portable-web-spaces-spec: the server-DID anchor (how a server advertises
-    its identity in the Service Description) and the normative reference from
+  - portable-web-spaces-spec: the server-DID anchor (how a server advertises its
+    identity in the Service Description) and the normative reference from
     Export/Import to the container spec that owns the envelope (WASS-25 in that
     repo's roadmap)
 - acceptance:
@@ -3999,10 +3998,10 @@ di was put server/id/did.jsonl <log path> --content-type text/jsonl
     server consumes it through a temporary `link:../space-archive` reference
     until it is published), including the second fixture
     `fixtures/space-archive-provenance.tar`
-  - portable-web-spaces-spec: the normative reference from Export/Import to
-    the container spec that owns the envelope (WASS-25 in that repo's roadmap)
-    -- pending: WASS-25 is still draft there; nothing in this item changes the
-    PWS spec text itself
+  - portable-web-spaces-spec: the normative reference from Export/Import to the
+    container spec that owns the envelope (WASS-25 in that repo's roadmap) --
+    pending: WASS-25 is still draft there; nothing in this item changes the PWS
+    spec text itself
 - acceptance:
   - [x] Both backends' `exportSpace` emit one statement per exported object
         (each Resource, the Space Metadata object, each Collection Metadata
@@ -4305,9 +4304,9 @@ writing into `data/` behind the server's back.
 - labels: changes-feed, wire-contract, replication, filesystem-backend,
   postgres-backend
 - touches:
-  - portable-web-spaces-spec: the Query Profile Registry's `changes`
-    profile. Its "Ordering and resumption" paragraph states the feed is ordered
-    by an ascending `(updatedAt, id)` keyset and that the checkpoint is an
+  - portable-web-spaces-spec: the Query Profile Registry's `changes` profile.
+    Its "Ordering and resumption" paragraph states the feed is ordered by an
+    ascending `(updatedAt, id)` keyset and that the checkpoint is an
     `{ id, updatedAt }` object; both statements change (the new text is
     described below) (filed in parallel, see that repo)
   - storage-core: `ChangesCheckpoint` (`src/was.ts`), today
@@ -4585,8 +4584,8 @@ considered and rejected: the id is a store fact and belongs on the backend.
   postgres-backend
 - blocks: WSS-96, WSS-174, WSS-176, WSS-182, WSS-183, WSS-184, WSS-189, WSS-190
 - touches:
-  - portable-web-spaces-spec: the Resource data model (`updatedAtCounter`
-    and `originId` members on Resource metadata and the Metadata objects; the
+  - portable-web-spaces-spec: the Resource data model (`updatedAtCounter` and
+    `originId` members on Resource metadata and the Metadata objects; the
     validator layout; `version`/`metaVersion` retired), the `changes` profile
     (stamp members on the change document; the `(updatedAt, writerId)` tie-break
     sentence replaced by the stamp order) (filed as WASS-47 for the data model
@@ -4804,10 +4803,9 @@ retried delete answers 404; an id never used answers 204. Postgres keeps the
     shipped here, with `src/lib/syncIdentity.ts`, `src/lib/peerWebvh.ts` and
     `src/lib/outboundAddress.ts`; `src/serviceDescription.ts` unaffected (no
     member names the key)
-  - portable-web-spaces-spec: the peer `space:server:id` fetch, its bounds
-    and the one-key signing rule -- covered by WASS-50 (the replication
-    companion specification); the service description's `instance` member is
-    unaffected
+  - portable-web-spaces-spec: the peer `space:server:id` fetch, its bounds and
+    the one-key signing rule -- covered by WASS-50 (the replication companion
+    specification); the service description's `instance` member is unaffected
   - freewallet: delegating the pull capability to a server identity -- filed
     FW-638
   - did-cli: `di` 0.17.0 cannot add a relationship to a key the document already
@@ -4930,10 +4928,10 @@ Collection; the pull loop finds it through the Space listing.
 - priority: medium
 - labels: data-model, etag, changes-feed, filesystem-backend, postgres-backend
 - touches:
-  - portable-web-spaces-spec: the Update Resource Metadata operation (what
-    it does and does not change), the Resource data model's `updatedAt`
-    definition, and the `changes` profile's metadata-only sentence; text landed
-    in the spec working tree 2026-10-04
+  - portable-web-spaces-spec: the Update Resource Metadata operation (what it
+    does and does not change), the Resource data model's `updatedAt` definition,
+    and the `changes` profile's metadata-only sentence; text landed in the spec
+    working tree 2026-10-04
   - was-teaching-server: both backends' `/meta` write path already kept the
     content stamp (shipped with WSS-172); the contract tests, the WSS-96 design
     doc sentence, and ARCHITECTURE.md landed here
@@ -5475,8 +5473,8 @@ The test covers a `did:key` and a foreign `did:webvh` `keyId`.
 - touches:
   - was-teaching-server: `src/sync/registration.ts`, ARCHITECTURE.md (the
     `src/sync/` section) -- shipped 2026-10-05
-  - portable-web-spaces-spec: the registration checks (WASS-50; an
-    acceptance line on the key-membership branch was added there 2026-10-05)
+  - portable-web-spaces-spec: the registration checks (WASS-50; an acceptance
+    line on the key-membership branch was added there 2026-10-05)
   - freewallet: the replica registration flow (FW-638; an acceptance line on
     registering a promoted account's Space was added there 2026-10-05)
 - acceptance:
@@ -5582,9 +5580,8 @@ Collection while `GET ?filter[...]` still runs the equality machinery.
   - `@interop/was-conformance-suite`: no case pins the old shape (304/304 pass);
     PWSCS-25 filed (2026-10-05) to assert the new behavior
   - unaffected: `was-client` (treats the `ETag` as opaque)
-  - `portable-web-spaces-spec`: WASS-56 filed (2026-10-05) so "Update
-    Resource Metadata" says a content write moves the Metadata object's `ETag`
-    too
+  - `portable-web-spaces-spec`: WASS-56 filed (2026-10-05) so "Update Resource
+    Metadata" says a content write moves the Metadata object's `ETag` too
 - acceptance:
   - [x] The `/meta` `ETag` is a content-first composite: the content record's
         validator (`"<generation>.<ms>.<counter>.<originId>"`), followed by the
@@ -6430,10 +6427,10 @@ convention until it does.
     `ReplicaStatus.state` gains `paused` -- shipped as part of SC-11 in
     storage-core 0.40.0 (2026-10-27), consumed here through a `link:` dependency
     until it is published
-  - portable-web-spaces-spec: decision 0013 amended (against its "no PUT in
-    v1" and "only the removal of its registration stops a loop") and WASS-50's
-    text -- WASS-50's touches already name the pause and the in-place
-    replacement (added 2026-10-26); the decision amendment rides that item
+  - portable-web-spaces-spec: decision 0013 amended (against its "no PUT in v1"
+    and "only the removal of its registration stops a loop") and WASS-50's text
+    -- WASS-50's touches already name the pause and the in-place replacement
+    (added 2026-10-26); the decision amendment rides that item
   - was-client: pause, resume, and capability replacement on `Space` -- WCL-137,
     filed
   - was-conformance-suite: PWSCS-23 gains the PUT cases -- unresolved (the suite
@@ -6989,8 +6986,8 @@ tag's layout.
     carries `listing`, `collection-management`, `space-management`, `policy`,
     `export`, `encryption`, `changes-query` and its PWS-EC `0.1` entry carries
     `blinded-index-query`, `governed-history-logs`
-  - was-conformance-suite: PWSCS-33 (filed) verifies the listing against the required
-    tokens once this ships (the pair rule of LEARNINGS.md applies)
+  - was-conformance-suite: PWSCS-33 (filed) verifies the listing against the
+    required tokens once this ships (the pair rule of LEARNINGS.md applies)
   - was-client: WCL-146 (filed) reads the entry
 - acceptance:
   - [x] `SERVICE_FEATURES` (`src/serviceDescription.ts:74`) gains the
@@ -7016,3 +7013,148 @@ shipped 2026-09-16; this is the server half it named. Listing the entry is a
 conformance claim and adds no route. The one substantive change is the missing
 `encryption` token, without which the server does not satisfy the profile and
 may not list it.
+
+### WSS-224: [M] (*) Admit a replica Space under a bootstrap did:key, and resolve the auxiliary Space's controller across Spaces
+
+- status: done (2026-10-30)
+- priority: medium
+- backend: *
+- labels: replication, registration, webvh, zcap
+- discovered-from: freewallet FW-688 (2026-10-26)
+- touches:
+  - web-spaces-server: SHIPPED (2026-10-30): `src/sync/registration.ts`
+    (`assertControllerBranch`, `readHostedControllerDocument`,
+    `resolveMappedControllerDocument`, `assertBootstrapDelegation`),
+    `src/zcap.ts` (`verifyOneLinkDelegation`), `src/lib/webvhController.ts` (the
+    resolver context's `peer` takes any `resolve`/`resolveKey` pair),
+    docs/replication.md ("Registration checks"), ARCHITECTURE.md (the
+    `src/sync/` entry). `src/lib/webvhLogLocation.ts` needed no change: the
+    cross-Space lookup is `locateWebvhLog` as it stood, reached through
+    `resolveWebvhController`
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is amended
+    and the replication companion (`replication/spec.md`, "The controller
+    check") states the branch, with no binding of the local did:key to the
+    capability; WASS-58's touches gain the `fromSpace` comparison
+  - freewallet: the replica registration ceremony (FW-638, FW-688) creates and
+    registers under the bootstrap did:key; unblocked by this item, nothing filed
+    here
+  - was-conformance-suite: PWSCS-23's registration-check cases (the suite's
+    item, no new id filed here)
+- acceptance:
+  - [x] A registration onto a local Space whose controller is a did:key is
+        admitted when the source Space's controller is a did:webvh this server
+        can resolve, the pull capability's chain is `[root, capability]` (one
+        delegated link), and that link's delegation proof is signed by a method
+        the resolved document lists under `capabilityDelegation`. The local
+        did:key need not appear in the document
+  - [x] The did:webvh resolves either as today (hosted in `fromSpace`, its log
+        read through the pull capability and verified offline) or from a local
+        copy another registration on this server already maps
+        (`locateWebvhLog`). The second form admits the auxiliary Space, whose
+        controller's log lives in the account Space and reaches this server
+        through the account replica's registration
+  - [x] A re-delegated two-link chain is refused, and so is a ladder-signed
+        capability the source server refuses (the registration's read of the
+        source Space fails first)
+  - [x] Update Space promotes the auxiliary replica Space to the account
+        did:webvh resolved through the account replica's mapping, and the Delete
+        Replica guard (`controllerUnmappedByRemoval`) refuses removing the
+        account replica's registration while the auxiliary replica Space is
+        controlled by that DID
+  - [x] The `invocationTarget` comparison against `fromSpace`
+        (`registration.ts:187`) is named in WASS-58's touches, so it also
+        accepts the `*` subtree form once that marker ships. No dependency on
+        WASS-58
+  - [x] docs/replication.md and ARCHITECTURE.md state the branch, and a
+        two-server test (in the style of
+        `test/replicated-webvh-controller.test.ts`) covers each box above.
+        Shipped as the "the bootstrap branch" block of that file, plus two
+        refusals in its "promoted before it gained a replica" block (a
+        re-delegated chain; a capability the origin does not admit). The Delete
+        Replica guard and the Update Space promotion needed no code change:
+        `controllerUnmappedByRemoval` and `controllerChangeConflict` already
+        decide across Spaces; the tests pin it
+
+Context. A wallet copies its account onto a second server by creating a Space
+there, delegating a read-only pull capability to that server's `serverDid`, and
+registering the source Space. The replica server creates a Space only under a
+did:key. Today the controller check admits a local did:key only when the source
+controller's document lists it under `capabilityInvocation`
+(`assertLocalControllerIsPeerKey`, `registration.ts:498-572`, the branch WSS-205
+added; the listing check is at `:566`). An account anchored in a standing
+credential's ladder has no such key, so it cannot register a replica. The wallet
+uses a bootstrap did:key K derived from a seed on its directory entry for the
+replica server. K creates the replica Space, registers it, promotes it to the
+account did:webvh after the first pull, and controls nothing afterwards.
+
+The branch also has to cover the client-annex auxiliary Space. Its controller is
+the account did:webvh, whose log is in the account Space, so today's requirement
+that the log be hosted in `fromSpace` itself
+(`hosted.fromSpace !== record.fromSpace`, `registration.ts:521`) refuses it.
+This is the cross-Space case of WSS-96's open question 5. WSS-206's mapping rule
+(`replicaMappingConflict`) is unchanged.
+
+The squat analysis, from the design. The replica server cannot read the wallet's
+replica pointer (it lives in the annex, which is not copied yet), so the gate
+sits at the source server: the registration reads the source Space through the
+capability, and the source refuses a ladder-signed pull with no pointer
+(WSS-225). A third party holding a re-delegated grant fails the one-link
+condition. One residue stays open, left to this item by the design: any reader
+of the wallet's directory can register the recorded capability under its own
+did:key in a tear between the wallet's mint and its POST, and then win
+`replicaMappingConflict`. Binding the local did:key to a K recorded with the
+capability would close it. Settled 2026-10-29 in the companion text: no binding.
+The residue is accepted and recorded in the companion's security considerations
+("The bootstrap key"); the first acceptance box above stands as written.
+Related: WSS-207 (a log that declares witnesses still cannot replicate), WSS-210
+(one function for where a did:webvh resolves from).
+
+---
+
+### WSS-238: [M] (*) `serverDid` moves to the core `specs` entry, and the replication entry carries `url`
+
+- status: done
+- done: 2026-10-30
+- priority: medium
+- backend: *
+- labels: wire-contract, service-description, server-identity, replication
+- discovered-from: portable-web-spaces-spec WASS-50 (2026-10-29)
+- touches:
+  - web-spaces-server (this repo): `src/serviceDescription.ts` (the `instance`
+    member it composes and the core entry beside `originId`; the
+    `REPLICATION_IDENTIFIER` entry's members), `src/config.default.ts` (the "no
+    `url` until the text is published" comment), the two server-identity tests,
+    `docs/service-description.md`, `docs/server-identity-and-provenance.md`,
+    `docs/replication.md` (what a wallet reads to find the DID to delegate to),
+    ARCHITECTURE.md (the service description paragraph), CHANGELOG.md
+  - storage-core: the `ServiceDescription` type (the core entry gains
+    `serverDid`; `instance` loses it) -- shipped in storage-core 0.44.0
+  - freewallet / wallet-core: whatever reads the replica server's DID off
+    `/service` before delegating the pull capability (FW-638, FW-688)
+  - was-conformance-suite: a service-description case, if one asserts the
+    member's placement
+  - portable-web-spaces-spec: the text defining `serverDid` on the core version
+    entry landed 2026-10-29 on the spec repo's `replication-spec` branch. It is
+    not merged to main as of 2026-10-30
+- acceptance:
+  - [x] `/service` carries `serverDid` on the `https://w3id.org/pws` entry,
+        beside `originId`, and `instance` no longer carries it
+  - [x] The `https://w3id.org/pws/replication` entry carries `url`
+        (`https://w3c-ccg.github.io/portable-web-spaces-spec/replication/`)
+  - [x] `assertPeerServes` still reads `originId` and the replication entry and
+        nothing else; no registration check reads `instance`
+  - [x] The server-identity tests assert the new placement; docs and
+        ARCHITECTURE.md name it
+  - [x] CHANGELOG entry names the move as a wire change to `/service`
+
+Context: the replication companion decided 2026-10-29 where the server's DID is
+advertised. Core's Instance Disclosure says `instance` is optional operator
+disclosure a client may not gate on, and a wallet gates on the DID: it is the
+`controller` it delegates the pull capability to, and a server without one
+cannot hold a replica. So the member sits on the core entry, as `originId` does
+and for the same reason. The companion text now exists, so the replication
+entry's `url` can be served. Related: WSS-235 (the other `instance` member that
+moves or is renamed).
+
+2026-10-30: implemented. `/service` serves `serverDid` on the core entry with no
+alias under `instance`, and the replication entry serves `url`; archived.
