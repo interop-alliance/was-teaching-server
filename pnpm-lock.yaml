@@ -128,10 +128,10 @@ importers:
         version: 0.17.0(@interop/jsonld-signatures@11.9.0)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/pws-conformance-suite':
         specifier: ^0.35.0
-        version: 0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.101.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
+        version: 0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/was-client':
-        specifier: ^0.101.0
-        version: 0.101.0(@interop/jsonld-signatures@11.9.0)
+        specifier: ^0.103.0
+        version: 0.103.0(@interop/jsonld-signatures@11.9.0)
       '@interop/webkms-client':
         specifier: ^15.0.3
         version: 15.0.3
@@ -725,14 +725,6 @@ packages:
     resolution: {integrity: sha512-XduxAdgKQX0Wi8AH7jNn3OyZxIJM6bMMJGRPm+RTKqFV6Fpo+s+1h10yw6Lc586GEVs92YxDw55gsSemFNlobA==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.38.0':
-    resolution: {integrity: sha512-wavRRv4uzKz9m21sdfZtOGeBy8TSgYWRgHTfq+SE7Dak/E2u77xmn4x7EaV4q3sPgmjFhSbz+YlzG6WpQor3mA==}
-    engines: {node: '>=22.0'}
-
-  '@interop/storage-core@0.42.0':
-    resolution: {integrity: sha512-9ERs9uKOQn6FtBzuDmBkZeCVUZS4+g7W5ZICd9/uoFddjcngOWdGdx10LUaS7bdSb1Q3pDH9/HYhnVi0TrP8Zg==}
-    engines: {node: '>=22.0'}
-
   '@interop/storage-core@0.43.0':
     resolution: {integrity: sha512-pa9aoh1WgeKqodIvi74iYR1mQm6v3rpQYbyzvQs73XPE4p01EN7Sh8wkOGZ7hyZTdwPRHd5oDeS2G2qwnUCRMA==}
     engines: {node: '>=22.0'}
@@ -749,12 +741,12 @@ packages:
     resolution: {integrity: sha512-/TSJnL0Cq+eZBFbROilqf2wd/nVyseOC0bEZttBgHyXmPIwCQ0w6y8SglExvenBgruK+IEb7J9zBo7OF5f9o4w==}
     engines: {node: '>=24.0'}
 
-  '@interop/vh-resource-log@0.5.4':
-    resolution: {integrity: sha512-pqkvBU6NoPYWrxkpXgX4MX2ynYOXTNpgIL6EeUg3i8eLjEWTXBEzZe9gjSrQ2DqJHT9vNY2IXv7pQiIjvTvSyw==}
+  '@interop/vh-resource-log@0.10.1':
+    resolution: {integrity: sha512-6WGeYO3jdFHsfrFLmqZhcpdXVlXnxY2DNUDMmAKDU3esw3dNUC4SjwrDtUPLdaODu3ww7GCfBdrHBKExRVRViA==}
     engines: {node: '>=24.0'}
 
-  '@interop/vh-resource-log@0.9.0':
-    resolution: {integrity: sha512-9QP1XExxu95IuHlB3b9V3QKAKF4tLbp+agF4YByVlywgWcSrUCRD9YxYctacummgPIQTTV+iKBMZJIu72i8OnQ==}
+  '@interop/vh-resource-log@0.5.4':
+    resolution: {integrity: sha512-pqkvBU6NoPYWrxkpXgX4MX2ynYOXTNpgIL6EeUg3i8eLjEWTXBEzZe9gjSrQ2DqJHT9vNY2IXv7pQiIjvTvSyw==}
     engines: {node: '>=24.0'}
 
   '@interop/wallet-core@0.91.0':
@@ -767,8 +759,8 @@ packages:
     resolution: {integrity: sha512-B3Z/9xxOMYzH0aS9PAtyqQRds1IDmL8WCVQUysJS9Xa5uvVMDbxIxbCWRdBe3S3dxzysgqpBYx7YQD6GJGUZ7w==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.101.0':
-    resolution: {integrity: sha512-aRnWQJ1V5eqump+39w9ZaLna5GFDELNqKmT3+V0umfpxq5ffkcBageCS7AGVZSQTny/uAfzTTKbYtctEOJ2eMA==}
+  '@interop/was-client@0.103.0':
+    resolution: {integrity: sha512-10DhW83Bm9vxM+S6RmYZdLmxC1qGR+eMMEZ8is5DJEOui0DJLWDp53MpswTQ3miMIjt3YayJxc66jaRJGdwWPA==}
     engines: {node: '>=24.0'}
 
   '@interop/was-client@0.80.0':
@@ -3537,7 +3529,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/pws-conformance-suite@0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.101.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
+  '@interop/pws-conformance-suite@0.35.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0))(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.1)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.9.0
@@ -3546,7 +3538,7 @@ snapshots:
       '@interop/ezcap': 7.5.4
       '@interop/http-digest-header': 3.2.0
       '@interop/http-signature-zcap-invoke': 6.3.0
-      '@interop/was-client': 0.101.0(@interop/jsonld-signatures@11.9.0)
+      '@interop/was-client': 0.103.0(@interop/jsonld-signatures@11.9.0)
       '@interop/x25519-key-agreement-key': 5.4.3
       assert: 2.1.0
       uuid: 14.0.3
@@ -3605,14 +3597,6 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.9.0
 
-  '@interop/storage-core@0.38.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.9.0
-
-  '@interop/storage-core@0.42.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.9.0
-
   '@interop/storage-core@0.43.0':
     dependencies:
       '@interop/data-integrity-core': 8.9.0
@@ -3656,15 +3640,15 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
+  '@interop/vh-resource-log@0.10.1':
+    dependencies:
+      '@interop/did-method-webvh': 5.18.0
+      '@interop/storage-core': 0.43.0
+
   '@interop/vh-resource-log@0.5.4':
     dependencies:
       '@interop/did-method-webvh': 5.18.0
       '@interop/storage-core': 0.20.0
-
-  '@interop/vh-resource-log@0.9.0':
-    dependencies:
-      '@interop/did-method-webvh': 5.18.0
-      '@interop/storage-core': 0.38.0
 
   '@interop/wallet-core@0.91.0(@interop/jsonld-signatures@11.9.0)(@interop/was-client@0.80.0(@interop/jsonld-signatures@11.9.0))':
     dependencies:
@@ -3701,7 +3685,7 @@ snapshots:
       - '@interop/jsonld-signatures'
       - react-native-get-random-values
 
-  '@interop/was-client@0.101.0(@interop/jsonld-signatures@11.9.0)':
+  '@interop/was-client@0.103.0(@interop/jsonld-signatures@11.9.0)':
     dependencies:
       '@interop/capability-agent': 0.2.2
       '@interop/data-integrity-core': 8.9.0
@@ -3710,8 +3694,8 @@ snapshots:
       '@interop/ezcap': 7.5.4
       '@interop/http-client': 1.0.5
       '@interop/minimal-cipher': 7.11.1
-      '@interop/storage-core': 0.42.0
-      '@interop/vh-resource-log': 0.9.0
+      '@interop/storage-core': 0.43.0
+      '@interop/vh-resource-log': 0.10.1
       '@interop/x25519-key-agreement-key': 5.4.3
       '@interop/zcap': 11.4.0
       '@noble/hashes': 2.4.0

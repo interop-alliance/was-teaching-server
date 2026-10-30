@@ -38,5 +38,5 @@ and names which of these applies to each module:
   sidecars and Resource tombstones, crash cases, Collection tombstones on disk
 - [did:webvh Controllers and Invokers](webvh-controllers.md) -- resolution,
   verification, the current-key-set rule, the append-only log, foreign invokers
-- [The Service Description](service-description.md) -- the five `specs` entries,
+- [The Service Description](service-description.md) -- the six `specs` entries,
   the `instance` member, the `Link` header

@@ -1,19 +1,21 @@
 /**
  * The service description (spec "Service Description"): the server-wide JSON
  * document naming the specification versions this server speaks, its Spaces
- * Repository URL, and the optional sections it implements. It lists five
+ * Repository URL, and the optional sections it implements. It lists six
  * entries: the core specification, whose entry also carries the store's origin
  * id (`lib/originId.ts`); the zCap authorization profile, whose entry
  * carries the signature algorithms and delegation cryptosuites this server
  * verifies; the Encrypted Collections profile, whose entry claims the chunk
  * endpoints and names the two optional affordances of that profile this server
  * serves; the client annex profile, whose entry claims the client-annex
- * delegation clause and carries `version` alone; and the replication
+ * delegation clause and carries `version` alone; the replication
  * specification, whose entry claims the `replicas` registration, the pull
- * loop and the apply path, and carries `version` alone too. It is served unauthenticated at
- * `/service`, and every response the server sends links to it with a
- * `Link: <...>; rel="service"` header, which is how a client finds it from any
- * URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
+ * loop and the apply path, and carries `version` alone too; and the Portable
+ * Wallet Profile, whose entry is the claim that the core and Encrypted
+ * Collections entries carry every token a wallet needs. It is served
+ * unauthenticated at `/service`, and every response the server sends links to
+ * it with a `Link: <...>; rel="service"` header, which is how a client finds
+ * it from any URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
  * configuration the plugin was registered with, the active backend's
  * `originId`, and one storage read: whether the server's own history log lists
  * its export-signing key (`lib/serverIdentity.ts`), which decides the
@@ -40,7 +42,10 @@ import {
   SERVICE_DESCRIPTION_MAX_AGE,
   SERVICE_LINK_RELATION,
   SPEC_IDENTIFIER,
-  SPEC_VERSION
+  SPEC_VERSION,
+  WALLET_PROFILE_IDENTIFIER,
+  WALLET_PROFILE_URL,
+  WALLET_PROFILE_VERSION
 } from './config.default.js'
 import { asList } from './lib/chainCapability.js'
 import { absoluteUrl, serviceDescriptionPath, spacesPath } from './lib/paths.js'
@@ -66,6 +71,13 @@ import {
  * requirements rather than tokens, and the affordances of the Encrypted
  * Collections profile belong to {@link ENCRYPTED_COLLECTIONS_FEATURES}.
  *
+ * - `encryption`: the Collection `encryption` descriptor (spec "Encryption
+ *   Scheme Registry"): the `edv` scheme is recognized, every Resource and
+ *   `custom` write into a Collection declaring it is validated against the
+ *   envelope profile (`encryption-scheme-mismatch`), an unrecognized scheme or
+ *   version is refused (`unsupported-encryption-scheme`), the descriptor is
+ *   set-once and version-monotonic (`encryption-immutable`), and its key-epoch
+ *   and `hmac` members are checked (`lib/encryption.ts`).
  * - `created-by`: the server records `createdBy` on every Resource,
  *   Collection, and Space created under a capability invocation
  *   (`invokerDid`). A create the provisioning policy granted verifies no
@@ -82,9 +94,10 @@ const SERVICE_FEATURES = [
   'backends',
   'query',
   'quotas',
+  'encryption',
   'changes-query',
   'created-by'
-]
+] as const
 
 /**
  * The optional affordances of the Encrypted Collections profile this server
@@ -100,7 +113,60 @@ const SERVICE_FEATURES = [
 export const ENCRYPTED_COLLECTIONS_FEATURES = [
   'blinded-index-query',
   'governed-history-logs'
-]
+] as const
+
+/**
+ * Throws unless every `required` token is in the `served` list of the entry
+ * `identifier` names. `required` is typed from `served`, so a token the
+ * server does not serve is a type error first and a refusal to start second.
+ * @param options {object}
+ * @param options.identifier {string}
+ * @param options.served {readonly string[]}
+ * @param options.required {readonly string[]}
+ * @returns {void}
+ */
+function assertServed<Token extends string>({
+  identifier,
+  served,
+  required
+}: {
+  identifier: string
+  served: readonly Token[]
+  required: readonly NoInfer<Token>[]
+}): void {
+  const missing = required.filter(token => !served.includes(token))
+  if (missing.length > 0) {
+    throw new Error(
+      `The ${WALLET_PROFILE_IDENTIFIER} entry requires ${identifier} ` +
+        `tokens this server does not serve: ${missing.join(', ')}`
+    )
+  }
+}
+
+// The Portable Wallet Profile's "Server requirements", restated from the
+// profile text: the tokens the core entry (at `SPEC_VERSION`) and the
+// Encrypted Collections entry (at `ENCRYPTED_COLLECTIONS_VERSION`) carry
+// when the profile's entry is listed. The profile forbids listing it while
+// one is missing. A profile version that pins other versions or another token
+// set is a new pair of calls.
+assertServed({
+  identifier: SPEC_IDENTIFIER,
+  served: SERVICE_FEATURES,
+  required: [
+    'listing',
+    'collection-management',
+    'space-management',
+    'policy',
+    'export',
+    'encryption',
+    'changes-query'
+  ]
+})
+assertServed({
+  identifier: ENCRYPTED_COLLECTIONS_IDENTIFIER,
+  served: ENCRYPTED_COLLECTIONS_FEATURES,
+  required: ['blinded-index-query', 'governed-history-logs']
+})
 
 /**
  * The absolute URL of the service description for a server base URL.
@@ -144,7 +210,7 @@ export function buildServiceDescription({
         {
           version: SPEC_VERSION,
           spaces: absoluteUrl({ path: spacesPath(), serverUrl }),
-          features: SERVICE_FEATURES,
+          features: [...SERVICE_FEATURES],
           originId
         } satisfies PwsVersionEntry
       ],
@@ -160,7 +226,7 @@ export function buildServiceDescription({
         {
           version: ENCRYPTED_COLLECTIONS_VERSION,
           url: ENCRYPTED_COLLECTIONS_URL,
-          features: ENCRYPTED_COLLECTIONS_FEATURES
+          features: [...ENCRYPTED_COLLECTIONS_FEATURES]
         } satisfies EncryptedCollectionsVersionEntry
       ],
       // A conformance claim with nothing further to advertise, so the entry
@@ -175,6 +241,15 @@ export function buildServiceDescription({
       [REPLICATION_IDENTIFIER]: [
         {
           version: REPLICATION_VERSION
+        } satisfies ServiceDescriptionVersionEntry
+      ],
+      // A conformance claim over the core and Encrypted Collections entries,
+      // checked above when the module loads. The profile admits `version` and
+      // `url` only; a client treats an entry with any other member as absent.
+      [WALLET_PROFILE_IDENTIFIER]: [
+        {
+          version: WALLET_PROFILE_VERSION,
+          url: WALLET_PROFILE_URL
         } satisfies ServiceDescriptionVersionEntry
       ]
     },

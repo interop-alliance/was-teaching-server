@@ -83,6 +83,7 @@ describe('Service description API', () => {
                 'backends',
                 'query',
                 'quotas',
+                'encryption',
                 'changes-query',
                 'created-by'
               ],
@@ -109,7 +110,13 @@ describe('Service description API', () => {
             }
           ],
           'https://w3id.org/pws/client-annex': [{ version: '0.1' }],
-          'https://w3id.org/pws/replication': [{ version: '0.1' }]
+          'https://w3id.org/pws/replication': [{ version: '0.1' }],
+          'https://w3id.org/pws/wallet-profile': [
+            {
+              version: '0.1',
+              url: 'https://interop-alliance.github.io/portable-wallet-profile-spec/'
+            }
+          ]
         },
         instance: {
           name: packageJson.name,
@@ -145,6 +152,60 @@ describe('Service description API', () => {
       expect(entries).toHaveLength(1)
       expect(Object.keys(entries[0]!)).toEqual(['version'])
       expect(entries[0]!.version).toBe('0.1')
+    })
+
+    it('lists the wallet profile entry with version and url only', async () => {
+      // The profile admits exactly those two members and no `features`; a
+      // client treats an entry carrying anything else as absent.
+      const response = await fetch(`${baseServerUrl}service`)
+      const { specs } = (await response.json()) as {
+        specs: Record<string, Record<string, unknown>[]>
+      }
+      const entries = specs['https://w3id.org/pws/wallet-profile']!
+      expect(entries).toHaveLength(1)
+      expect(Object.keys(entries[0]!).sort()).toEqual(['url', 'version'])
+      expect(entries[0]!.version).toBe('0.1')
+    })
+
+    it('carries every token the wallet profile requires', async () => {
+      // The profile's "Required specifications" table, restated here from the
+      // spec text rather than read off the server's constants, so the entry
+      // can never be listed while a required token is missing from the PWS
+      // or Encrypted Collections entry it is a shorthand for.
+      const required = {
+        'https://w3id.org/pws': {
+          version: '0.5',
+          features: [
+            'listing',
+            'collection-management',
+            'space-management',
+            'policy',
+            'export',
+            'encryption',
+            'changes-query'
+          ]
+        },
+        'https://w3id.org/pws/encrypted-collections': {
+          version: '0.1',
+          features: ['blinded-index-query', 'governed-history-logs']
+        }
+      }
+      const response = await fetch(`${baseServerUrl}service`)
+      const { specs } = (await response.json()) as {
+        specs: Record<string, { version: string; features?: string[] }[]>
+      }
+      expect(specs).toHaveProperty(['https://w3id.org/pws/wallet-profile'])
+      for (const [identifier, { version, features }] of Object.entries(
+        required
+      )) {
+        const entries = specs[identifier]
+        expect(entries, identifier).toBeDefined()
+        const entry = entries!.find(candidate => candidate.version === version)
+        expect(entry, identifier).toBeDefined()
+        for (const token of features) {
+          expect(entry!.features, `${identifier} ${token}`).toContain(token)
+        }
+      }
     })
 
     it('serves a bodyless HEAD with the same validator', async () => {

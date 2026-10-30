@@ -1,5 +1,17 @@
 # History
 
+## 0.45.0 - TBD
+
+### Added
+
+- The service description lists the Portable Wallet Profile under
+  `https://w3id.org/pws/wallet-profile`, version `0.1`, with `version` and `url`
+  only. Listing it claims that the core and Encrypted Collections entries carry
+  every token the profile requires; a test pins that invariant.
+- The core entry's `features` array carries the `encryption` token. The server
+  already implemented the Collection `encryption` descriptor (scheme validation,
+  set-once rule, key-epoch and `hmac` checks) but did not advertise it.
+
 ## 0.44.0 - 2026-10-30
 
 ### Added

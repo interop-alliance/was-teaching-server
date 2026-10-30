@@ -460,6 +460,32 @@ export const REPLICATION_IDENTIFIER = 'https://w3id.org/pws/replication'
 export const REPLICATION_VERSION = '0.1'
 
 /**
+ * The Portable Wallet Profile's persistent identifier, the key of its entry in
+ * the service description's `specs` object. Listing it claims this server
+ * meets the profile's "Server requirements", a set of core and Encrypted
+ * Collections `features` tokens that `serviceDescription.ts` checks. The entry
+ * is a shorthand for those tokens and adds no route.
+ */
+export const WALLET_PROFILE_IDENTIFIER = 'https://w3id.org/pws/wallet-profile'
+
+/**
+ * The version of the Portable Wallet Profile this server satisfies, as the
+ * service description advertises it (`major.minor`, no patch level). `0.1`
+ * pins PWS `0.5` and Encrypted Collections `0.1`; a profile version that pins
+ * other versions or another token set is a new entry.
+ */
+export const WALLET_PROFILE_VERSION = '0.1'
+
+/**
+ * The `url` of the Portable Wallet Profile's service description entry. The
+ * profile asks for a version-frozen URL; until the profile publishes one,
+ * this is the current rendering of the profile, which a later profile
+ * version will replace in place.
+ */
+export const WALLET_PROFILE_URL =
+  'https://interop-alliance.github.io/portable-wallet-profile-spec/'
+
+/**
  * `Cache-Control` `max-age` (seconds) on the service description. The document
  * changes only when the server is redeployed with a different configuration,
  * and its `ETag` lets a client revalidate cheaply once the age runs out.
@@ -1460,5 +1486,4 @@ export function parseWebvhBlocklist(
  */
 export const IMPORT_MAX_REVOCATIONS = 1_000
 
-export const SPEC_URL =
-  'https://w3c-ccg.github.io/portable-web-spaces-spec/'
+export const SPEC_URL = 'https://w3c-ccg.github.io/portable-web-spaces-spec/'

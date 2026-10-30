@@ -2,13 +2,13 @@
 
 This document covers `src/serviceDescription.ts`: the service description (spec
 "Service Description") served at `GET /service`. It describes the document and
-each of its five `specs` entries, the `instance` member, the `Link` header every
+each of its six `specs` entries, the `instance` member, the `Link` header every
 response carries, and caching. [ARCHITECTURE.md](../ARCHITECTURE.md) holds the
 layer map and the glossary.
 
 ## The document
 
-`GET /service` is unauthenticated. It serves a JSON document that lists five
+`GET /service` is unauthenticated. It serves a JSON document that lists six
 entries in its `specs`. A client ignores a member it does not know. It treats an
 entry whose `version` it does not speak, or whose `url` is not a string, as
 absent.
@@ -20,7 +20,12 @@ spec version this server speaks (`0.5`), the Spaces Repository URL, and the
 `features` tokens naming the optional sections of the core spec this server
 serves, `changes-query` among them. The `created-by` token says the server
 records `createdBy` on every Resource, Collection, and Space created under a
-capability invocation.
+capability invocation. The `encryption` token says the server implements the
+Collection `encryption` descriptor as the spec's "Encryption Scheme Registry"
+section defines it: it recognizes the `edv` scheme, validates every write into a
+Collection declaring it against the envelope profile, refuses a scheme or
+version it does not recognize, keeps the descriptor set-once, and checks its
+key-epoch and `hmac` members.
 
 It also carries `originId`, the active backend's origin id, which a replication
 peer reads when it registers (see [replication.md](replication.md)). It sits on
@@ -76,6 +81,22 @@ specification (version `0.1`). Listing it is this server's claim that it serves
 the `replicas` registration sub-resource, the pull loop and the apply path (see
 [replication.md](replication.md)). A registration reads the peer's entry and
 refuses a peer that lists none at this version. It carries `version` alone too.
+
+## The wallet profile entry
+
+The sixth entry, under `https://w3id.org/pws/wallet-profile`, is the Portable
+Wallet Profile (version `0.1`). Listing it is this server's claim that it meets
+the profile's "Server requirements": the core entry at version `0.5` carries
+`listing`, `collection-management`, `space-management`, `policy`, `export`,
+`encryption` and `changes-query`, and the encrypted-collections entry at version
+`0.1` carries `blinded-index-query` and `governed-history-logs`. The entry is a
+shorthand for those tokens and adds no route. The profile forbids listing it
+while a required token is missing, so the module checks the required tokens
+against the served lists when it loads and refuses to start otherwise, and a
+test restates them from the profile text.
+
+The entry carries `version` and `url` only. The profile admits no other member,
+`features` included, and a client treats an entry carrying one as absent.
 
 ## The instance member
 

@@ -146,10 +146,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `immutable: true` is the write-once rule the backends decide inside the
   write's critical section. See
   [docs/governed-logs-and-revisions.md](docs/governed-logs-and-revisions.md).
-- **`src/serviceDescription.ts`** -- `GET /service`, unauthenticated, lists five
+- **`src/serviceDescription.ts`** -- `GET /service`, unauthenticated, lists six
   `specs` entries (the core spec, the zCap authorization profile, the Encrypted
-  Collections profile, the client-annex profile, and the replication
-  specification). Listing an entry is a conformance claim. The core entry
+  Collections profile, the client-annex profile, the replication specification,
+  and the Portable Wallet Profile). Listing an entry is a conformance claim; the
+  wallet profile entry claims that the core and Encrypted Collections entries
+  carry every token a wallet needs, `encryption` among them. The core entry
   carries `originId`; the `instance` member carries `exportSigningMethod` and
   `serverDid`. A root-level `onSend` hook appends
   `Link: <.../service>; rel="service"` to every response. See
