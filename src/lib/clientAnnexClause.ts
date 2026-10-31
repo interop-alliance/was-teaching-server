@@ -9,7 +9,7 @@
  * ladder-anchored account document. It is recognized purely by relation
  * asymmetry -- a `capabilityDelegation` member absent from
  * `capabilityInvocation` -- so no marker vocabulary is consulted. A delegation
- * whose proof VM resolves to a ladder VM is admitted iff one of five
+ * whose proof VM resolves to a ladder VM is admitted iff one of six
  * predicates holds:
  *
  * 1. Annex-DID controller inside the account Space's items subtree. Three
@@ -82,6 +82,27 @@
  *    predicate widens who signs the last
  *    link of a grant the account already holds; it reaches no Space the
  *    account held no management capability on.
+ * 6. Replica pull, gated on a record. Four bounds hold together. The
+ *    delegation's sole `controller` equals the `serviceEndpoint` of a
+ *    `https://w3id.org/pws#ReplicaServer` service entry in the client-annex
+ *    document the account document names through its `DelegatedClients`
+ *    entry, and parses as a did:webvh whose path is `space:server:id`, a
+ *    server identity. The annex document is resolved and verified out of
+ *    this server's storage, as any local did:webvh is, with no network
+ *    fetch; predicate 1 compares the annex DID string alone, this predicate
+ *    reads the document. Its `invocationTarget` is the canonical
+ *    trailing-slash URL of the account Space (the Space carrying the
+ *    delegator's log) or of the auxiliary Space carrying the annex log. Its
+ *    `allowedAction` is present, non-empty, and within {GET, HEAD}. Its
+ *    parent is the Space's synthesized root. This is the pull grant a wallet
+ *    session signs to a replica server. The pointer is the record: a
+ *    credential's annex rung writes it into the annex log before any
+ *    delegation names the server, so a ladder-signed copy of the account
+ *    always leaves a logged entry. Removing the pointer, or a generation
+ *    swap that does not restate it, ends the account-Space pull. The
+ *    auxiliary-Space pull survives it today through predicate 2 branch two,
+ *    which admits a GET of a bookkeeping Space to any grantee with no
+ *    pointer check; the predicates are alternatives.
  *
  * Under the v0.4 layout predicate 3 targeted the bare (no-slash) Space URL.
  * That gave DELETE no different reach from today's: the zcap library's target
@@ -164,7 +185,8 @@
  * and stays inside the account Space's items subtree, can only write a log, or
  * is a target-exact single-verb DELETE of one Space or GET of one Space
  * Metadata object of the delegator's own account, or a target-exact GET of
- * one Resource. The third shape is a read, or a destruction whose
+ * one Resource, or is a pull by a server the pointed annex document names.
+ * The third shape is a read, or a destruction whose
  * account-Space case removes the log any record would live in; the fourth is
  * a read alone. A DELETE admitted under predicate 3 writes no log. Two bounds
  * keep that predicate narrow. On the `manageCapability` arm the parent already
@@ -212,6 +234,8 @@ import {
 } from './chainCapability.js'
 import type { DIDDoc } from '@interop/did-method-webvh'
 import { didOfMethodId, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import { isServerIdentityDid } from './serverIdentity.js'
+import { isServerFault } from '../errors.js'
 import {
   relationshipMethodIds,
   resolveWebvhController
@@ -219,6 +243,7 @@ import {
 import { locateWebvhLog } from './webvhLogLocation.js'
 import type { WebvhResolverContext } from './webvhController.js'
 import type { StorageBackend } from '../types.js'
+import type { ServerBackends } from './serverBackends.js'
 import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
 import { isDelegatedClientsSpace } from './spaceType.js'
 import {
@@ -240,6 +265,13 @@ import {
  * non-semantic.
  */
 const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
+
+/**
+ * The service-entry type IRI of a replica pointer in the client-annex
+ * document: one entry per replica server, whose `serviceEndpoint` is that
+ * server's bare did:webvh. The record predicate 6 is gated on.
+ */
+const REPLICA_SERVER_SERVICE_TYPE = 'https://w3id.org/pws#ReplicaServer'
 
 /**
  * The closed set of actions the PWS routes recognize. It is the whole
@@ -373,6 +405,119 @@ function clientAnnexDidOf(doc: DIDDoc): string | undefined {
     }
   }
   return undefined
+}
+
+/**
+ * Whether the client-annex document points at `did` as a replica server: a
+ * service entry whose `type` names (or includes) the `ReplicaServer` IRI and
+ * whose `serviceEndpoint` is that bare DID string.
+ * @param options {object}
+ * @param options.doc {DIDDoc}   the resolved client-annex document
+ * @param options.did {string}   the replica server's DID
+ * @returns {boolean}
+ */
+function hasReplicaPointer({
+  doc,
+  did
+}: {
+  doc: DIDDoc
+  did: string
+}): boolean {
+  return (doc.service ?? []).some(
+    entry =>
+      asList(entry.type).includes(REPLICA_SERVER_SERVICE_TYPE) &&
+      entry.serviceEndpoint === did
+  )
+}
+
+/**
+ * Predicate 6: a replica pull, gated on the annex document's replica pointer.
+ * The target is the canonical trailing-slash URL of the account Space or of
+ * the auxiliary Space carrying the annex log, and the parent is the Space's
+ * synthesized root, whose target a canonical Space URL can only be; the
+ * actions lie within {GET, HEAD}, the pull capability's verbs. The sole
+ * controller parses as a server identity, and equals the endpoint of a
+ * `ReplicaServer` entry in the annex document the account document names,
+ * which is resolved and verified from this server's storage (the
+ * verified-document cache; no network fetch). The shape checks come first, so
+ * the document read is paid only by a pull-shaped grant, and the annex log is
+ * located only when the target is not the account Space. An annex document
+ * that does not verify admits nothing: the pointer is the record, and a record
+ * this server cannot verify is no record. A storage fault is not a verdict,
+ * and surfaces as the 5xx it is.
+ * @param options {object}
+ * @param options.capability {ChainCapability}   the dereferenced delegation
+ * @param options.controllers {string[]}   its normalized `controller`
+ * @param [options.clientAnnexDid] {string}   the annex DID the account
+ *   document names
+ * @param [options.spaceId] {string}   the Space whose canonical URL the
+ *   target is, when it is one
+ * @param options.accountSpaceId {string}   the Space carrying the delegator's
+ *   log
+ * @param options.parentIsRoot {boolean}
+ * @param options.storage {StorageBackend}
+ * @param options.serverBackends {ServerBackends}
+ * @param options.serverUrl {string}
+ * @returns {Promise<boolean>}   true when admitted
+ */
+async function replicaPullAdmitted({
+  capability,
+  controllers,
+  clientAnnexDid,
+  spaceId,
+  accountSpaceId,
+  parentIsRoot,
+  storage,
+  serverBackends,
+  serverUrl
+}: {
+  capability: ChainCapability
+  controllers: string[]
+  clientAnnexDid?: string
+  spaceId?: string
+  accountSpaceId: string
+  parentIsRoot: boolean
+  storage: StorageBackend
+  serverBackends: ServerBackends
+  serverUrl: string
+}): Promise<boolean> {
+  const [replicaDid] = controllers
+  if (
+    spaceId === undefined ||
+    !parentIsRoot ||
+    !actionsWithin({ capability, allowed: ['GET', 'HEAD'] }) ||
+    controllers.length !== 1 ||
+    replicaDid === undefined ||
+    !isServerIdentityDid(replicaDid) ||
+    clientAnnexDid === undefined
+  ) {
+    return false
+  }
+  if (spaceId !== accountSpaceId) {
+    const annexLog = await locateWebvhLog({
+      storage,
+      serverUrl,
+      did: clientAnnexDid
+    })
+    if (annexLog?.spaceId !== spaceId) {
+      return false
+    }
+  }
+  let annexDoc: DIDDoc
+  try {
+    annexDoc = await resolveWebvhController({
+      storage,
+      serverBackends,
+      serverUrl,
+      did: clientAnnexDid
+    })
+  } catch (err) {
+    if (isServerFault(err)) {
+      throw err
+    }
+    return false
+  }
+  return hasReplicaPointer({ doc: annexDoc, did: replicaDid })
 }
 
 /**
@@ -627,7 +772,7 @@ function isWithinSpaceItemsSubtree({
 }
 
 /**
- * Judges one ladder-signed delegation against the five admission predicates.
+ * Judges one ladder-signed delegation against the six admission predicates.
  * @param options {object}
  * @param options.capability {object}   the dereferenced delegation
  * @param options.doc {DIDDoc}   the resolved account document (the delegator)
@@ -645,6 +790,8 @@ function isWithinSpaceItemsSubtree({
  * @param options.parentIsRoot {boolean}   whether that link is the chain's
  *   synthesized root rather than a delegated capability
  * @param options.storage {StorageBackend}   for the Space Metadata read
+ * @param options.serverBackends {ServerBackends}   the set it is the control
+ *   plane of, for the annex document's local resolution
  * @param options.serverUrl {string}   this server's base URL
  * @returns {Promise<boolean>}   true when admitted
  */
@@ -656,6 +803,7 @@ async function ladderDelegationAdmitted({
   parentMeta,
   parentIsRoot,
   storage,
+  serverBackends,
   serverUrl
 }: {
   capability: ChainCapability
@@ -665,6 +813,7 @@ async function ladderDelegationAdmitted({
   parentMeta?: { verifyResult?: unknown }
   parentIsRoot: boolean
   storage: StorageBackend
+  serverBackends: ServerBackends
   serverUrl: string
 }): Promise<boolean> {
   const target = capability.invocationTarget
@@ -737,6 +886,24 @@ async function ladderDelegationAdmitted({
     if (isDelegatedClientsSpace(spaceMetadata)) {
       return true
     }
+  }
+
+  // Predicate 6: a replica pull, gated on the annex document's replica
+  // pointer.
+  if (
+    await replicaPullAdmitted({
+      capability,
+      controllers,
+      clientAnnexDid,
+      spaceId,
+      accountSpaceId: logLocation.spaceId,
+      parentIsRoot,
+      storage,
+      serverBackends,
+      serverUrl
+    })
+  ) {
+    return true
   }
 
   // Predicate 3, DELETE branch: a target-exact DELETE of one Space. The target
@@ -1011,6 +1178,7 @@ export function clientAnnexChainInspector({
         parentMeta: capabilityChainMeta[index - 1],
         parentIsRoot: index - 1 === 0,
         storage,
+        serverBackends,
         serverUrl
       })
       if (!admitted) {
@@ -1027,7 +1195,9 @@ export function clientAnnexChainInspector({
               "grant of that Space's Metadata URL or of one Resource in it, " +
               'nor a POST-only grant of that Space URL under a ' +
               "management capability the Space's controller delegated to the " +
-              'account.'
+              'account, nor a GET/HEAD pull of the account Space or its ' +
+              'client-annex Space by a replica server the annex document ' +
+              'points at.'
           )
         }
       }

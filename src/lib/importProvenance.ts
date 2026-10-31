@@ -60,8 +60,7 @@ import {
 } from './provenanceStatement.js'
 import type { Claims } from './provenanceStatement.js'
 import {
-  SERVER_IDENTITY_COLLECTION_ID,
-  SERVER_SPACE_ID,
+  isServerIdentityPath,
   signingKeyRelationshipProblem
 } from './serverIdentity.js'
 import { didOfMethodId, parseSelfHostedWebvh } from './validateDid.js'
@@ -461,11 +460,7 @@ async function judgeStatement({
     }
   }
   const anchored = parseSelfHostedWebvh(signer.did, { serverUrl: statement.id })
-  if (
-    anchored === undefined ||
-    anchored.spaceId !== SERVER_SPACE_ID ||
-    anchored.collectionId !== SERVER_IDENTITY_COLLECTION_ID
-  ) {
+  if (anchored === undefined || !isServerIdentityPath(anchored)) {
     return {
       verdict: 'unknownSigner',
       reason:

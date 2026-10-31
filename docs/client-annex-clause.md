@@ -2,8 +2,8 @@
 
 This document describes how the server inspects a verified capability chain
 before it admits an invocation. It covers the revocation inspector, the
-client-annex clause (the annex-chain inspector, with its five admitted shapes
-and two invocation-time bounds), and the container rule.
+client-annex clause (the annex-chain inspector, with its six admitted shapes and
+two invocation-time bounds), and the container rule.
 [ARCHITECTURE.md](../ARCHITECTURE.md) holds the layer map, the root-vs-delegated
 invocation explanation, the denial-reason material, and the glossary.
 
@@ -30,7 +30,7 @@ ladder-anchored account document. It is recognized by relation asymmetry: a
 that is absent from `capabilityInvocation`. (Resolution of that document is
 described in [webvh-controllers.md](webvh-controllers.md).)
 
-A delegation signed by a ladder VM is admitted only in one of five shapes.
+A delegation signed by a ladder VM is admitted only in one of six shapes.
 
 ## Shape 1: the Space items subtree
 
@@ -130,6 +130,46 @@ The invocation is not classified by the invocation-time bounds below. Those read
 `PUT` on a Space Metadata URL and `DELETE` on a canonical Space URL, and a
 `POST` at `/space/<S>/export` is neither.
 
+## Shape 6: a replica pull under the annex document's pointer
+
+The sixth shape is the pull grant a wallet session signs to a replica server. It
+is the first shape gated on a record rather than on shape alone. Four bounds
+hold together.
+
+- Its sole `controller` equals the `serviceEndpoint` of a service entry of type
+  `https://w3id.org/pws#ReplicaServer` in the client-annex document, the
+  document the account's `DelegatedClients` entry names. The string must also
+  parse as a `did:webvh` whose path is `space:server:id`, a server identity, on
+  any host, a port or a single-label host included.
+- Its `invocationTarget` is the canonical trailing-slash URL of the account
+  Space (the Space carrying the delegator's log) or of the auxiliary Space
+  carrying the annex log.
+- Its `allowedAction` is present, non-empty, and within {GET, HEAD}.
+- Its parent is the Space's synthesized root.
+
+The server resolves and verifies the annex document out of its own storage, as
+it does any local `did:webvh`, through the verified-document cache and with no
+network fetch. The first shape compares the annex DID string alone; this one
+reads the document. An annex document that does not resolve admits nothing. The
+shape checks run first, so only a pull-shaped grant pays for the read.
+
+The pointer is the record. A credential's annex rung writes it into the annex
+log before any delegation names the server, so a ladder-signed copy of the
+account always leaves a logged entry. Removing the pointer ends that server's
+ladder-signed pull of the account Space, and so does a generation swap that does
+not restate it. The auxiliary-Space pull survives both today: the shapes are
+alternatives, and the second shape's Space branch admits a GET of a whole
+delegated-clients Space to any grantee with no pointer check. Revocation at the
+auxiliary Space is that pull's only stop until the branch gains a grantee bound.
+A pull grant an enrolled client signs is not a ladder delegation, and the clause
+does not bound it.
+
+Under today's target attenuation the Space URL covers the Space listing and each
+Collection's `changes` feed, which is what the pull loop reads. A GET of one
+Resource under the Space is the fourth shape, admitted to any grantee, so a
+pull-shaped grant narrowed to one Resource is not refused by this shape's target
+bound.
+
 ## The ladder invocation-time bound
 
 The zcap library's target attenuation is a `/`-boundary prefix rule. A grant on
@@ -215,8 +255,8 @@ account's ladder VMs standing.
 
 This server makes that claim with its service description's
 `https://w3id.org/pws/client-annex` entry at version `0.1`, which names the
-clause as enforced here, with its five admission predicates. A change to what
-the clause admits is a new version of that entry.
+clause as enforced here, with its six admission predicates. A change to what the
+clause admits is a new version of that entry.
 
 ## The container rule
 

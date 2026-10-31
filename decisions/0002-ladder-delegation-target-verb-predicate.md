@@ -14,8 +14,8 @@
   normative home is app-connect-spec `decisions/0003` (clause A) and the
   companion-profile text it governs, amended in step. The replica pointer's
   service entry type is app-connect-spec `decisions/0001`'s, and the replication
-  side is portable-web-spaces-spec decision 0013's. wallet-core and the
-  wallets mint the shapes the clause admits.
+  side is portable-web-spaces-spec decision 0013's. wallet-core and the wallets
+  mint the shapes the clause admits.
 
 ## Context
 
@@ -125,9 +125,9 @@ server, whose copy is never the account's log of record.
 
 ## Consequences
 
-- The reference server implements predicates 1 to 5. The sixth predicate and the
-  replicas-route shape are decided but not implemented here, and the replicas
-  route is controller-only until they are.
+- The reference server implements predicates 1 to 6. The replicas-route shape is
+  decided but not implemented here, and the replicas route is controller-only
+  until it is.
 - The client-annex profile version is `0.1`. A change to what the clause admits
   is a new version.
 - A DELETE admitted under predicate 3, and every replicas-route grant, writes no
@@ -172,3 +172,8 @@ Reopen this decision when one or more of the following holds:
   replicas route are added, with the pointer-less replica pull rejected and the
   locked property restated. The title is widened from the target-exact shapes to
   the enumerated ones.
+- 2026-10-30: the sixth predicate is implemented. The annex document is resolved
+  from storage through the verified-document cache, the grantee's shape check is
+  a did:webvh path of `space:server:id` on any host, and the auxiliary-Space
+  target is the Space carrying the annex log. The consequence on predicate 2's
+  second branch stands, pinned by a test.

@@ -1013,24 +1013,24 @@ export async function pathExists(target: string): Promise<boolean> {
  * @param options.server {PeerServer}
  * @param options.spaceId {string}
  * @param options.controller {string}   the controller DID
+ * @param [options.type] {string[]}   the Space's `type`; defaults to
+ *   `['Space']`
  * @returns {Promise<void>}
  */
 export async function createPeerSpace({
   server,
   spaceId,
-  controller
+  controller,
+  type = ['Space']
 }: {
   server: PeerServer
   spaceId: string
   controller: string
+  type?: string[]
 }): Promise<void> {
   await server.backend.writeSpace({
     spaceId,
-    spaceMetadata: {
-      id: spaceId,
-      type: ['Space'],
-      controller: controller as IDID
-    }
+    spaceMetadata: { id: spaceId, type, controller: controller as IDID }
   })
 }
 

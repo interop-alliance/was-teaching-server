@@ -30,6 +30,10 @@
  * the shape a per-visit annex verification method publishes under -- is not
  * ladder authority, so the clause skips the link it signed.
  *
+ * The sixth shape, a replica pull gated on the annex document's replica
+ * pointer, needs a second server to invoke as, so it is covered in
+ * `ladder-replica-pull.test.ts`.
+ *
  * Invocations are raw `@interop/ezcap` requests: these are wire-level
  * authorization shapes, not the high-level `@interop/pws-client` surface.
  */

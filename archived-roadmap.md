@@ -7194,3 +7194,98 @@ return the container form, and the no-slash prefix lives in the unexported
 `spaceBase` and `collectionBase` inside `paths.ts`. The roughly 9 external
 no-slash call sites had already moved to sub-resource builders, so all 34 call
 sites only dropped the flag; archived.
+
+---
+
+### WSS-225: [M] (*) Client-annex clause: a ladder-signed replica pull gated on the annex document's replica pointer
+
+- status: done
+- priority: medium
+- backend: *
+- labels: client-annex, zcap, replication, webvh
+- discovered-from: freewallet FW-688 (2026-10-26)
+- touches:
+  - web-spaces-server: `src/lib/clientAnnexClause.ts`
+    (`ladderDelegationAdmitted` and the module header), `src/config.default.ts`
+    (the `CLIENT_ANNEX_VERSION` comment), docs/client-annex-clause.md (a sixth
+    shape), ARCHITECTURE.md (the clause entry), `decisions/0002` (amended
+    2026-10-26; shipped 2026-10-30, decision amended again)
+  - app-connect-spec: decision 0003 (clause A's sixth predicate, the normative
+    text) and decision 0001 (the `ReplicaServer` service entry type in the annex
+    document) -- already shipped 2026-10-26, nothing further
+  - wallet-core: the ladder-signed pull mint, the ladder-clause counterpart
+    fixtures, and the `hostConformance.ts` header's predicate count -- follow-up
+    to file there (freewallet FW-688 owns the mint)
+  - portable-web-spaces-spec: resolved 2026-10-29 -- decision 0013 is amended
+    and the replication companion ("Signing the pull capability") defines the
+    `ReplicaServer` pointer and cites the predicate by name; WASS-58's touches
+    gain the pull capability's target
+- acceptance:
+  - [x] A ladder-signed delegation is admitted when its sole `controller` equals
+        the `serviceEndpoint` of a `https://w3id.org/pws#ReplicaServer` service
+        entry in the annex document the delegator's account document names
+        through its `DelegatedClients` entry. The annex document is resolved and
+        verified out of this server's storage (`resolveWebvhController`), with
+        no network fetch
+  - [x] The controller parses as a did:webvh whose path is `space:server:id`
+  - [x] The `invocationTarget` is the canonical trailing-slash URL of the
+        account Space (the Space carrying the delegator's log) or of the
+        auxiliary Space the `DelegatedClients` entry names. The `*` subtree form
+        of either waits on WASS-58's marker and is not admitted yet
+  - [x] `allowedAction` is present, non-empty, and within {GET, HEAD}, and the
+        parent is the Space's synthesized root
+  - [x] Two-server tests: admitted with the pointer present; for the
+        account-Space target, refused when the pointer is absent, names another
+        server, or sits only in a superseded generation; refused for POST, a
+        Resource target, a non-root parent, and two controllers; a re-point to a
+        generation with no pointer refuses the next account-Space pull
+  - [x] Two-server test, expected result for now: a `['GET']` ladder-signed pull
+        of the auxiliary Space with the pointer removed is still admitted,
+        through predicate 2 branch two. The test names branch two as the
+        admitting path, so the branch's later narrowing (freewallet FW-689)
+        flips it to a refusal
+  - [x] `CLIENT_ANNEX_VERSION` stays `0.1`; its comment in
+        `src/config.default.ts` (`:433-437`) and the clause's header and
+        `ladderDelegationAdmitted` JSDoc (`clientAnnexClause.ts:12-13`, `:626`)
+        count six predicates
+  - [x] docs/client-annex-clause.md and ARCHITECTURE.md describe the shape
+
+Context. Clause A bounds what a ladder VM may delegate to five shapes
+(`ladderDelegationAdmitted`, `clientAnnexClause.ts:647-826`), none with a
+server-DID grantee. So a credential-anchored account cannot sign the pull
+capability a replica server needs. The wallet records each replica server as a
+service entry in the annex document before it delegates, so the pull is loud at
+the annex log's grade. The source server is the only reader that acts on it.
+Removing the entry ends that server's ladder-signed pull of the account Space;
+the auxiliary-Space pull survives it until branch two is narrowed (see below).
+The extra read is the annex document's local resolution. Predicate 1
+(`:671-713`) only compares the annex DID string and locates its log; this
+predicate resolves the document through the verified-document cache. Reading a
+verified log fact as an authorization gate is not a locator fetch, so it stays
+clear of decision 0013's rejection of acting on service entries.
+
+Overlap with branch two, accepted 2026-10-26. Predicate 2's second branch
+(`:724-736`) already admits a GET of a whole `DelegatedClientsSpace` to any
+grantee, with no pointer gate. Predicates are alternatives, so a ladder-signed
+auxiliary-Space pull to a `serverDid` stays admitted by branch two after the
+pointer is removed. Dmitri accepted this rather than carve branch two in this
+item: until a later design narrows branch two with a grantee bound (freewallet
+FW-689), removing the pointer ends the account-Space pull only, and revocation
+at the auxiliary Space is the auxiliary pull's only stop. That narrowing is what
+makes the auxiliary pull pointer-gated in fact. The account-Space half has no
+such overlap.
+
+Candidate, not acceptance: verify the annex log incrementally from the cached
+head. On a credential-anchored account the pointed generation grows by one entry
+per transient visit, and the cache re-verifies the whole log from genesis
+whenever its ETag moved, so the first pull after each visit pays for the whole
+log, once per replica server.
+
+2026-10-30: implemented. Predicate 6 sits after predicate 2's second branch in
+`ladderDelegationAdmitted`; the shape checks run before the annex document is
+resolved from storage, and an annex document that does not resolve admits
+nothing. The "Resource target" refusal is pinned with a Collection container
+target, since a GET-only grant of one Resource is predicate 4's shape and is
+admitted to any grantee. `test/ladder-replica-pull.test.ts` holds the two-server
+cases, including the branch-two auxiliary pull expected to flip under freewallet
+FW-689; archived.

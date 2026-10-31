@@ -537,9 +537,9 @@ passes through composed inspectors. The revocation inspector
 (`lib/revocations.ts`) fails a chain containing any capability with a stored
 revocation. The annex-chain inspector (`lib/clientAnnexClause.ts`) bounds what a
 ladder verification method (a `capabilityDelegation`-only method of a
-self-hosted `did:webvh` document) may delegate, to five admitted shapes, and
-adds two invocation-time bounds on `PUT` at a Space Metadata URL and `DELETE` at
-a canonical Space URL. The service description's client-annex entry claims the
+self-hosted `did:webvh` document) may delegate, to six admitted shapes, and adds
+two invocation-time bounds on `PUT` at a Space Metadata URL and `DELETE` at a
+canonical Space URL. The service description's client-annex entry claims the
 clause, and a change to what it admits is a new version of that entry. Full
 rules in [docs/client-annex-clause.md](docs/client-annex-clause.md).
 

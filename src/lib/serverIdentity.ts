@@ -37,7 +37,11 @@ import {
   SERVER_INSTANCE_SPACE_TYPE,
   isServerInstanceSpace
 } from './spaceType.js'
-import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import {
+  parseSelfHostedWebvh,
+  parseWebvhSpacePath,
+  WEBVH_LOG_RESOURCE_ID
+} from './validateDid.js'
 import type { IDID, StorageBackend } from '../types.js'
 
 /**
@@ -51,6 +55,39 @@ export const SERVER_SPACE_ID = 'server'
  * history log, so the DID is `did:webvh:<scid>:<host>:space:server:id`.
  */
 export const SERVER_IDENTITY_COLLECTION_ID = 'id'
+
+/**
+ * Whether a parsed `did:webvh` Space path is a server identity's: the history
+ * log in the `id` Collection of a host's `server` Space, on this server or on
+ * any other.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {boolean}
+ */
+export function isServerIdentityPath({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): boolean {
+  return (
+    spaceId === SERVER_SPACE_ID &&
+    collectionId === SERVER_IDENTITY_COLLECTION_ID
+  )
+}
+
+/**
+ * Whether a DID parses as a server identity: a did:webvh on any host, a port
+ * or a single-label host included, whose path is `space:server:id`.
+ * @param did {string}
+ * @returns {boolean}
+ */
+export function isServerIdentityDid(did: string): boolean {
+  const parsed = parseWebvhSpacePath(did)
+  return parsed !== undefined && isServerIdentityPath(parsed)
+}
 
 /**
  * The server's export-signing key pair plus the `did:key` it is advertised
@@ -318,11 +355,7 @@ async function resolveServerDidUncached({
     return undefined
   }
   const parsed = parseSelfHostedWebvh(did, { serverUrl })
-  if (
-    parsed === undefined ||
-    parsed.spaceId !== SERVER_SPACE_ID ||
-    parsed.collectionId !== SERVER_IDENTITY_COLLECTION_ID
-  ) {
+  if (parsed === undefined || !isServerIdentityPath(parsed)) {
     logger.warn(
       { did },
       'The stored server history log names a DID not hosted at ' +

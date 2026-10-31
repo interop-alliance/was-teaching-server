@@ -2,6 +2,23 @@
 
 ## 0.46.0 - TBD
 
+### Added
+
+- The client-annex clause admits a sixth ladder-signed shape, the replica pull.
+  A delegation a ladder verification method signs is admitted when its sole
+  `controller` is the `serviceEndpoint` of a
+  `https://w3id.org/pws#ReplicaServer` service entry in the client-annex
+  document the account document names, and parses as a `did:webvh` whose path is
+  `space:server:id`; its target is the canonical URL of the account Space or of
+  the auxiliary Space carrying the annex log; its actions lie within `GET` and
+  `HEAD`; and its parent is the Space's root. The annex document is resolved
+  from this server's storage, with no network fetch. Removing the pointer, or
+  re-pointing the account at an annex generation without it, ends the
+  account-Space pull. The auxiliary-Space pull is still admitted by the
+  bookkeeping-Space shape. The client-annex profile stays at `0.1`.
+- `/testing`: a `PeerServer` carries its `signingKey`, so a two-server suite can
+  invoke as a server does when it pulls.
+
 ### Changed
 
 - Breaking wire change to `/service`. `serverDid` moves from `instance` to the

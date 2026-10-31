@@ -644,6 +644,10 @@ export interface PeerServer {
   clock: ReturnType<typeof frozenClock>
   did: string
   didLog: string
+  /**
+   * The server's sync key, the one its pull loop invokes with.
+   */
+  signingKey: ServerSigningKey
 }
 
 /**
@@ -700,7 +704,7 @@ export async function bootPeerServer({
   const backend = await openTempBackend({ prefix, physicalClock: clock.read })
   try {
     const seed = randomBytes(32)
-    const { did, didLog } = await provisionServerIdentity({
+    const { did, didLog, signingKey } = await provisionServerIdentity({
       backend,
       serverUrl,
       seed,
@@ -723,7 +727,15 @@ export async function bootPeerServer({
       throw err
     }
     fastify.replication.pause()
-    const server = { serverUrl, fastify, backend, clock, did, didLog }
+    const server = {
+      serverUrl,
+      fastify,
+      backend,
+      clock,
+      did,
+      didLog,
+      signingKey
+    }
     servers.set(serverUrl, server)
     return server
   } catch (err) {

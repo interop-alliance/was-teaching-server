@@ -83,16 +83,17 @@ export function isValidController(value: unknown): value is IDID {
 }
 
 /**
- * Parses a self-hosted `did:webvh` controller into the three parts the resolver
- * needs, or returns `undefined` when `value` is not one.
+ * Parses a `did:webvh` whose log lives in a PWS Collection on some host,
+ * without regard to which host, or returns `undefined` when `value` is not
+ * one.
  *
  * The accepted form is exactly
  * `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:<collectionId>`, where
  * the `didDomainComponent` is the DID-method encoding of a host (a port is
  * percent-encoded as `%3A`, since `:` is the method's own separator) and must
- * decode to this server's own host. Nothing else -- no extra path segments, no
- * cross-host domain, no other DID method -- parses. The log is read from
- * `<spaceId>/<collectionId>/did.jsonl`.
+ * decode to a URL host, in lower case. Nothing else -- no extra path segments,
+ * no other DID method -- parses. The log is read from
+ * `<spaceId>/<collectionId>/did.jsonl` on that host.
  *
  * The `collectionId` may be any Collection whose name round-trips the DID path
  * encoding. PWS Collection ids are restricted to the RFC 3986 unreserved
@@ -101,16 +102,16 @@ export function isValidController(value: unknown): value is IDID {
  * collapses to the same check: a segment carrying `%` or any other reserved
  * character fails the pattern and is refused here.
  *
- * @param value {unknown}   the candidate controller DID
- * @param options {object}
- * @param options.serverUrl {string}   this server's base URL
- * @returns {{ scid: string, spaceId: string, collectionId: string } |
- *   undefined}
+ * @param value {unknown}   the candidate DID
+ * @returns {{ scid: string, host: string, spaceId: string,
+ *   collectionId: string } | undefined}   `host` is the decoded host, port
+ *   included when the DID carries one
  */
-export function parseSelfHostedWebvh(
-  value: unknown,
-  { serverUrl }: { serverUrl: string }
-): { scid: string; spaceId: string; collectionId: string } | undefined {
+export function parseWebvhSpacePath(
+  value: unknown
+):
+  | { scid: string; host: string; spaceId: string; collectionId: string }
+  | undefined {
   if (typeof value !== 'string') {
     return undefined
   }
@@ -143,17 +144,51 @@ export function parseSelfHostedWebvh(
   if (!isUrlSafeSegment(spaceId) || !isUrlSafeSegment(collectionId)) {
     return undefined
   }
-  let didHost: string
+  let host: string
   try {
-    didHost = decodeURIComponent(didDomainComponent).toLowerCase()
+    host = decodeURIComponent(didDomainComponent).toLowerCase()
   } catch {
     // A malformed percent-escape in the domain component.
     return undefined
   }
-  if (didHost !== new URL(serverUrl).host.toLowerCase()) {
+  // The decoded component must be a whole URL host and nothing more: no
+  // userinfo, path or query smuggled in through the encoding.
+  let parsed: URL
+  try {
+    parsed = new URL(`https://${host}`)
+  } catch {
     return undefined
   }
-  return { scid, spaceId, collectionId }
+  if (parsed.host !== host) {
+    return undefined
+  }
+  return { scid, host, spaceId, collectionId }
+}
+
+/**
+ * Parses a self-hosted `did:webvh` controller into the three parts the resolver
+ * needs, or returns `undefined` when `value` is not one: the shape
+ * {@link parseWebvhSpacePath} accepts, whose host decodes to this server's
+ * own host. A cross-host domain does not parse.
+ *
+ * @param value {unknown}   the candidate controller DID
+ * @param options {object}
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {{ scid: string, spaceId: string, collectionId: string } |
+ *   undefined}
+ */
+export function parseSelfHostedWebvh(
+  value: unknown,
+  { serverUrl }: { serverUrl: string }
+): { scid: string; spaceId: string; collectionId: string } | undefined {
+  const parsed = parseWebvhSpacePath(value)
+  if (
+    parsed === undefined ||
+    parsed.host !== new URL(serverUrl).host.toLowerCase()
+  ) {
+    return undefined
+  }
+  return parsed
 }
 
 /**

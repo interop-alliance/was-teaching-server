@@ -32,7 +32,7 @@ and names which of these applies to each module:
   the server's `did:webvh` and signing key, provenance statements on export and
   their verification on import
 - [Chain Inspection: the Client-Annex Clause and the Container Rule](client-annex-clause.md)
-  -- the five admitted ladder-delegation shapes, the invocation-time bounds, the
+  -- the six admitted ladder-delegation shapes, the invocation-time bounds, the
   container rule
 - [Storage Layout](filesystem-layout.md) -- `store.json` and layout versions,
   sidecars and Resource tombstones, crash cases, Collection tombstones on disk
